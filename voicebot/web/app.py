@@ -950,6 +950,8 @@ def create_app() -> FastAPI:
                         }
                         if first_token_ts is not None:
                             timings["llm_ttfb"] = int(round((first_token_ts - llm_start_ts) * 1000.0))
+                        elif tool_call is not None and tool_call.first_event_ts is not None:
+                            timings["llm_ttfb"] = int(round((tool_call.first_event_ts - llm_start_ts) * 1000.0))
                         if speak and tts_start_ts is not None and first_audio_ts is not None:
                             timings["tts_first_audio"] = int(round((first_audio_ts - tts_start_ts) * 1000.0))
                             timings["tts_from_llm_start"] = int(round((first_audio_ts - llm_start_ts) * 1000.0))
