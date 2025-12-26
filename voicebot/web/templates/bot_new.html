@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1 style="margin: 0;">New bot</h1>
+    <div class="right"></div>
+    <a class="pill" href="/bots">Back</a>
+  </div>
+
+  <form class="card" style="margin-top: 14px;" method="post" action="/bots">
+    <label>Name</label>
+    <input type="text" name="name" required placeholder="e.g. Sales Assistant" />
+
+    <label>OpenAI model</label>
+    <select name="openai_model">
+      {% for m in options.openai_models %}
+        <option value="{{ m }}" {% if m == "gpt-4o" %}selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+    </select>
+
+    <label>OpenAI key</label>
+    <select name="openai_key_id">
+      <option value="">(use env OPENAI_API_KEY)</option>
+      {% for k in keys %}
+        <option value="{{ k.id }}">{{ k.name }} — {{ k.hint }}</option>
+      {% endfor %}
+    </select>
+
+    <label>System prompt</label>
+    <textarea name="system_prompt" required>You are a fast, helpful voice assistant. Keep answers concise unless asked.</textarea>
+
+    <div class="row">
+      <div style="flex: 1;">
+        <label>ASR language</label>
+        <select name="language">
+          {% for l in options.languages %}
+            <option value="{{ l }}" {% if l == "en" %}selected{% endif %}>{{ l }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="flex: 1;">
+        <label>TTS language</label>
+        <select name="tts_language">
+          {% for l in options.languages %}
+            <option value="{{ l }}" {% if l == "en" %}selected{% endif %}>{{ l }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div style="flex: 1;">
+        <label>Whisper model</label>
+        <select name="whisper_model">
+          {% for m in options.whisper_models %}
+            <option value="{{ m }}" {% if m == "small" %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="flex: 1;">
+        <label>Whisper device</label>
+        <select name="whisper_device">
+          {% for d in options.whisper_devices %}
+            <option value="{{ d }}" {% if d == "auto" %}selected{% endif %}>{{ d }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <label>XTTS v2 model</label>
+    <select id="xtts_model" name="xtts_model">
+      {% for m in options.xtts_models %}
+        <option value="{{ m }}" {% if m == "tts_models/multilingual/multi-dataset/xtts_v2" %}selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+    </select>
+
+    <div class="row">
+      <div style="flex: 1;">
+        <label>Speaker ID (optional)</label>
+        <select id="speaker_id" name="speaker_id">
+          <option value="">(auto)</option>
+        </select>
+      </div>
+      <div style="flex: 1;">
+        <label>Speaker WAV path (optional)</label>
+        <input type="text" name="speaker_wav" placeholder="/path/to/voice.wav" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div style="flex: 1;">
+        <label>TTS chunk min chars</label>
+        <input type="number" name="tts_chunk_min_chars" value="20" min="1" />
+      </div>
+      <div style="flex: 1;">
+        <label>TTS chunk max chars</label>
+        <input type="number" name="tts_chunk_max_chars" value="120" min="10" />
+      </div>
+    </div>
+
+    <label><input type="checkbox" name="tts_split_sentences" /> Let TTS split sentences (slower first-audio)</label>
+
+    <div class="row" style="margin-top: 12px;">
+      <button type="submit">Create bot</button>
+    </div>
+  </form>
+
+  <script>
+    async function loadSpeakers() {
+      const model = document.getElementById("xtts_model").value;
+      const sel = document.getElementById("speaker_id");
+      sel.innerHTML = '<option value="">(auto)</option>';
+      try {
+        const r = await fetch(`/api/tts/meta?model_name=${encodeURIComponent(model)}`);
+        if (!r.ok) return;
+        const data = await r.json();
+        const speakers = data.speakers || [];
+        for (const s of speakers) {
+          const opt = document.createElement("option");
+          opt.value = s;
+          opt.textContent = s;
+          sel.appendChild(opt);
+        }
+      } catch {}
+    }
+    document.getElementById("xtts_model").addEventListener("change", loadSpeakers);
+    loadSpeakers();
+  </script>
+{% endblock %}

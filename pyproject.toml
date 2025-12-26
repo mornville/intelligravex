@@ -1,0 +1,66 @@
+[project]
+name = "intelligravex-voicebot"
+version = "0.1.0"
+description = "End-to-end continuous AI voice bot (Whisper ASR + GPT-4o + XTTS v2)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Intelligravex" }]
+dependencies = [
+  "numpy>=1.24",
+  "openai>=1.40.0",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "python-dotenv>=1.0",
+  "rich>=13.7",
+  "typer>=0.12.0",
+  "sounddevice>=0.4.6",
+  "webrtcvad>=2.0.10",
+]
+
+[project.optional-dependencies]
+asr = [
+  "openai-whisper>=20231117",
+  "torch>=2.1",
+]
+tts = [
+  # Prefer the maintained fork (the original `TTS` package is unmaintained).
+  "coqui-tts>=0.27.3",
+  "torch>=2.1",
+]
+dev = [
+  "pytest>=7.4",
+  "ruff>=0.5.0",
+  "mypy>=1.8",
+  "types-requests",
+]
+web = [
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.30.0",
+  "jinja2>=3.1.4",
+  "sqlmodel>=0.0.22",
+  "cryptography>=42.0.0",
+  "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+voicebot = "voicebot.cli:app"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"voicebot.web" = ["templates/*.html", "static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+no_implicit_optional = true

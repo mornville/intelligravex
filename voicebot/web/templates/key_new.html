@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1 style="margin: 0;">New key</h1>
+    <div class="right"></div>
+    <a class="pill" href="/keys">Back</a>
+  </div>
+
+  <div class="card danger" style="margin-top: 14px;">
+    <div class="muted">
+      Keys are stored encrypted at rest using <code>VOICEBOT_SECRET_KEY</code>.
+      In the UI we always hide the middle part of the key.
+    </div>
+  </div>
+  {% if not secret_configured %}
+    <div class="card danger" style="margin-top: 14px;">
+      <div class="muted">Missing <code>VOICEBOT_SECRET_KEY</code>. Add it to <code>.env</code> before saving keys.</div>
+    </div>
+  {% endif %}
+
+  <form class="card" style="margin-top: 14px;" method="post" action="/keys">
+    <label>Provider</label>
+    <select name="provider">
+      <option value="openai">openai</option>
+    </select>
+
+    <label>Name</label>
+    <input type="text" name="name" required placeholder="e.g. personal-openai" />
+
+    <label>Secret</label>
+    <input type="password" name="secret" required placeholder="sk-..." />
+    <div class="muted" style="margin-top: 6px;">After saving, only a masked preview is shown.</div>
+
+    <div class="row" style="margin-top: 12px;">
+      <button type="submit">Save key</button>
+    </div>
+  </form>
+{% endblock %}

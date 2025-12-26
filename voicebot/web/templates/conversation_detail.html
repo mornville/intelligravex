@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1 style="margin: 0;">Conversation</h1>
+    <span class="pill">bot: {{ bot.name }}</span>
+    {% if conversation.test_flag %}<span class="pill">test</span>{% endif %}
+    <div class="right"></div>
+    <a class="pill" href="/bots/{{ bot.id }}/conversations">Back</a>
+  </div>
+
+  <div class="card" style="margin-top: 14px;">
+    <div class="muted">UUID: <code>{{ conversation.id }}</code></div>
+  </div>
+
+  <div class="card" style="margin-top: 14px;">
+    <h2>Messages</h2>
+    {% for m in messages %}
+      <div style="margin-top: 12px;">
+        <div class="muted">{{ m.created_at }} — <span class="pill">{{ m.role }}</span></div>
+        <pre style="white-space: pre-wrap; margin-top: 8px;">{{ m.content }}</pre>
+      </div>
+    {% endfor %}
+    {% if not messages %}
+      <div class="muted">No messages yet.</div>
+    {% endif %}
+  </div>
+{% endblock %}
+

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1 style="margin: 0;">Bots</h1>
+    <div class="right"></div>
+    <a class="pill" href="/bots/new">+ New bot</a>
+  </div>
+  <div class="muted" style="margin-top: 6px;">Run locally with: <code>voicebot run --bot &lt;uuid&gt;</code></div>
+
+  <div class="grid" style="margin-top: 14px;">
+    {% for bot in bots %}
+      <div class="card">
+        <h2>{{ bot.name }}</h2>
+        <div class="muted">UUID: <code>{{ bot.id }}</code></div>
+        <div class="row" style="margin-top: 10px;">
+          <span class="pill">model: {{ bot.openai_model }}</span>
+          <span class="pill">lang: {{ bot.language }}</span>
+          <span class="pill">tts: {{ bot.tts_language }}</span>
+        </div>
+        <div class="row" style="margin-top: 12px;">
+          <a class="pill" href="/bots/{{ bot.id }}">Edit & test</a>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if not bots %}
+    <div class="card" style="margin-top: 14px;">
+      <div class="muted">No bots yet.</div>
+      <div style="margin-top: 10px;"><a class="pill" href="/bots/new">Create your first bot</a></div>
+    </div>
+  {% endif %}
+{% endblock %}
+

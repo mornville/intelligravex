@@ -1,0 +1,403 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1 style="margin: 0;">{{ bot.name }}</h1>
+    <span class="pill">UUID: <code>{{ bot.id }}</code></span>
+    <div class="right"></div>
+    <a class="pill" href="/bots">Back</a>
+  </div>
+
+  <div class="grid" style="margin-top: 14px;">
+    <form class="card" method="post" action="/bots/{{ bot.id }}">
+      <h2>Configuration</h2>
+
+      <label>Name</label>
+      <input type="text" name="name" required value="{{ bot.name }}" />
+
+      <label>OpenAI model</label>
+      <select name="openai_model">
+        {% for m in options.openai_models %}
+          <option value="{{ m }}" {% if m == bot.openai_model %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+
+      <label>OpenAI key</label>
+      <select name="openai_key_id">
+        <option value="" {% if not bot.openai_key_id %}selected{% endif %}>(use env OPENAI_API_KEY)</option>
+        {% for k in keys %}
+          <option value="{{ k.id }}" {% if bot.openai_key_id == k.id %}selected{% endif %}>{{ k.name }} — {{ k.hint }}</option>
+        {% endfor %}
+      </select>
+
+      <label>System prompt</label>
+      <textarea name="system_prompt" required>{{ bot.system_prompt }}</textarea>
+
+      <div class="row">
+        <div style="flex: 1;">
+          <label>ASR language</label>
+          <select name="language">
+            {% for l in options.languages %}
+              <option value="{{ l }}" {% if l == bot.language %}selected{% endif %}>{{ l }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="flex: 1;">
+          <label>TTS language</label>
+          <select name="tts_language">
+            {% for l in options.languages %}
+              <option value="{{ l }}" {% if l == bot.tts_language %}selected{% endif %}>{{ l }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <div style="flex: 1;">
+          <label>Whisper model</label>
+          <select name="whisper_model">
+            {% for m in options.whisper_models %}
+              <option value="{{ m }}" {% if m == bot.whisper_model %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="flex: 1;">
+          <label>Whisper device</label>
+          <select name="whisper_device">
+            {% for d in options.whisper_devices %}
+              <option value="{{ d }}" {% if d == bot.whisper_device %}selected{% endif %}>{{ d }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <label>XTTS v2 model</label>
+      <select id="xtts_model" name="xtts_model">
+        {% for m in options.xtts_models %}
+          <option value="{{ m }}" {% if m == bot.xtts_model %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+
+      <div class="row">
+        <div style="flex: 1;">
+          <label>Speaker ID (optional)</label>
+          <select id="speaker_id" name="speaker_id">
+            <option value="">(auto)</option>
+          </select>
+        </div>
+        <div style="flex: 1;">
+          <label>Speaker WAV path (optional)</label>
+          <input type="text" name="speaker_wav" value="{{ bot.speaker_wav or '' }}" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div style="flex: 1;">
+          <label>TTS chunk min chars</label>
+          <input type="number" name="tts_chunk_min_chars" value="{{ bot.tts_chunk_min_chars }}" min="1" />
+        </div>
+        <div style="flex: 1;">
+          <label>TTS chunk max chars</label>
+          <input type="number" name="tts_chunk_max_chars" value="{{ bot.tts_chunk_max_chars }}" min="10" />
+        </div>
+      </div>
+
+      <label><input type="checkbox" name="tts_split_sentences" {% if bot.tts_split_sentences %}checked{% endif %} /> Let TTS split sentences (slower first-audio)</label>
+
+      <div class="row" style="margin-top: 12px;">
+        <button type="submit">Save</button>
+        <button class="danger" formaction="/bots/{{ bot.id }}/delete" formmethod="post">Delete</button>
+      </div>
+    </form>
+
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0;">Test Conversation (Mic)</h2>
+        <div class="right"></div>
+        <a class="pill" href="/bots/{{ bot.id }}/conversations">Conversations</a>
+      </div>
+      <div class="muted">Press “Start”, speak, then “Stop”. This stores a test conversation for this bot.</div>
+
+      <div class="row" style="margin-top: 10px;">
+        <label style="margin: 0;"><input type="checkbox" id="speak" checked /> Speak</label>
+        <span class="pill" id="convPill">conversation: (new)</span>
+        <span class="pill" id="statusPill">status: idle</span>
+        <div class="right"></div>
+        <button type="button" id="newConvBtn">New conversation</button>
+        <button type="button" id="startBtn">Start</button>
+        <button type="button" id="stopBtn" disabled>Stop</button>
+      </div>
+
+      <div id="chat" style="margin-top: 12px; display:flex; flex-direction:column; gap:10px;"></div>
+
+      <script>
+        const botId = "{{ bot.id }}";
+        const chat = document.getElementById("chat");
+        const speak = document.getElementById("speak");
+        const startBtn = document.getElementById("startBtn");
+        const stopBtn = document.getElementById("stopBtn");
+        const newConvBtn = document.getElementById("newConvBtn");
+        const convPill = document.getElementById("convPill");
+
+        let conversationId = "";
+        let mediaStream = null;
+        let audioCtx = null;
+        let processor = null;
+        let sourceNode = null;
+        let recorderIsWorklet = false;
+        let chunks = [];
+        let inputSampleRate = 48000;
+
+	        // Playback scheduling
+	        let playCtx = null;
+	        let nextPlayTime = 0;
+	        let ws = null;
+
+	        function setConversation(id) {
+	          conversationId = id || "";
+	          convPill.textContent = conversationId ? `conversation: ${conversationId}` : "conversation: (new)";
+	        }
+
+	        function setStatus(stage) {
+	          document.getElementById("statusPill").textContent = `status: ${stage}`;
+	        }
+
+        function appendBubble(role, text) {
+          const div = document.createElement("div");
+          div.style.maxWidth = "92%";
+          div.style.alignSelf = role === "user" ? "flex-end" : "flex-start";
+          div.style.padding = "10px 12px";
+          div.style.border = "1px solid rgba(120,150,220,0.20)";
+          div.style.borderRadius = "14px";
+          div.style.background = role === "user" ? "rgba(124,135,255,0.12)" : "rgba(155,209,255,0.08)";
+          div.style.whiteSpace = "pre-wrap";
+          div.textContent = text || "";
+          chat.appendChild(div);
+          chat.scrollTop = chat.scrollHeight;
+          return div;
+        }
+
+        function b64ToArrayBuffer(b64) {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          return bytes.buffer;
+        }
+
+        async function queueWav(b64) {
+          if (!playCtx) playCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const buf = await playCtx.decodeAudioData(b64ToArrayBuffer(b64));
+          const src = playCtx.createBufferSource();
+          src.buffer = buf;
+          src.connect(playCtx.destination);
+          if (nextPlayTime < playCtx.currentTime) nextPlayTime = playCtx.currentTime;
+          src.start(nextPlayTime);
+          nextPlayTime += buf.duration;
+        }
+
+        function mergeFloat32(chunks) {
+          let total = 0;
+          for (const c of chunks) total += c.length;
+          const out = new Float32Array(total);
+          let offset = 0;
+          for (const c of chunks) {
+            out.set(c, offset);
+            offset += c.length;
+          }
+          return out;
+        }
+
+        function resampleLinear(input, inRate, outRate) {
+          if (inRate === outRate) return input;
+          const ratio = outRate / inRate;
+          const outLen = Math.round(input.length * ratio);
+          const out = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const pos = i / ratio;
+            const idx = Math.floor(pos);
+            const frac = pos - idx;
+            const s0 = input[idx] || 0;
+            const s1 = input[idx + 1] || s0;
+            out[i] = s0 + (s1 - s0) * frac;
+          }
+          return out;
+        }
+
+	        function encodeWavPCM16(samples, sampleRate) {
+          const buffer = new ArrayBuffer(44 + samples.length * 2);
+          const view = new DataView(buffer);
+          function writeStr(off, s) { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); }
+          writeStr(0, "RIFF");
+          view.setUint32(4, 36 + samples.length * 2, true);
+          writeStr(8, "WAVE");
+          writeStr(12, "fmt ");
+          view.setUint32(16, 16, true);
+          view.setUint16(20, 1, true);
+          view.setUint16(22, 1, true);
+          view.setUint32(24, sampleRate, true);
+          view.setUint32(28, sampleRate * 2, true);
+          view.setUint16(32, 2, true);
+          view.setUint16(34, 16, true);
+          writeStr(36, "data");
+          view.setUint32(40, samples.length * 2, true);
+          let offset = 44;
+          for (let i = 0; i < samples.length; i++, offset += 2) {
+            let s = Math.max(-1, Math.min(1, samples[i]));
+            view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+          }
+	          return buffer;
+	        }
+
+	        function floatToPcm16(samples) {
+	          const out = new Int16Array(samples.length);
+	          for (let i = 0; i < samples.length; i++) {
+	            let s = Math.max(-1, Math.min(1, samples[i]));
+	            out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+	          }
+	          return out;
+	        }
+
+	        async function ensureWs() {
+	          if (ws && ws.readyState === WebSocket.OPEN) return ws;
+	          setStatus("connecting");
+	          const proto = location.protocol === "https:" ? "wss" : "ws";
+	          ws = new WebSocket(`${proto}://${location.host}/ws/bots/${botId}/talk`);
+	          ws.binaryType = "arraybuffer";
+	          await new Promise((resolve, reject) => {
+	            ws.onopen = resolve;
+	            ws.onerror = reject;
+	          });
+	          setStatus("connected");
+	          return ws;
+	        }
+
+	        async function startRec() {
+	          chunks = [];
+	          setStatus("requesting mic");
+	          mediaStream = await navigator.mediaDevices.getUserMedia({
+              audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+            });
+	          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+	          inputSampleRate = audioCtx.sampleRate || 48000;
+          sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+          const zeroGain = audioCtx.createGain();
+          zeroGain.gain.value = 0.0;
+
+          recorderIsWorklet = false;
+          if (audioCtx.audioWorklet && window.AudioWorkletNode) {
+            try {
+              await audioCtx.audioWorklet.addModule("/static/recorder-worklet.js");
+              processor = new AudioWorkletNode(audioCtx, "recorder-worklet");
+              processor.port.onmessage = (ev) => {
+                const data = ev.data;
+                const arr = (data instanceof Float32Array) ? data : new Float32Array(data);
+                chunks.push(arr);
+              };
+              processor.port.postMessage({ cmd: "start" });
+              sourceNode.connect(processor);
+              processor.connect(zeroGain);
+              recorderIsWorklet = true;
+            } catch (e) {
+              recorderIsWorklet = false;
+            }
+          }
+
+          if (!recorderIsWorklet) {
+            processor = audioCtx.createScriptProcessor(4096, 1, 1);
+            processor.onaudioprocess = (e) => {
+              const input = e.inputBuffer.getChannelData(0);
+              chunks.push(new Float32Array(input));
+            };
+            sourceNode.connect(processor);
+            processor.connect(zeroGain);
+          }
+
+	          zeroGain.connect(audioCtx.destination);
+	          startBtn.disabled = true;
+	          stopBtn.disabled = false;
+	          setStatus("recording");
+	        }
+
+	        async function stopRec() {
+	          stopBtn.disabled = true;
+	          startBtn.disabled = false;
+	          setStatus("processing audio");
+            try { if (recorderIsWorklet && processor && processor.port) processor.port.postMessage({ cmd: "stop" }); } catch {}
+            if (recorderIsWorklet) { try { await new Promise(r => setTimeout(r, 60)); } catch {} }
+	          try { processor.disconnect(); } catch {}
+	          try { sourceNode.disconnect(); } catch {}
+	          try { mediaStream.getTracks().forEach(t => t.stop()); } catch {}
+	          try { await audioCtx.close(); } catch {}
+
+	          const merged = mergeFloat32(chunks);
+	          if (!merged.length) {
+	            appendBubble("user", "(no audio)");
+	            setStatus("idle");
+	            return;
+	          }
+	          const resampled = resampleLinear(merged, inputSampleRate, 16000);
+	          const pcm16 = floatToPcm16(resampled);
+
+	          const userBubble = appendBubble("user", "…");
+	          const assistantBubble = appendBubble("assistant", "");
+	          let assistantText = "";
+	          const reqId = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now());
+
+	          const socket = await ensureWs();
+	          socket.onmessage = async (ev) => {
+	            let msg = null;
+	            try { msg = JSON.parse(ev.data); } catch { return; }
+	            if (msg.req_id && msg.req_id !== reqId) return;
+	            if (msg.type === "status") {
+	              setStatus(msg.stage);
+	            } else if (msg.type === "conversation") {
+	              setConversation(msg.id);
+	            } else if (msg.type === "asr") {
+	              userBubble.textContent = msg.text || "(no speech recognized)";
+	            } else if (msg.type === "text_delta") {
+	              assistantText += msg.delta;
+	              assistantBubble.textContent = assistantText;
+	            } else if (msg.type === "audio_wav") {
+	              await queueWav(msg.wav_base64);
+	            } else if (msg.type === "error") {
+	              assistantBubble.textContent += `\\n[error] ${msg.error}`;
+	              setStatus("error");
+	            } else if (msg.type === "done") {
+	              setStatus("idle");
+	            }
+	          };
+
+	          setStatus("sending");
+	          socket.send(JSON.stringify({ type: "start", req_id: reqId, conversation_id: conversationId, test_flag: true, speak: speak.checked }));
+	          socket.send(pcm16.buffer);
+	          socket.send(JSON.stringify({ type: "stop", req_id: reqId }));
+	        }
+
+        startBtn.addEventListener("click", async () => { try { await startRec(); } catch (e) { alert("Mic permission denied."); } });
+        stopBtn.addEventListener("click", async () => { await stopRec(); });
+        newConvBtn.addEventListener("click", () => { setConversation(""); chat.innerHTML = ""; nextPlayTime = 0; });
+
+        async function loadSpeakers() {
+          const model = document.getElementById("xtts_model").value;
+          const sel = document.getElementById("speaker_id");
+          const current = "{{ bot.speaker_id or '' }}";
+          sel.innerHTML = '<option value="">(auto)</option>';
+          try {
+            const r = await fetch(`/api/tts/meta?model_name=${encodeURIComponent(model)}`);
+            if (!r.ok) return;
+            const data = await r.json();
+            const speakers = data.speakers || [];
+            for (const s of speakers) {
+              const opt = document.createElement("option");
+              opt.value = s;
+              opt.textContent = s;
+              if (current && s === current) opt.selected = true;
+              sel.appendChild(opt);
+            }
+          } catch {}
+        }
+        document.getElementById("xtts_model").addEventListener("change", loadSpeakers);
+        loadSpeakers();
+      </script>
+    </div>
+  </div>
+{% endblock %}

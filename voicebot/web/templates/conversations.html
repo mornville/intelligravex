@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1 style="margin: 0;">Conversations{% if bot %} — {{ bot.name }}{% endif %}</h1>
+    <div class="right"></div>
+    {% if bot %}
+      <a class="pill" href="/bots/{{ bot.id }}">Back to bot</a>
+    {% endif %}
+  </div>
+
+  <div class="grid" style="margin-top: 14px;">
+    {% for c in conversations %}
+      <div class="card">
+        <h2>
+          <a href="/conversations/{{ c.id }}">Conversation</a>
+        </h2>
+        <div class="row">
+          <span class="pill">bot: {{ bots_by_id.get(c.bot_id).name if bots_by_id.get(c.bot_id) else c.bot_id }}</span>
+          {% if c.test_flag %}<span class="pill">test</span>{% endif %}
+        </div>
+        <div class="muted" style="margin-top: 8px;">
+          UUID: <code>{{ c.id }}</code><br/>
+          Updated: {{ c.updated_at }}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if not conversations %}
+    <div class="card" style="margin-top: 14px;">
+      <div class="muted">No conversations yet.</div>
+    </div>
+  {% endif %}
+{% endblock %}
+

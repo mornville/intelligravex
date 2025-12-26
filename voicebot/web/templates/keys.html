@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1 style="margin: 0;">Keys</h1>
+    <div class="right"></div>
+    <a class="pill" href="/keys/new">+ New key</a>
+  </div>
+
+  {% if not secret_configured %}
+    <div class="card danger" style="margin-top: 14px;">
+      <div class="muted">Set <code>VOICEBOT_SECRET_KEY</code> in <code>.env</code> to enable encrypted key storage.</div>
+    </div>
+  {% endif %}
+
+  <div class="grid" style="margin-top: 14px;">
+    {% for k in keys %}
+      <div class="card">
+        <h2>{{ k.name }}</h2>
+        <div class="row">
+          <span class="pill">provider: {{ k.provider }}</span>
+          <span class="pill">key: {{ k.hint }}</span>
+        </div>
+        <div class="muted" style="margin-top: 8px;">UUID: <code>{{ k.id }}</code></div>
+        <form style="margin-top: 12px;" method="post" action="/keys/{{ k.id }}/delete">
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if not keys %}
+    <div class="card" style="margin-top: 14px;">
+      <div class="muted">No keys yet.</div>
+      <div style="margin-top: 10px;"><a class="pill" href="/keys/new">Add a key</a></div>
+    </div>
+  {% endif %}
+{% endblock %}

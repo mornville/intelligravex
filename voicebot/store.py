@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import datetime as dt
+from typing import List, Optional
+from uuid import UUID
+
+from sqlmodel import Session, select
+
+from voicebot.crypto import CryptoBox, build_hint
+from voicebot.models import ApiKey, Bot, Conversation, ConversationMessage
+
+
+class NotFoundError(RuntimeError):
+    pass
+
+
+def list_keys(session: Session, *, provider: Optional[str] = None) -> List[ApiKey]:
+    stmt = select(ApiKey)
+    if provider:
+        stmt = stmt.where(ApiKey.provider == provider)
+    stmt = stmt.order_by(ApiKey.created_at.desc())
+    return list(session.exec(stmt))
+
+
+def get_key(session: Session, key_id: UUID) -> ApiKey:
+    key = session.get(ApiKey, key_id)
+    if not key:
+        raise NotFoundError("API key not found")
+    return key
+
+
+def create_key(session: Session, *, crypto: CryptoBox, provider: str, name: str, secret: str) -> ApiKey:
+    k = ApiKey(
+        provider=provider,
+        name=name,
+        hint=build_hint(secret),
+        secret_ciphertext=crypto.encrypt_str(secret),
+    )
+    session.add(k)
+    session.commit()
+    session.refresh(k)
+    return k
+
+
+def delete_key(session: Session, key_id: UUID) -> None:
+    key = session.get(ApiKey, key_id)
+    if not key:
+        return
+    session.delete(key)
+    session.commit()
+
+
+def list_bots(session: Session) -> List[Bot]:
+    stmt = select(Bot).order_by(Bot.updated_at.desc())
+    return list(session.exec(stmt))
+
+
+def get_bot(session: Session, bot_id: UUID) -> Bot:
+    bot = session.get(Bot, bot_id)
+    if not bot:
+        raise NotFoundError("Bot not found")
+    return bot
+
+
+def create_bot(session: Session, bot: Bot) -> Bot:
+    bot.created_at = dt.datetime.now(dt.timezone.utc)
+    bot.updated_at = bot.created_at
+    session.add(bot)
+    session.commit()
+    session.refresh(bot)
+    return bot
+
+
+def update_bot(session: Session, bot_id: UUID, patch: dict) -> Bot:
+    bot = get_bot(session, bot_id)
+    for k, v in patch.items():
+        setattr(bot, k, v)
+    bot.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(bot)
+    session.commit()
+    session.refresh(bot)
+    return bot
+
+
+def delete_bot(session: Session, bot_id: UUID) -> None:
+    bot = session.get(Bot, bot_id)
+    if not bot:
+        return
+    session.delete(bot)
+    session.commit()
+
+
+def decrypt_openai_key(session: Session, *, crypto: CryptoBox, bot: Bot) -> Optional[str]:
+    if not bot.openai_key_id:
+        return None
+    key = get_key(session, bot.openai_key_id)
+    if key.provider != "openai":
+        return None
+    return crypto.decrypt_str(key.secret_ciphertext)
+
+
+def create_conversation(session: Session, *, bot_id: UUID, test_flag: bool) -> Conversation:
+    now = dt.datetime.now(dt.timezone.utc)
+    conv = Conversation(bot_id=bot_id, test_flag=test_flag, created_at=now, updated_at=now)
+    session.add(conv)
+    session.commit()
+    session.refresh(conv)
+    return conv
+
+
+def touch_conversation(session: Session, conv: Conversation) -> None:
+    conv.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(conv)
+    session.commit()
+
+
+def list_conversations(session: Session, *, bot_id: Optional[UUID] = None) -> List[Conversation]:
+    stmt = select(Conversation)
+    if bot_id:
+        stmt = stmt.where(Conversation.bot_id == bot_id)
+    stmt = stmt.order_by(Conversation.updated_at.desc())
+    return list(session.exec(stmt))
+
+
+def get_conversation(session: Session, conversation_id: UUID) -> Conversation:
+    conv = session.get(Conversation, conversation_id)
+    if not conv:
+        raise NotFoundError("Conversation not found")
+    return conv
+
+
+def add_message(session: Session, *, conversation_id: UUID, role: str, content: str) -> ConversationMessage:
+    msg = ConversationMessage(conversation_id=conversation_id, role=role, content=content)
+    session.add(msg)
+    session.commit()
+    session.refresh(msg)
+    conv = session.get(Conversation, conversation_id)
+    if conv:
+        touch_conversation(session, conv)
+    return msg
+
+
+def list_messages(session: Session, *, conversation_id: UUID) -> List[ConversationMessage]:
+    stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
+    stmt = stmt.order_by(ConversationMessage.created_at.asc())
+    return list(session.exec(stmt))
