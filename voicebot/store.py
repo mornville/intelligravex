@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import List, Optional
 from uuid import UUID
 
@@ -136,6 +137,21 @@ def update_conversation_metrics(
     conv.last_tts_first_audio_ms = last_tts_first_audio_ms
     conv.last_total_ms = last_total_ms
     touch_conversation(session, conv)
+
+def merge_conversation_metadata(session: Session, *, conversation_id: UUID, patch: dict) -> dict:
+    conv = get_conversation(session, conversation_id)
+    current: dict = {}
+    try:
+        current = json.loads(conv.metadata_json or "{}")
+        if not isinstance(current, dict):
+            current = {}
+    except Exception:
+        current = {}
+    for k, v in (patch or {}).items():
+        current[str(k)] = v
+    conv.metadata_json = json.dumps(current, ensure_ascii=False)
+    touch_conversation(session, conv)
+    return current
 
 
 def list_conversations(

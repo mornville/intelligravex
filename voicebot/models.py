@@ -53,6 +53,7 @@ class Conversation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     bot_id: UUID = Field(foreign_key="bot.id", index=True)
     test_flag: bool = Field(default=True, index=True)
+    metadata_json: str = Field(default="{}")
     # LLM usage + cost (estimated)
     llm_input_tokens_est: int = Field(default=0)
     llm_output_tokens_est: int = Field(default=0)

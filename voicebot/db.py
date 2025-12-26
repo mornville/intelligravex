@@ -49,6 +49,7 @@ def _apply_light_migrations(engine) -> None:
         add_col("last_llm_total_ms", "INTEGER")
         add_col("last_tts_first_audio_ms", "INTEGER")
         add_col("last_total_ms", "INTEGER")
+        add_col("metadata_json", "TEXT NOT NULL DEFAULT '{}'")
 
         # Bot
         rows = conn.execute(text("PRAGMA table_info(bot)")).fetchall()

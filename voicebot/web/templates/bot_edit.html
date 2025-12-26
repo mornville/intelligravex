@@ -381,6 +381,10 @@
                   assistantText += msg.delta;
                   assistant.bubble.textContent = assistantText;
                   scrollToBottom();
+                } else if (msg.type === "tool_call") {
+                  appendBubble("assistant", `[tool_call] ${msg.name}: ${msg.arguments_json || ""}`);
+                } else if (msg.type === "tool_result") {
+                  appendBubble("assistant", `[tool_result] ${msg.name}: ${JSON.stringify(msg.result || {})}`);
                 } else if (msg.type === "audio_wav") {
                   await queueWav(msg.wav_base64);
                 } else if (msg.type === "metrics") {
@@ -497,6 +501,10 @@
                 assistantText += msg.delta;
                 assistant.bubble.textContent = assistantText;
                 scrollToBottom();
+              } else if (msg.type === "tool_call") {
+                appendBubble("assistant", `[tool_call] ${msg.name}: ${msg.arguments_json || ""}`);
+              } else if (msg.type === "tool_result") {
+                appendBubble("assistant", `[tool_result] ${msg.name}: ${JSON.stringify(msg.result || {})}`);
               } else if (msg.type === "metrics") {
                 setLatencyFromMetrics(msg);
                 assistant.meta.textContent = latencyPill.textContent.replace("latency: ", "");

@@ -14,6 +14,8 @@
 
   <div class="card" style="margin-top: 14px;">
     <h2>Metrics (est.)</h2>
+    <div class="muted" style="margin-top: 6px;">Metadata</div>
+    <pre style="white-space: pre-wrap; margin-top: 6px;">{{ conversation.metadata_json or "{}" }}</pre>
     <div class="row" style="gap: 10px;">
       <span class="pill">input tokens: {{ conversation.llm_input_tokens_est or 0 }}</span>
       <span class="pill">output tokens: {{ conversation.llm_output_tokens_est or 0 }}</span>
