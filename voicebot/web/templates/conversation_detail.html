@@ -52,7 +52,7 @@
               border-radius: 14px;
               background: {% if m.role == 'user' %}rgba(124,135,255,0.10){% elif m.role == 'tool' %}rgba(155,209,255,0.06){% else %}rgba(12,16,28,0.55){% endif %};
               white-space: pre-wrap;
-            ">{{ (m.display if m.display is defined and m.display) else m.content }}</div>
+            ">{{ m.display if (m.display is defined and m.display) else m.content }}</div>
 
           <details style="max-width: 92%;">
             <summary class="muted" style="cursor:pointer;">details</summary>
