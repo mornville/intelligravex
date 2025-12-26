@@ -40,6 +40,7 @@ web = [
   "sqlmodel>=0.0.22",
   "cryptography>=42.0.0",
   "python-multipart>=0.0.9",
+  "tiktoken>=0.7.0",
 ]
 
 [project.scripts]

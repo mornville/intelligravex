@@ -49,6 +49,18 @@ class Conversation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     bot_id: UUID = Field(foreign_key="bot.id", index=True)
     test_flag: bool = Field(default=True, index=True)
+    # LLM usage + cost (estimated)
+    llm_input_tokens_est: int = Field(default=0)
+    llm_output_tokens_est: int = Field(default=0)
+    cost_usd_est: float = Field(default=0.0)
+
+    # Latency (last turn, ms)
+    last_asr_ms: Optional[int] = Field(default=None)
+    last_llm_ttfb_ms: Optional[int] = Field(default=None)
+    last_llm_total_ms: Optional[int] = Field(default=None)
+    last_tts_first_audio_ms: Optional[int] = Field(default=None)
+    last_total_ms: Optional[int] = Field(default=None)
+
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
 

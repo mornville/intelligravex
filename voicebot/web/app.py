@@ -30,6 +30,7 @@ from voicebot.store import (
     create_conversation,
     create_key,
     add_message,
+    update_conversation_metrics,
     decrypt_openai_key,
     delete_bot,
     delete_key,
@@ -38,11 +39,13 @@ from voicebot.store import (
     list_keys,
     get_conversation,
     list_conversations,
+    count_conversations,
     list_messages,
     update_bot,
 )
 from voicebot.tts.xtts import XTTSv2
 from voicebot.utils.text import SentenceChunker
+from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 
 
 class ChatRequest(BaseModel):
@@ -65,7 +68,20 @@ def create_app() -> FastAPI:
     templates = Jinja2Templates(directory=str(templates_dir))
 
     ui_options = {
-        "openai_models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"],
+        "openai_models": [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4.1-nano",
+            "o4-mini",
+            "gpt-5",
+            "gpt-5-chat-latest",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5.1",
+            "gpt-5.1-chat-latest",
+        ],
         "whisper_models": ["tiny", "base", "small", "medium", "large"],
         "whisper_devices": ["auto", "cpu", "mps", "cuda"],
         "languages": ["auto", "en", "hi", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl"],
@@ -100,23 +116,55 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/conversations", response_class=HTMLResponse)
-    def conversations_index(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        convs = list_conversations(session)
+    def conversations_index(
+        request: Request,
+        page: int = 1,
+        page_size: int = 50,
+        session: Session = Depends(get_session),
+    ) -> HTMLResponse:
+        page = max(1, int(page))
+        page_size = min(200, max(10, int(page_size)))
+        offset = (page - 1) * page_size
+        total = count_conversations(session)
+        convs = list_conversations(session, limit=page_size, offset=offset)
         bots = {b.id: b for b in list_bots(session)}
         return templates.TemplateResponse(
             "conversations.html",
-            {"request": request, "conversations": convs, "bots_by_id": bots},
+            {
+                "request": request,
+                "conversations": convs,
+                "bots_by_id": bots,
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+            },
         )
 
     @app.get("/bots/{bot_id}/conversations", response_class=HTMLResponse)
     def bot_conversations(
-        bot_id: UUID, request: Request, session: Session = Depends(get_session)
+        bot_id: UUID,
+        request: Request,
+        page: int = 1,
+        page_size: int = 50,
+        session: Session = Depends(get_session),
     ) -> HTMLResponse:
         bot = get_bot(session, bot_id)
-        convs = list_conversations(session, bot_id=bot_id)
+        page = max(1, int(page))
+        page_size = min(200, max(10, int(page_size)))
+        offset = (page - 1) * page_size
+        total = count_conversations(session, bot_id=bot_id)
+        convs = list_conversations(session, bot_id=bot_id, limit=page_size, offset=offset)
         return templates.TemplateResponse(
             "conversations.html",
-            {"request": request, "conversations": convs, "bots_by_id": {bot.id: bot}, "bot": bot},
+            {
+                "request": request,
+                "conversations": convs,
+                "bots_by_id": {bot.id: bot},
+                "bot": bot,
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+            },
         )
 
     @app.get("/conversations/{conversation_id}", response_class=HTMLResponse)
@@ -348,6 +396,36 @@ def create_app() -> FastAPI:
                 messages.append(Message(role=m.role, content=m.content))
         return messages
 
+    @lru_cache(maxsize=1)
+    def _get_openai_pricing() -> dict[str, ModelPrice]:
+        raw = os.environ.get("OPENAI_PRICING_JSON") or ""
+        if not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {}
+        out: dict[str, ModelPrice] = {}
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if not isinstance(k, str) or not isinstance(v, dict):
+                    continue
+                try:
+                    out[k] = ModelPrice(
+                        input_per_1m=float(v.get("input_per_1m")),
+                        output_per_1m=float(v.get("output_per_1m")),
+                    )
+                except Exception:
+                    continue
+        return out
+
+    def _estimate_llm_cost_for_turn(*, bot: Bot, history: list[Message], assistant_text: str) -> tuple[int, int, float]:
+        prompt_tokens = estimate_messages_tokens(history, bot.openai_model)
+        output_tokens = estimate_text_tokens(assistant_text, bot.openai_model)
+        price = _get_openai_pricing().get(bot.openai_model)
+        cost = estimate_cost_usd(model_price=price, input_tokens=prompt_tokens, output_tokens=output_tokens)
+        return prompt_tokens, output_tokens, cost
+
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False))
 
@@ -366,6 +444,7 @@ def create_app() -> FastAPI:
         conv_id: Optional[UUID] = None
         speak = True
         test_flag = True
+        stop_ts: Optional[float] = None
 
         try:
             while True:
@@ -434,6 +513,7 @@ def create_app() -> FastAPI:
                             active_req_id = None
                             continue
 
+                        stop_ts = time.time()
                         if not audio_buf:
                             await _ws_send_json(ws, {"type": "asr", "req_id": req_id, "text": ""})
                             await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
@@ -444,6 +524,7 @@ def create_app() -> FastAPI:
 
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "asr"})
 
+                        asr_start_ts = time.time()
                         try:
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
@@ -473,10 +554,22 @@ def create_app() -> FastAPI:
                                     pcm16=pcm16,
                                     sample_rate=16000,
                                 )
+                                asr_end_ts = time.time()
 
                                 user_text = (asr.text or "").strip()
                                 await _ws_send_json(ws, {"type": "asr", "req_id": req_id, "text": user_text})
                                 if not user_text:
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "metrics",
+                                            "req_id": req_id,
+                                            "timings_ms": {
+                                                "asr": int(round((asr_end_ts - asr_start_ts) * 1000.0)),
+                                                "total": int(round((time.time() - (stop_ts or asr_start_ts)) * 1000.0)),
+                                            },
+                                        },
+                                    )
                                     await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
                                     await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                                     active_req_id = None
@@ -504,6 +597,7 @@ def create_app() -> FastAPI:
                             continue
 
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                        llm_start_ts = time.time()
 
                         # Stream LLM deltas + TTS audio from background threads.
                         delta_q_client: "queue.Queue[Optional[str]]" = queue.Queue()
@@ -511,6 +605,10 @@ def create_app() -> FastAPI:
                         audio_q: "queue.Queue[Optional[tuple[bytes, int]]]" = queue.Queue()
                         error_q: "queue.Queue[Optional[str]]" = queue.Queue()
                         full_text_parts: list[str] = []
+                        metrics_lock = threading.Lock()
+                        first_token_ts: Optional[float] = None
+                        tts_start_ts: Optional[float] = None
+                        first_audio_ts: Optional[float] = None
 
                         def llm_thread() -> None:
                             try:
@@ -527,6 +625,7 @@ def create_app() -> FastAPI:
                                     delta_q_tts.put(None)
 
                         def tts_thread() -> None:
+                            nonlocal tts_start_ts
                             if not speak:
                                 audio_q.put(None)
                                 return
@@ -540,6 +639,9 @@ def create_app() -> FastAPI:
                                     if d is None:
                                         break
                                     for chunk in local_chunker.push(d):
+                                        with metrics_lock:
+                                            if tts_start_ts is None:
+                                                tts_start_ts = time.time()
                                         a = _tts_synthesize(tts_handle, chunk)
                                         if not did_send_any:
                                             status(req_id, "tts")
@@ -547,6 +649,9 @@ def create_app() -> FastAPI:
                                         audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
                                 tail = local_chunker.flush()
                                 if tail:
+                                    with metrics_lock:
+                                        if tts_start_ts is None:
+                                            tts_start_ts = time.time()
                                     a = _tts_synthesize(tts_handle, tail)
                                     if not did_send_any:
                                         status(req_id, "tts")
@@ -582,6 +687,8 @@ def create_app() -> FastAPI:
                                 if d is None:
                                     open_deltas = False
                                 else:
+                                    if first_token_ts is None:
+                                        first_token_ts = time.time()
                                     await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
                                 sent_any = True
                             except queue.Empty:
@@ -594,6 +701,8 @@ def create_app() -> FastAPI:
                                         open_audio = False
                                     else:
                                         wav, sr = item
+                                        if first_audio_ts is None:
+                                            first_audio_ts = time.time()
                                         await _ws_send_json(
                                             ws,
                                             {
@@ -614,12 +723,46 @@ def create_app() -> FastAPI:
 
                         t1.join()
                         t2.join()
+                        llm_end_ts = time.time()
 
                         final_text = "".join(full_text_parts).strip()
                         with Session(engine) as session:
                             if final_text and conv_id:
                                 add_message(session, conversation_id=conv_id, role="assistant", content=final_text)
 
+                        timings: dict[str, int] = {
+                            "asr": int(round((asr_end_ts - asr_start_ts) * 1000.0)),
+                            "llm_total": int(round((llm_end_ts - llm_start_ts) * 1000.0)),
+                            "total": int(round((time.time() - (stop_ts or llm_start_ts)) * 1000.0)),
+                        }
+                        if first_token_ts is not None:
+                            timings["llm_ttfb"] = int(round((first_token_ts - llm_start_ts) * 1000.0))
+                        if speak and tts_start_ts is not None and first_audio_ts is not None:
+                            timings["tts_first_audio"] = int(round((first_audio_ts - tts_start_ts) * 1000.0))
+                            timings["tts_from_llm_start"] = int(round((first_audio_ts - llm_start_ts) * 1000.0))
+
+                        # Persist aggregates + last latencies (best-effort).
+                        try:
+                            in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                bot=bot, history=history, assistant_text=final_text
+                            )
+                            with Session(engine) as session:
+                                update_conversation_metrics(
+                                    session,
+                                    conversation_id=conv_id,
+                                    add_input_tokens_est=in_tok,
+                                    add_output_tokens_est=out_tok,
+                                    add_cost_usd_est=cost,
+                                    last_asr_ms=timings.get("asr"),
+                                    last_llm_ttfb_ms=timings.get("llm_ttfb"),
+                                    last_llm_total_ms=timings.get("llm_total"),
+                                    last_tts_first_audio_ms=timings.get("tts_first_audio"),
+                                    last_total_ms=timings.get("total"),
+                                )
+                        except Exception:
+                            pass
+
+                        await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
                         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": final_text})
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
 

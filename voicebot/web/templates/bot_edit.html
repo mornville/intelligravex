@@ -121,10 +121,10 @@
         <label style="margin: 0;"><input type="checkbox" id="speak" checked /> Speak</label>
         <span class="pill" id="convPill">conversation: (new)</span>
         <span class="pill" id="statusPill">status: idle</span>
+        <span class="pill" id="latencyPill">latency: —</span>
         <div class="right"></div>
         <button type="button" id="newConvBtn">New conversation</button>
-        <button type="button" id="startBtn">Start</button>
-        <button type="button" id="stopBtn" disabled>Stop</button>
+        <button type="button" id="toggleBtn" class="recBtn">Start</button>
       </div>
 
       <div id="chat" style="margin-top: 12px; display:flex; flex-direction:column; gap:10px;"></div>
@@ -133,10 +133,11 @@
         const botId = "{{ bot.id }}";
         const chat = document.getElementById("chat");
         const speak = document.getElementById("speak");
-        const startBtn = document.getElementById("startBtn");
-        const stopBtn = document.getElementById("stopBtn");
+        const toggleBtn = document.getElementById("toggleBtn");
         const newConvBtn = document.getElementById("newConvBtn");
         const convPill = document.getElementById("convPill");
+        const statusPill = document.getElementById("statusPill");
+        const latencyPill = document.getElementById("latencyPill");
 
         let conversationId = "";
         let mediaStream = null;
@@ -146,6 +147,8 @@
         let recorderIsWorklet = false;
         let chunks = [];
         let inputSampleRate = 48000;
+        let isRecording = false;
+        let isBusy = false;
 
 	        // Playback scheduling
 	        let playCtx = null;
@@ -158,8 +161,38 @@
 	        }
 
 	        function setStatus(stage) {
-	          document.getElementById("statusPill").textContent = `status: ${stage}`;
+	          statusPill.textContent = `status: ${stage}`;
+            statusPill.style.borderColor = stage === "recording" ? "rgba(255, 94, 140, 0.45)" : "rgba(120, 150, 220, 0.22)";
 	        }
+
+          function setRecUi(state) {
+            isRecording = state;
+            toggleBtn.textContent = state ? "Stop" : "Start";
+            toggleBtn.classList.toggle("recOn", state);
+          }
+
+          function setBusy(state) {
+            isBusy = state;
+            toggleBtn.disabled = state;
+            newConvBtn.disabled = state || isRecording;
+            speak.disabled = state || isRecording;
+          }
+
+          function fmtMs(ms) {
+            if (ms === null || ms === undefined) return "—";
+            const s = ms / 1000.0;
+            if (s < 10) return `${s.toFixed(2)}s`;
+            return `${s.toFixed(1)}s`;
+          }
+
+          function setLatencyFromMetrics(m) {
+            const t = m.timings_ms || {};
+            const asr = fmtMs(t.asr);
+            const llm1 = fmtMs(t.llm_ttfb);
+            const tts1 = t.tts_first_audio !== undefined ? fmtMs(t.tts_first_audio) : "—";
+            const total = fmtMs(t.total);
+            latencyPill.textContent = `latency: ASR ${asr} | LLM 1st ${llm1} | TTS 1st ${tts1} | total ${total}`;
+          }
 
         function appendBubble(role, text) {
           const div = document.createElement("div");
@@ -271,6 +304,7 @@
 	        }
 
 	        async function startRec() {
+            if (isBusy) return;
 	          chunks = [];
 	          setStatus("requesting mic");
 	          mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -301,25 +335,25 @@
             }
           }
 
-          if (!recorderIsWorklet) {
-            processor = audioCtx.createScriptProcessor(4096, 1, 1);
-            processor.onaudioprocess = (e) => {
-              const input = e.inputBuffer.getChannelData(0);
-              chunks.push(new Float32Array(input));
-            };
-            sourceNode.connect(processor);
-            processor.connect(zeroGain);
-          }
+	          if (!recorderIsWorklet) {
+	            processor = audioCtx.createScriptProcessor(4096, 1, 1);
+	            processor.onaudioprocess = (e) => {
+	              const input = e.inputBuffer.getChannelData(0);
+	              chunks.push(new Float32Array(input));
+	            };
+	            sourceNode.connect(processor);
+	            processor.connect(zeroGain);
+	          }
 
 	          zeroGain.connect(audioCtx.destination);
-	          startBtn.disabled = true;
-	          stopBtn.disabled = false;
+            setRecUi(true);
 	          setStatus("recording");
 	        }
 
 	        async function stopRec() {
-	          stopBtn.disabled = true;
-	          startBtn.disabled = false;
+            if (!isRecording || isBusy) return;
+            setRecUi(false);
+            setBusy(true);
 	          setStatus("processing audio");
             try { if (recorderIsWorklet && processor && processor.port) processor.port.postMessage({ cmd: "stop" }); } catch {}
             if (recorderIsWorklet) { try { await new Promise(r => setTimeout(r, 60)); } catch {} }
@@ -332,6 +366,7 @@
 	          if (!merged.length) {
 	            appendBubble("user", "(no audio)");
 	            setStatus("idle");
+              setBusy(false);
 	            return;
 	          }
 	          const resampled = resampleLinear(merged, inputSampleRate, 16000);
@@ -341,6 +376,7 @@
 	          const assistantBubble = appendBubble("assistant", "");
 	          let assistantText = "";
 	          const reqId = (crypto.randomUUID && crypto.randomUUID()) || String(Date.now());
+            latencyPill.textContent = "latency: —";
 
 	          const socket = await ensureWs();
 	          socket.onmessage = async (ev) => {
@@ -356,13 +392,17 @@
 	            } else if (msg.type === "text_delta") {
 	              assistantText += msg.delta;
 	              assistantBubble.textContent = assistantText;
+              } else if (msg.type === "metrics") {
+                setLatencyFromMetrics(msg);
 	            } else if (msg.type === "audio_wav") {
 	              await queueWav(msg.wav_base64);
 	            } else if (msg.type === "error") {
 	              assistantBubble.textContent += `\\n[error] ${msg.error}`;
 	              setStatus("error");
+                setBusy(false);
 	            } else if (msg.type === "done") {
 	              setStatus("idle");
+                setBusy(false);
 	            }
 	          };
 
@@ -372,8 +412,16 @@
 	          socket.send(JSON.stringify({ type: "stop", req_id: reqId }));
 	        }
 
-        startBtn.addEventListener("click", async () => { try { await startRec(); } catch (e) { alert("Mic permission denied."); } });
-        stopBtn.addEventListener("click", async () => { await stopRec(); });
+        toggleBtn.addEventListener("click", async () => {
+          try {
+            if (!isRecording) await startRec();
+            else await stopRec();
+          } catch (e) {
+            setRecUi(false);
+            setBusy(false);
+            alert("Mic permission denied.");
+          }
+        });
         newConvBtn.addEventListener("click", () => { setConversation(""); chat.innerHTML = ""; nextPlayTime = 0; });
 
         async function loadSpeakers() {
@@ -398,6 +446,19 @@
         document.getElementById("xtts_model").addEventListener("change", loadSpeakers);
         loadSpeakers();
       </script>
+
+      <style>
+        .recBtn.recOn {
+          border-color: rgba(255, 94, 140, 0.55);
+          background: linear-gradient(180deg, rgba(64, 16, 32, 0.9), rgba(28, 10, 20, 0.9));
+          animation: recPulse 1.2s ease-in-out infinite;
+        }
+        @keyframes recPulse {
+          0% { box-shadow: 0 0 0 rgba(255, 94, 140, 0.0); transform: translateY(0); }
+          50% { box-shadow: 0 0 18px rgba(255, 94, 140, 0.18); transform: translateY(-1px); }
+          100% { box-shadow: 0 0 0 rgba(255, 94, 140, 0.0); transform: translateY(0); }
+        }
+      </style>
     </div>
   </div>
 {% endblock %}

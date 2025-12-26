@@ -113,13 +113,48 @@ def touch_conversation(session: Session, conv: Conversation) -> None:
     session.add(conv)
     session.commit()
 
+def update_conversation_metrics(
+    session: Session,
+    *,
+    conversation_id: UUID,
+    add_input_tokens_est: int,
+    add_output_tokens_est: int,
+    add_cost_usd_est: float,
+    last_asr_ms: Optional[int],
+    last_llm_ttfb_ms: Optional[int],
+    last_llm_total_ms: Optional[int],
+    last_tts_first_audio_ms: Optional[int],
+    last_total_ms: Optional[int],
+) -> None:
+    conv = get_conversation(session, conversation_id)
+    conv.llm_input_tokens_est = int(conv.llm_input_tokens_est or 0) + int(add_input_tokens_est or 0)
+    conv.llm_output_tokens_est = int(conv.llm_output_tokens_est or 0) + int(add_output_tokens_est or 0)
+    conv.cost_usd_est = float(conv.cost_usd_est or 0.0) + float(add_cost_usd_est or 0.0)
+    conv.last_asr_ms = last_asr_ms
+    conv.last_llm_ttfb_ms = last_llm_ttfb_ms
+    conv.last_llm_total_ms = last_llm_total_ms
+    conv.last_tts_first_audio_ms = last_tts_first_audio_ms
+    conv.last_total_ms = last_total_ms
+    touch_conversation(session, conv)
 
-def list_conversations(session: Session, *, bot_id: Optional[UUID] = None) -> List[Conversation]:
+
+def list_conversations(
+    session: Session, *, bot_id: Optional[UUID] = None, limit: int = 50, offset: int = 0
+) -> List[Conversation]:
     stmt = select(Conversation)
     if bot_id:
         stmt = stmt.where(Conversation.bot_id == bot_id)
     stmt = stmt.order_by(Conversation.updated_at.desc())
+    stmt = stmt.offset(int(offset)).limit(int(limit))
     return list(session.exec(stmt))
+
+def count_conversations(session: Session, *, bot_id: Optional[UUID] = None) -> int:
+    from sqlmodel import func
+
+    stmt = select(func.count(Conversation.id))
+    if bot_id:
+        stmt = stmt.where(Conversation.bot_id == bot_id)
+    return int(session.exec(stmt).one())
 
 
 def get_conversation(session: Session, conversation_id: UUID) -> Conversation:
