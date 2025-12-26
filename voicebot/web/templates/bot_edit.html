@@ -391,7 +391,9 @@
             if (isBusy) return;
             if (!conversationId) {
               const ok = await initConversation();
-              if (!ok) return;
+              // Important: don't start recording while the assistant is greeting / speaking.
+              // User can press Start again after the conversation is initialized.
+              return;
             }
 	          chunks = [];
 	          setStatus("requesting mic");
