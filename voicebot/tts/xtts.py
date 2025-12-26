@@ -20,7 +20,11 @@ class XTTSv2:
         self,
         *,
         model_name: str,
+        speaker_wav: Optional[str],
+        speaker_id: Optional[str],
         use_gpu: bool,
+        split_sentences: bool,
+        language: str,
     ) -> None:
         # Ensure MPS shims are present before importing Coqui TTS.
         try:
@@ -47,9 +51,17 @@ class XTTSv2:
             log.exception("Failed to move XTTS model to device=%s; falling back to CPU", self._device)
             self._device = "cpu"
             self._tts.synthesizer.tts_model.to(self._device)
-        self._model_name = model_name
-        self._speakers = list(getattr(self._tts, "speakers", None) or [])
-        self._languages = list(getattr(self._tts, "languages", None) or [])
+        self._speaker_wav = speaker_wav
+        self._speaker_id = speaker_id or self._default_speaker_id()
+        self._language = language
+        self._split_sentences = split_sentences
+
+        if self._speaker_wav:
+            log.info("XTTS voice: speaker_wav=%s", self._speaker_wav)
+        elif self._speaker_id:
+            log.info("XTTS voice: speaker_id=%s", self._speaker_id)
+        else:
+            log.warning("XTTS voice: no speaker_wav or speaker_id; synthesis may fail for XTTS.")
 
     @staticmethod
     def _resolve_device(requested: bool) -> str:
@@ -67,29 +79,18 @@ class XTTSv2:
         return "cpu"
 
     def _default_speaker_id(self) -> Optional[str]:
-        if not self._speakers:
+        speakers = getattr(self._tts, "speakers", None)
+        if not speakers:
             return None
-        return self._speakers[0]
+        return speakers[0]
 
-    def meta(self) -> dict:
-        return {"speakers": list(self._speakers), "languages": list(self._languages)}
-
-    def synthesize(
-        self,
-        text: str,
-        *,
-        speaker_wav: Optional[str],
-        speaker_id: Optional[str],
-        language: str,
-        split_sentences: bool,
-    ) -> TtsAudio:
-        speaker = (speaker_id or "").strip() or self._default_speaker_id()
+    def synthesize(self, text: str) -> TtsAudio:
         wav = self._tts.tts(
             text=text,
-            speaker=speaker,
-            speaker_wav=(speaker_wav or "").strip() or None,
-            language=(language or "").strip() or None,
-            split_sentences=bool(split_sentences),
+            speaker=self._speaker_id,
+            speaker_wav=self._speaker_wav,
+            language=self._language,
+            split_sentences=self._split_sentences,
         )
         audio = np.asarray(wav, dtype=np.float32)
         sr = int(getattr(self._tts.synthesizer, "output_sample_rate", 24000))

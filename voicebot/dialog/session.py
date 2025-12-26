@@ -39,7 +39,11 @@ class VoiceBotSession:
         self._llm = OpenAILLM(model=settings.openai_model, api_key=settings.openai_api_key)
         self._tts = XTTSv2(
             model_name=settings.xtts_model,
+            speaker_wav=settings.speaker_wav,
+            speaker_id=settings.speaker_id,
             use_gpu=settings.tts_use_gpu,
+            split_sentences=settings.tts_split_sentences,
+            language=settings.tts_language,
         )
         self._player = AudioPlayer(device=parse_device(settings.output_device))
         self._vad = VadSegmenter(
@@ -107,13 +111,7 @@ class VoiceBotSession:
                     q_audio.put(None)
                     return
                 try:
-                    audio = self._tts.synthesize(
-                        job.text,
-                        speaker_wav=self.settings.speaker_wav,
-                        speaker_id=self.settings.speaker_id,
-                        language=self.settings.tts_language,
-                        split_sentences=self.settings.tts_split_sentences,
-                    )
+                    audio = self._tts.synthesize(job.text)
                     q_audio.put(audio)
                 except Exception:
                     log.exception("TTS synthesis failed")
