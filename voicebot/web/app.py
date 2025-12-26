@@ -48,6 +48,7 @@ from voicebot.store import (
 from voicebot.tts.xtts import XTTSv2
 from voicebot.utils.text import SentenceChunker
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
+from voicebot.tools.set_metadata import set_metadata_tool_def
 
 
 class ChatRequest(BaseModel):
@@ -418,21 +419,7 @@ def create_app() -> FastAPI:
         return messages
 
     def _set_metadata_tool_def() -> dict:
-        return {
-            "type": "function",
-            # Responses API expects function fields at the top-level of the tool object.
-            "name": "set_metadata",
-            "description": (
-                "Set or update conversation metadata as key/value pairs. "
-                "Include a 'next_reply' string to say to the user after updating metadata."
-            ),
-            "parameters": {
-                "type": "object",
-                "required": ["next_reply"],
-                "additionalProperties": True,
-            },
-            "strict": False,
-        }
+        return set_metadata_tool_def()
 
     @lru_cache(maxsize=1)
     def _get_openai_pricing() -> dict[str, ModelPrice]:
