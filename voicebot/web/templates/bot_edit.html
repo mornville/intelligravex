@@ -118,7 +118,7 @@
 
       <div class="row" style="margin-top: 12px;">
         <button type="submit">Save</button>
-        <button class="danger" formaction="/bots/{{ bot.id }}/delete" formmethod="post">Delete</button>
+        <button class="danger" formaction="/bots/{{ bot.id }}/delete" formmethod="post" onclick="return confirm('Delete this bot? This is NOT reversible.');">Delete</button>
       </div>
     </form>
 

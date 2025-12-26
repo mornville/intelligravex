@@ -412,23 +412,26 @@ def create_app() -> FastAPI:
         for m in list_messages(session, conversation_id=conversation_id):
             if m.role in ("user", "assistant"):
                 messages.append(Message(role=m.role, content=m.content))
+            elif m.role == "tool":
+                # Store tool calls/results as system breadcrumbs to prevent repeated calls.
+                messages.append(Message(role="system", content=f"Tool event: {m.content}"))
         return messages
 
     def _set_metadata_tool_def() -> dict:
         return {
             "type": "function",
-            "function": {
-                "name": "set_metadata",
-                "description": (
-                    "Set or update conversation metadata as key/value pairs. "
-                    "Include a 'next_reply' string to say to the user after updating metadata."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "required": ["next_reply"],
-                    "additionalProperties": True,
-                },
+            # Responses API expects function fields at the top-level of the tool object.
+            "name": "set_metadata",
+            "description": (
+                "Set or update conversation metadata as key/value pairs. "
+                "Include a 'next_reply' string to say to the user after updating metadata."
+            ),
+            "parameters": {
+                "type": "object",
+                "required": ["next_reply"],
+                "additionalProperties": True,
             },
+            "strict": False,
         }
 
     @lru_cache(maxsize=1)
@@ -497,6 +500,7 @@ def create_app() -> FastAPI:
             input_tokens_est: Optional[int] = None
             output_tokens_est: Optional[int] = None
             cost_usd_est: Optional[float] = None
+            sent_greeting_delta = False
 
             if bot.start_message_mode == "static" and greeting_text:
                 # Static greeting (no LLM).
@@ -515,6 +519,7 @@ def create_app() -> FastAPI:
                         first = time.time()
                     parts.append(d)
                     await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+                    sent_greeting_delta = True
                 t1 = time.time()
                 greeting_text = "".join(parts).strip()
                 if first is not None:
@@ -531,6 +536,10 @@ def create_app() -> FastAPI:
 
             if not greeting_text:
                 greeting_text = "Hi! How can I help you today?"
+
+            # If this was static (or LLM produced no streamed deltas), still send text to UI.
+            if not sent_greeting_delta:
+                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": greeting_text})
 
             # Store assistant greeting as first message.
             add_message_with_metrics(
