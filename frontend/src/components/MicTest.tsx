@@ -4,7 +4,7 @@ import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
 
-type Stage = 'disconnected' | 'idle' | 'init' | 'asr' | 'llm' | 'tts' | 'error'
+type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
 
 type Timings = Partial<{
   asr: number
@@ -44,6 +44,7 @@ export default function MicTest({ botId }: { botId: string }) {
   const [items, setItems] = useState<ChatItem[]>([])
   const [recording, setRecording] = useState(false)
   const [lastTimings, setLastTimings] = useState<Timings>({})
+  const [chatText, setChatText] = useState('')
 
   const wsRef = useRef<WebSocket | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
@@ -91,7 +92,8 @@ export default function MicTest({ botId }: { botId: string }) {
         return
       }
       if (msg.type === 'conversation') {
-        if (msg.conversation_id) setConversationId(String(msg.conversation_id))
+        const cid = msg.conversation_id || msg.id
+        if (cid) setConversationId(String(cid))
         return
       }
       if (msg.type === 'metrics') {
@@ -198,6 +200,35 @@ export default function MicTest({ botId }: { botId: string }) {
     wsRef.current.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag }))
   }
 
+  async function sendChat() {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setErr('WebSocket not connected')
+      return
+    }
+    if (!conversationId) {
+      setErr('Start a conversation first.')
+      return
+    }
+    const text = chatText.trim()
+    if (!text) return
+    if (stage !== 'idle') return
+    setErr(null)
+    setChatText('')
+    setItems((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', text }])
+    const reqId = crypto.randomUUID()
+    activeReqIdRef.current = reqId
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'chat',
+        req_id: reqId,
+        conversation_id: conversationId,
+        speak,
+        test_flag: testFlag,
+        text,
+      }),
+    )
+  }
+
   async function startRecording() {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setErr('WebSocket not connected')
@@ -274,6 +305,26 @@ export default function MicTest({ botId }: { botId: string }) {
         {recordBtn}
         {recording ? <div className="recDot" title="Recording" /> : null}
       </div>
+
+      {!speak ? (
+        <div className="row gap" style={{ marginTop: 10 }}>
+          <input
+            value={chatText}
+            onChange={(e) => setChatText(e.target.value)}
+            placeholder="Type a message…"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                void sendChat()
+              }
+            }}
+            disabled={!conversationId || stage !== 'idle'}
+          />
+          <button className="btn primary" onClick={() => void sendChat()} disabled={!conversationId || stage !== 'idle' || !chatText.trim()}>
+            Send
+          </button>
+        </div>
+      ) : null}
 
       <div className="muted mono">
         conversation: {conversationId || '(none)'} | latency: ASR {fmtMs(lastTimings.asr)} | LLM 1st {fmtMs(lastTimings.llm_ttfb)} |

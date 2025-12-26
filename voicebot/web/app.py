@@ -763,7 +763,10 @@ def create_app() -> FastAPI:
                             active_req_id = None
                             conv_id = None
                             continue
-                        await _ws_send_json(ws, {"type": "conversation", "req_id": req_id, "id": str(conv_id)})
+                        await _ws_send_json(
+                            ws,
+                            {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
+                        )
                         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                         active_req_id = None
@@ -810,8 +813,388 @@ def create_app() -> FastAPI:
                             conv_id = None
                             continue
 
-                        await _ws_send_json(ws, {"type": "conversation", "req_id": req_id, "id": str(conv_id)})
+                        await _ws_send_json(
+                            ws,
+                            {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
+                        )
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "recording"})
+
+                    elif msg_type == "chat":
+                        # Text-only chat turn (for when Speak is disabled).
+                        if not req_id:
+                            await _ws_send_json(ws, {"type": "error", "error": "Missing req_id"})
+                            continue
+                        if active_req_id is not None:
+                            await _ws_send_json(
+                                ws,
+                                {
+                                    "type": "error",
+                                    "req_id": req_id,
+                                    "error": "Another request is already in progress",
+                                },
+                            )
+                            continue
+
+                        active_req_id = req_id
+                        speak = bool(payload.get("speak", True))
+                        test_flag = bool(payload.get("test_flag", True))
+                        user_text = str(payload.get("text") or "").strip()
+                        conversation_id_str = str(payload.get("conversation_id") or "").strip()
+                        if not user_text:
+                            await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": "Empty text"})
+                            await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                            active_req_id = None
+                            continue
+
+                        try:
+                            with Session(engine) as session:
+                                bot = get_bot(session, bot_id)
+                                if conversation_id_str:
+                                    conv_id = UUID(conversation_id_str)
+                                    conv = get_conversation(session, conv_id)
+                                    if conv.bot_id != bot.id:
+                                        raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
+                                else:
+                                    conv = create_conversation(session, bot_id=bot.id, test_flag=test_flag)
+                                    conv_id = conv.id
+                        except Exception as exc:
+                            await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
+                            await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                            active_req_id = None
+                            conv_id = None
+                            continue
+
+                        await _ws_send_json(
+                            ws,
+                            {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
+                        )
+
+                        try:
+                            with Session(engine) as session:
+                                bot = get_bot(session, bot_id)
+                                if bot.openai_key_id:
+                                    crypto = require_crypto()
+                                    api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
+                                else:
+                                    api_key = os.environ.get("OPENAI_API_KEY")
+                                if not api_key:
+                                    raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+
+                                add_message_with_metrics(
+                                    session,
+                                    conversation_id=conv_id,
+                                    role="user",
+                                    content=user_text,
+                                )
+                                history = _build_history(session, bot, conv_id)
+                                llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                                tts_handle = await asyncio.to_thread(
+                                    _get_tts_handle,
+                                    bot.xtts_model,
+                                    bot.speaker_wav,
+                                    bot.speaker_id,
+                                    True,
+                                    bot.tts_split_sentences,
+                                    bot.tts_language,
+                                )
+                        except Exception as exc:
+                            await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
+                            await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                            active_req_id = None
+                            conv_id = None
+                            continue
+
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                        llm_start_ts = time.time()
+
+                        delta_q_client: "queue.Queue[Optional[str]]" = queue.Queue()
+                        delta_q_tts: "queue.Queue[Optional[str]]" = queue.Queue()
+                        audio_q: "queue.Queue[Optional[tuple[bytes, int]]]" = queue.Queue()
+                        tool_q: "queue.Queue[Optional[ToolCall]]" = queue.Queue()
+                        error_q: "queue.Queue[Optional[str]]" = queue.Queue()
+                        full_text_parts: list[str] = []
+                        metrics_lock = threading.Lock()
+                        first_token_ts: Optional[float] = None
+                        tts_start_ts: Optional[float] = None
+                        first_audio_ts: Optional[float] = None
+
+                        def llm_thread() -> None:
+                            try:
+                                tools = [_set_metadata_tool_def()]
+                                for ev in llm.stream_text_or_tool(messages=history, tools=tools):
+                                    if isinstance(ev, ToolCall):
+                                        tool_q.put(ev)
+                                        break
+                                    d = ev
+                                    full_text_parts.append(d)
+                                    delta_q_client.put(d)
+                                    if speak:
+                                        delta_q_tts.put(d)
+                            except Exception as exc:
+                                error_q.put(str(exc))
+                            finally:
+                                delta_q_client.put(None)
+                                if speak:
+                                    delta_q_tts.put(None)
+                                tool_q.put(None)
+
+                        def tts_thread() -> None:
+                            nonlocal tts_start_ts
+                            if not speak:
+                                audio_q.put(None)
+                                return
+                            try:
+                                local_chunker = SentenceChunker(
+                                    min_chars=bot.tts_chunk_min_chars, max_chars=bot.tts_chunk_max_chars
+                                )
+                                did_send_any = False
+                                while True:
+                                    d = delta_q_tts.get()
+                                    if d is None:
+                                        break
+                                    for chunk in local_chunker.push(d):
+                                        with metrics_lock:
+                                            if tts_start_ts is None:
+                                                tts_start_ts = time.time()
+                                        a = _tts_synthesize(tts_handle, chunk)
+                                        if not did_send_any:
+                                            status(req_id, "tts")
+                                            did_send_any = True
+                                        audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                                tail = local_chunker.flush()
+                                if tail:
+                                    with metrics_lock:
+                                        if tts_start_ts is None:
+                                            tts_start_ts = time.time()
+                                    a = _tts_synthesize(tts_handle, tail)
+                                    if not did_send_any:
+                                        status(req_id, "tts")
+                                        did_send_any = True
+                                    audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                            except Exception as exc:
+                                error_q.put(f"TTS failed: {exc}")
+                            finally:
+                                audio_q.put(None)
+
+                        t1 = threading.Thread(target=llm_thread, daemon=True)
+                        t2 = threading.Thread(target=tts_thread, daemon=True)
+                        t1.start()
+                        t2.start()
+
+                        open_deltas = True
+                        open_audio = True
+                        tool_call: Optional[ToolCall] = None
+                        while open_deltas or open_audio:
+                            try:
+                                err = error_q.get_nowait()
+                                if err:
+                                    await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": err})
+                                    open_deltas = False
+                                    open_audio = False
+                                    break
+                            except queue.Empty:
+                                pass
+
+                            try:
+                                tc = tool_q.get_nowait()
+                                if tc is not None:
+                                    tool_call = tc
+                                    open_deltas = False
+                                    open_audio = False
+                                    break
+                            except queue.Empty:
+                                pass
+
+                            try:
+                                d = delta_q_client.get_nowait()
+                                if d is None:
+                                    open_deltas = False
+                                else:
+                                    if first_token_ts is None:
+                                        first_token_ts = time.time()
+                                    await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+                            except queue.Empty:
+                                pass
+
+                            if speak:
+                                try:
+                                    item = audio_q.get_nowait()
+                                    if item is None:
+                                        open_audio = False
+                                    else:
+                                        wav, sr = item
+                                        if first_audio_ts is None:
+                                            first_audio_ts = time.time()
+                                        await _ws_send_json(
+                                            ws,
+                                            {
+                                                "type": "audio_wav",
+                                                "req_id": req_id,
+                                                "wav_base64": base64.b64encode(wav).decode(),
+                                                "sr": sr,
+                                            },
+                                        )
+                                except queue.Empty:
+                                    pass
+                            else:
+                                open_audio = False
+
+                            if (open_deltas or open_audio) and first_token_ts is None:
+                                time.sleep(0.01)
+                            else:
+                                time.sleep(0.005)
+
+                        t1.join()
+                        t2.join()
+
+                        llm_end_ts = time.time()
+                        final_text = "".join(full_text_parts).strip()
+
+                        timings: dict[str, int] = {"total": int(round((llm_end_ts - llm_start_ts) * 1000.0))}
+                        if first_token_ts is not None:
+                            timings["llm_ttfb"] = int(round((first_token_ts - llm_start_ts) * 1000.0))
+                        timings["llm_total"] = int(round((llm_end_ts - llm_start_ts) * 1000.0))
+                        if first_audio_ts is not None and tts_start_ts is not None:
+                            timings["tts_first_audio"] = int(round((first_audio_ts - tts_start_ts) * 1000.0))
+
+                        await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
+
+                        if tool_call is not None and conv_id is not None:
+                            await _ws_send_json(
+                                ws,
+                                {
+                                    "type": "tool_call",
+                                    "req_id": req_id,
+                                    "name": tool_call.name,
+                                    "arguments_json": tool_call.arguments_json,
+                                },
+                            )
+                            try:
+                                tool_args = json.loads(tool_call.arguments_json or "{}")
+                                if not isinstance(tool_args, dict):
+                                    raise ValueError("tool args must be an object")
+                            except Exception as exc:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
+                                await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
+                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                                active_req_id = None
+                                conv_id = None
+                                continue
+
+                            next_reply = str(tool_args.get("next_reply") or "").strip()
+                            meta_patch = dict(tool_args)
+                            meta_patch.pop("next_reply", None)
+
+                            with Session(engine) as session:
+                                add_message_with_metrics(
+                                    session,
+                                    conversation_id=conv_id,
+                                    role="tool",
+                                    content=json.dumps({"tool": tool_call.name, "arguments": tool_args}, ensure_ascii=False),
+                                )
+                                new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=meta_patch)
+                                tool_result = {"ok": True, "updated": meta_patch, "metadata": new_meta}
+                                add_message_with_metrics(
+                                    session,
+                                    conversation_id=conv_id,
+                                    role="tool",
+                                    content=json.dumps({"tool": tool_call.name, "result": tool_result}, ensure_ascii=False),
+                                )
+
+                            await _ws_send_json(
+                                ws,
+                                {"type": "tool_result", "req_id": req_id, "name": tool_call.name, "result": tool_result},
+                            )
+
+                            if next_reply:
+                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": next_reply})
+                                try:
+                                    in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                        bot=bot, history=history, assistant_text=next_reply
+                                    )
+                                    with Session(engine) as session:
+                                        add_message_with_metrics(
+                                            session,
+                                            conversation_id=conv_id,
+                                            role="assistant",
+                                            content=next_reply,
+                                            input_tokens_est=in_tok,
+                                            output_tokens_est=out_tok,
+                                            cost_usd_est=cost,
+                                            llm_ttfb_ms=timings.get("llm_ttfb"),
+                                            llm_total_ms=timings.get("llm_total"),
+                                            total_ms=timings.get("total"),
+                                        )
+                                        update_conversation_metrics(
+                                            session,
+                                            conversation_id=conv_id,
+                                            add_input_tokens_est=in_tok,
+                                            add_output_tokens_est=out_tok,
+                                            add_cost_usd_est=cost,
+                                            last_asr_ms=None,
+                                            last_llm_ttfb_ms=timings.get("llm_ttfb"),
+                                            last_llm_total_ms=timings.get("llm_total"),
+                                            last_tts_first_audio_ms=None,
+                                            last_total_ms=timings.get("total"),
+                                        )
+                                except Exception:
+                                    pass
+
+                                if speak:
+                                    status(req_id, "tts")
+                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, next_reply)
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "audio_wav",
+                                            "req_id": req_id,
+                                            "wav_base64": base64.b64encode(_wav_bytes(a.audio, a.sample_rate)).decode(),
+                                            "sr": a.sample_rate,
+                                        },
+                                    )
+
+                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": next_reply})
+                        else:
+                            # Store assistant response.
+                            try:
+                                in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                    bot=bot, history=history, assistant_text=final_text
+                                )
+                                with Session(engine) as session:
+                                    add_message_with_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        role="assistant",
+                                        content=final_text,
+                                        input_tokens_est=in_tok,
+                                        output_tokens_est=out_tok,
+                                        cost_usd_est=cost,
+                                        llm_ttfb_ms=timings.get("llm_ttfb"),
+                                        llm_total_ms=timings.get("llm_total"),
+                                        tts_first_audio_ms=timings.get("tts_first_audio"),
+                                        total_ms=timings.get("total"),
+                                    )
+                                    update_conversation_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        add_input_tokens_est=in_tok,
+                                        add_output_tokens_est=out_tok,
+                                        add_cost_usd_est=cost,
+                                        last_asr_ms=None,
+                                        last_llm_ttfb_ms=timings.get("llm_ttfb"),
+                                        last_llm_total_ms=timings.get("llm_total"),
+                                        last_tts_first_audio_ms=timings.get("tts_first_audio"),
+                                        last_total_ms=timings.get("total"),
+                                    )
+                            except Exception:
+                                pass
+
+                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": final_text})
+
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                        active_req_id = None
+                        conv_id = None
+                        continue
 
                     elif msg_type == "stop":
                         if not req_id or active_req_id != req_id:
