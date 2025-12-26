@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BACKEND_URL } from '../api/client'
+import { apiGet, BACKEND_URL } from '../api/client'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
+import type { ConversationDetail } from '../types'
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
 
@@ -54,6 +55,43 @@ export default function MicTest({ botId }: { botId: string }) {
   const draftAssistantIdRef = useRef<string | null>(null)
   const timingsByReq = useRef<Record<string, Timings>>({})
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const hydratedConvIdRef = useRef<string | null>(null)
+
+  async function hydrateConversation(cid: string) {
+    if (!cid) return
+    if (hydratedConvIdRef.current === cid && items.length > 0) return
+    try {
+      const d = await apiGet<ConversationDetail>(`/api/conversations/${cid}`)
+      hydratedConvIdRef.current = cid
+      const mapped: ChatItem[] = d.messages.map((m) => {
+        let role: ChatItem['role'] = m.role === 'assistant' ? 'assistant' : m.role === 'tool' ? 'tool' : 'user'
+        let text = m.content
+        if (m.role === 'tool') {
+          if (m.tool_name && m.tool_kind) text = `[tool_${m.tool_kind}] ${m.tool_name}`
+          else if (m.tool_name) text = `[tool] ${m.tool_name}`
+          else text = '[tool]'
+        }
+        return {
+          id: m.id,
+          role,
+          text,
+          details: m.role === 'tool' ? m.tool : undefined,
+          timings: m.metrics
+            ? {
+                asr: m.metrics.asr ?? undefined,
+                llm_ttfb: m.metrics.llm1 ?? undefined,
+                llm_total: m.metrics.llm ?? undefined,
+                tts_first_audio: m.metrics.tts1 ?? undefined,
+                total: m.metrics.total ?? undefined,
+              }
+            : undefined,
+        }
+      })
+      setItems(mapped)
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
 
   const canInit = useMemo(() => stage === 'idle' || stage === 'disconnected' || stage === 'error', [stage])
   const canRecord = useMemo(() => speak && stage === 'idle' && !!conversationId, [speak, stage, conversationId])
@@ -94,7 +132,11 @@ export default function MicTest({ botId }: { botId: string }) {
       }
       if (msg.type === 'conversation') {
         const cid = msg.conversation_id || msg.id
-        if (cid) setConversationId(String(cid))
+        if (cid) {
+          const s = String(cid)
+          setConversationId(s)
+          void hydrateConversation(s)
+        }
         return
       }
       if (msg.type === 'metrics') {
@@ -196,6 +238,7 @@ export default function MicTest({ botId }: { botId: string }) {
     setErr(null)
     setConversationId(null)
     setItems([])
+    hydratedConvIdRef.current = null
     const reqId = crypto.randomUUID()
     activeReqIdRef.current = reqId
     wsRef.current.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag }))
