@@ -176,7 +176,66 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         conv = get_conversation(session, conversation_id)
         bot = get_bot(session, conv.bot_id)
-        msgs = list_messages(session, conversation_id=conversation_id)
+        msgs_raw = list_messages(session, conversation_id=conversation_id)
+
+        def _safe_json_loads(s: str) -> dict | None:
+            try:
+                obj = json.loads(s)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                return None
+
+        msgs: list[dict] = []
+        for m in msgs_raw:
+            tool_obj = _safe_json_loads(m.content) if m.role == "tool" else None
+            tool_name = None
+            tool_kind = None
+            display = m.content
+            if tool_obj and isinstance(tool_obj.get("tool"), str):
+                tool_name = tool_obj.get("tool")
+                if "arguments" in tool_obj:
+                    tool_kind = "call"
+                elif "result" in tool_obj:
+                    tool_kind = "result"
+                try:
+                    if tool_kind == "call":
+                        args = tool_obj.get("arguments") or {}
+                        if isinstance(args, dict):
+                            keys = [k for k in args.keys() if k != "next_reply"]
+                            display = f"Tool call: {tool_name} ({', '.join(keys) or 'no keys'})"
+                    elif tool_kind == "result":
+                        res = tool_obj.get("result") or {}
+                        if isinstance(res, dict):
+                            updated = res.get("updated") or {}
+                            if isinstance(updated, dict):
+                                display = f"Tool result: {tool_name} (updated {', '.join(updated.keys()) or 'none'})"
+                            else:
+                                display = f"Tool result: {tool_name}"
+                except Exception:
+                    display = f"Tool: {tool_name}"
+
+            metrics = {
+                "in": m.input_tokens_est,
+                "out": m.output_tokens_est,
+                "cost": m.cost_usd_est,
+                "asr": m.asr_ms,
+                "llm1": m.llm_ttfb_ms,
+                "llm": m.llm_total_ms,
+                "tts1": m.tts_first_audio_ms,
+                "total": m.total_ms,
+            }
+            msgs.append(
+                {
+                    "role": m.role,
+                    "created_at": m.created_at,
+                    "content": m.content,
+                    "display": display,
+                    "tool": tool_obj,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "metrics": metrics,
+                }
+            )
         return templates.TemplateResponse(
             "conversation_detail.html",
             {"request": request, "conversation": conv, "bot": bot, "messages": msgs},

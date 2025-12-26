@@ -6,12 +6,12 @@
     <title>{{ title if title else "VoiceBot Studio" }}</title>
     <style>
       :root{
-        --bg0:#05070f;
-        --bg1:#070b18;
-        --card0:rgba(16, 24, 48, 0.72);
-        --card1:rgba(10, 18, 40, 0.78);
-        --stroke:rgba(120, 150, 220, 0.18);
-        --stroke2:rgba(120, 150, 220, 0.28);
+        --bg0:#000000;
+        --bg1:#05060a;
+        --card0:rgba(8, 10, 16, 0.84);
+        --card1:rgba(6, 8, 14, 0.90);
+        --stroke:rgba(140, 160, 210, 0.14);
+        --stroke2:rgba(140, 160, 210, 0.22);
         --text:#e8eaf0;
         --muted:#b8c0d9;
         --accent:#9bd1ff;
@@ -23,8 +23,8 @@
         margin: 0;
         color: var(--text);
         background:
-          radial-gradient(1200px 800px at 15% 10%, rgba(124, 135, 255, 0.18), transparent 60%),
-          radial-gradient(1000px 700px at 85% 20%, rgba(155, 209, 255, 0.14), transparent 60%),
+          radial-gradient(1200px 800px at 20% 10%, rgba(124, 135, 255, 0.10), transparent 60%),
+          radial-gradient(1000px 700px at 85% 20%, rgba(155, 209, 255, 0.08), transparent 60%),
           linear-gradient(180deg, var(--bg0), var(--bg1));
         min-height: 100vh;
       }
@@ -66,8 +66,8 @@
         box-sizing: border-box;
         padding: 10px 10px;
         border-radius: 12px;
-        border: 1px solid rgba(120, 150, 220, 0.22);
-        background: rgba(7, 12, 28, 0.75);
+        border: 1px solid rgba(140, 160, 210, 0.20);
+        background: rgba(0, 0, 0, 0.42);
         color: var(--text);
         outline: none;
         transition: border-color .18s ease, transform .18s ease;

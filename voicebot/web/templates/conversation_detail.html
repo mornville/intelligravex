@@ -13,43 +13,72 @@
   </div>
 
   <div class="card" style="margin-top: 14px;">
-    <h2>Metrics (est.)</h2>
-    <div class="muted" style="margin-top: 6px;">Metadata</div>
-    <pre style="white-space: pre-wrap; margin-top: 6px;">{{ conversation.metadata_json or "{}" }}</pre>
-    <div class="row" style="gap: 10px;">
-      <span class="pill">input tokens: {{ conversation.llm_input_tokens_est or 0 }}</span>
-      <span class="pill">output tokens: {{ conversation.llm_output_tokens_est or 0 }}</span>
-      <span class="pill">cost: ${{ "%.6f"|format(conversation.cost_usd_est or 0.0) }}</span>
-    </div>
-    <div class="row" style="gap: 10px; margin-top: 10px;">
-      <span class="pill">ASR: {% if conversation.last_asr_ms is not none %}{{ conversation.last_asr_ms }}ms{% else %}—{% endif %}</span>
-      <span class="pill">LLM 1st token: {% if conversation.last_llm_ttfb_ms is not none %}{{ conversation.last_llm_ttfb_ms }}ms{% else %}—{% endif %}</span>
-      <span class="pill">LLM total: {% if conversation.last_llm_total_ms is not none %}{{ conversation.last_llm_total_ms }}ms{% else %}—{% endif %}</span>
-      <span class="pill">TTS 1st audio: {% if conversation.last_tts_first_audio_ms is not none %}{{ conversation.last_tts_first_audio_ms }}ms{% else %}—{% endif %}</span>
-      <span class="pill">total: {% if conversation.last_total_ms is not none %}{{ conversation.last_total_ms }}ms{% else %}—{% endif %}</span>
-    </div>
+    <details>
+      <summary style="cursor:pointer;"><strong>Metrics</strong> <span class="muted">(click to expand)</span></summary>
+      <div class="muted" style="margin-top: 10px;">Metadata</div>
+      <pre style="white-space: pre-wrap; margin-top: 6px;">{{ conversation.metadata_json or "{}" }}</pre>
+      <div class="row" style="gap: 10px; margin-top: 10px;">
+        <span class="pill">input: {{ conversation.llm_input_tokens_est or 0 }}</span>
+        <span class="pill">output: {{ conversation.llm_output_tokens_est or 0 }}</span>
+        <span class="pill">cost: ${{ "%.6f"|format(conversation.cost_usd_est or 0.0) }}</span>
+      </div>
+      <div class="row" style="gap: 10px; margin-top: 10px;">
+        <span class="pill">ASR: {% if conversation.last_asr_ms is not none %}{{ conversation.last_asr_ms }}ms{% else %}—{% endif %}</span>
+        <span class="pill">LLM 1st: {% if conversation.last_llm_ttfb_ms is not none %}{{ conversation.last_llm_ttfb_ms }}ms{% else %}—{% endif %}</span>
+        <span class="pill">LLM: {% if conversation.last_llm_total_ms is not none %}{{ conversation.last_llm_total_ms }}ms{% else %}—{% endif %}</span>
+        <span class="pill">TTS 1st: {% if conversation.last_tts_first_audio_ms is not none %}{{ conversation.last_tts_first_audio_ms }}ms{% else %}—{% endif %}</span>
+        <span class="pill">total: {% if conversation.last_total_ms is not none %}{{ conversation.last_total_ms }}ms{% else %}—{% endif %}</span>
+      </div>
+    </details>
   </div>
 
   <div class="card" style="margin-top: 14px;">
     <h2>Messages</h2>
-    {% for m in messages %}
-      <div style="margin-top: 12px;">
-        <div class="muted">{{ m.created_at }} — <span class="pill">{{ m.role }}</span></div>
-        {% if m.input_tokens_est is not none or m.output_tokens_est is not none or m.cost_usd_est is not none or m.asr_ms is not none or m.llm_ttfb_ms is not none or m.llm_total_ms is not none or m.tts_first_audio_ms is not none or m.total_ms is not none %}
-          <div class="row" style="gap: 8px; margin-top: 6px;">
-            {% if m.input_tokens_est is not none %}<span class="pill">in: {{ m.input_tokens_est }}</span>{% endif %}
-            {% if m.output_tokens_est is not none %}<span class="pill">out: {{ m.output_tokens_est }}</span>{% endif %}
-            {% if m.cost_usd_est is not none %}<span class="pill">cost: ${{ "%.6f"|format(m.cost_usd_est or 0.0) }}</span>{% endif %}
-            {% if m.asr_ms is not none %}<span class="pill">ASR: {{ m.asr_ms }}ms</span>{% endif %}
-            {% if m.llm_ttfb_ms is not none %}<span class="pill">LLM 1st: {{ m.llm_ttfb_ms }}ms</span>{% endif %}
-            {% if m.llm_total_ms is not none %}<span class="pill">LLM: {{ m.llm_total_ms }}ms</span>{% endif %}
-            {% if m.tts_first_audio_ms is not none %}<span class="pill">TTS 1st: {{ m.tts_first_audio_ms }}ms</span>{% endif %}
-            {% if m.total_ms is not none %}<span class="pill">total: {{ m.total_ms }}ms</span>{% endif %}
+    <div style="display:flex; flex-direction:column; gap:12px; margin-top: 10px;">
+      {% for m in messages %}
+        <div style="display:flex; flex-direction:column; gap:6px; align-items: {% if m.role == 'user' %}flex-end{% else %}flex-start{% endif %};">
+          <div class="row" style="gap:8px;">
+            <span class="pill">{{ m.role }}</span>
+            {% if m.role == 'tool' and m.tool_name %}
+              <span class="pill">{{ m.tool_name }}</span>
+              {% if m.tool_kind %}<span class="pill">{{ m.tool_kind }}</span>{% endif %}
+            {% endif %}
           </div>
-        {% endif %}
-        <pre style="white-space: pre-wrap; margin-top: 8px;">{{ m.content }}</pre>
-      </div>
-    {% endfor %}
+
+          <div style="
+              max-width: 92%;
+              padding: 10px 12px;
+              border: 1px solid rgba(120,150,220,0.20);
+              border-radius: 14px;
+              background: {% if m.role == 'user' %}rgba(124,135,255,0.10){% elif m.role == 'tool' %}rgba(155,209,255,0.06){% else %}rgba(12,16,28,0.55){% endif %};
+              white-space: pre-wrap;
+            ">{{ m.display }}</div>
+
+          <details style="max-width: 92%;">
+            <summary class="muted" style="cursor:pointer;">details</summary>
+            <div class="muted" style="margin-top:6px;">{{ m.created_at }}</div>
+            {% set t = m.metrics %}
+            {% if t["in"] is not none or t["out"] is not none or t["cost"] is not none or t["asr"] is not none or t["llm1"] is not none or t["llm"] is not none or t["tts1"] is not none or t["total"] is not none %}
+              <div class="row" style="gap:8px; margin-top: 8px;">
+                {% if t["in"] is not none %}<span class="pill">in: {{ t["in"] }}</span>{% endif %}
+                {% if t["out"] is not none %}<span class="pill">out: {{ t["out"] }}</span>{% endif %}
+                {% if t["cost"] is not none %}<span class="pill">cost: ${{ "%.6f"|format(t["cost"] or 0.0) }}</span>{% endif %}
+                {% if t["asr"] is not none %}<span class="pill">ASR: {{ t["asr"] }}ms</span>{% endif %}
+                {% if t["llm1"] is not none %}<span class="pill">LLM 1st: {{ t["llm1"] }}ms</span>{% endif %}
+                {% if t["llm"] is not none %}<span class="pill">LLM: {{ t["llm"] }}ms</span>{% endif %}
+                {% if t["tts1"] is not none %}<span class="pill">TTS 1st: {{ t["tts1"] }}ms</span>{% endif %}
+                {% if t["total"] is not none %}<span class="pill">total: {{ t["total"] }}ms</span>{% endif %}
+              </div>
+            {% endif %}
+
+            {% if m.role == 'tool' and m.tool %}
+              <div class="muted" style="margin-top:10px;">raw</div>
+              <pre style="white-space: pre-wrap; margin-top: 6px;">{{ m.content }}</pre>
+            {% endif %}
+          </details>
+        </div>
+      {% endfor %}
+    </div>
     {% if not messages %}
       <div class="muted">No messages yet.</div>
     {% endif %}
