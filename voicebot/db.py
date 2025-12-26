@@ -50,6 +50,36 @@ def _apply_light_migrations(engine) -> None:
         add_col("last_tts_first_audio_ms", "INTEGER")
         add_col("last_total_ms", "INTEGER")
 
+        # Bot
+        rows = conn.execute(text("PRAGMA table_info(bot)")).fetchall()
+        existing = {r[1] for r in rows}
+
+        def add_bot_col(name: str, ddl: str) -> None:
+            if name in existing:
+                return
+            conn.execute(text(f"ALTER TABLE bot ADD COLUMN {name} {ddl}"))
+
+        add_bot_col("start_message_mode", "TEXT NOT NULL DEFAULT 'llm'")
+        add_bot_col("start_message_text", "TEXT NOT NULL DEFAULT ''")
+
+        # ConversationMessage
+        rows = conn.execute(text("PRAGMA table_info(conversationmessage)")).fetchall()
+        existing = {r[1] for r in rows}
+
+        def add_msg_col(name: str, ddl: str) -> None:
+            if name in existing:
+                return
+            conn.execute(text(f"ALTER TABLE conversationmessage ADD COLUMN {name} {ddl}"))
+
+        add_msg_col("input_tokens_est", "INTEGER")
+        add_msg_col("output_tokens_est", "INTEGER")
+        add_msg_col("cost_usd_est", "REAL")
+        add_msg_col("asr_ms", "INTEGER")
+        add_msg_col("llm_ttfb_ms", "INTEGER")
+        add_msg_col("llm_total_ms", "INTEGER")
+        add_msg_col("tts_first_audio_ms", "INTEGER")
+        add_msg_col("total_ms", "INTEGER")
+
 
 def get_session(engine) -> Session:
     return Session(engine)

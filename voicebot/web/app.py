@@ -30,6 +30,7 @@ from voicebot.store import (
     create_conversation,
     create_key,
     add_message,
+    add_message_with_metrics,
     update_conversation_metrics,
     decrypt_openai_key,
     delete_bot,
@@ -202,6 +203,8 @@ def create_app() -> FastAPI:
         tts_split_sentences: bool = Form(False),
         tts_chunk_min_chars: int = Form(20),
         tts_chunk_max_chars: int = Form(120),
+        start_message_mode: str = Form("llm"),
+        start_message_text: str = Form(""),
         session: Session = Depends(get_session),
     ) -> RedirectResponse:
         bot = Bot(
@@ -219,6 +222,8 @@ def create_app() -> FastAPI:
             tts_split_sentences=tts_split_sentences,
             tts_chunk_min_chars=int(tts_chunk_min_chars),
             tts_chunk_max_chars=int(tts_chunk_max_chars),
+            start_message_mode=(start_message_mode or "llm").strip() or "llm",
+            start_message_text=start_message_text or "",
         )
         create_bot(session, bot)
         return RedirectResponse(url=f"/bots/{bot.id}", status_code=303)
@@ -248,6 +253,8 @@ def create_app() -> FastAPI:
         tts_split_sentences: bool = Form(False),
         tts_chunk_min_chars: int = Form(20),
         tts_chunk_max_chars: int = Form(120),
+        start_message_mode: str = Form("llm"),
+        start_message_text: str = Form(""),
         session: Session = Depends(get_session),
     ) -> RedirectResponse:
         update_bot(
@@ -268,6 +275,8 @@ def create_app() -> FastAPI:
                 "tts_split_sentences": tts_split_sentences,
                 "tts_chunk_min_chars": int(tts_chunk_min_chars),
                 "tts_chunk_max_chars": int(tts_chunk_max_chars),
+                "start_message_mode": (start_message_mode or "llm").strip() or "llm",
+                "start_message_text": start_message_text or "",
             },
         )
         return RedirectResponse(url=f"/bots/{bot_id}", status_code=303)
@@ -432,6 +441,132 @@ def create_app() -> FastAPI:
         cost = estimate_cost_usd(model_price=price, input_tokens=prompt_tokens, output_tokens=output_tokens)
         return prompt_tokens, output_tokens, cost
 
+    def _make_start_message_instruction(bot: Bot) -> str:
+        # Keep this short and safe; system_prompt should drive tone/language.
+        return (
+            "Generate a short opening message to start a voice conversation. "
+            "Keep it concise and end with a question."
+        )
+
+    async def _init_conversation_and_greet(
+        *,
+        bot_id: UUID,
+        speak: bool,
+        test_flag: bool,
+        ws: WebSocket,
+        req_id: str,
+    ) -> UUID:
+        init_start = time.time()
+        # Create conversation + store first assistant message.
+        with Session(engine) as session:
+            bot = get_bot(session, bot_id)
+            conv = create_conversation(session, bot_id=bot.id, test_flag=test_flag)
+            conv_id = conv.id
+
+            if bot.openai_key_id:
+                crypto = require_crypto()
+                api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
+            else:
+                api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+
+            greeting_text = (bot.start_message_text or "").strip()
+            llm_ttfb_ms: Optional[int] = None
+            llm_total_ms: Optional[int] = None
+            input_tokens_est: Optional[int] = None
+            output_tokens_est: Optional[int] = None
+            cost_usd_est: Optional[float] = None
+
+            if bot.start_message_mode == "static" and greeting_text:
+                # Static greeting (no LLM).
+                pass
+            else:
+                llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                msgs = [
+                    Message(role="system", content=bot.system_prompt),
+                    Message(role="user", content=_make_start_message_instruction(bot)),
+                ]
+                t0 = time.time()
+                first = None
+                parts: list[str] = []
+                for d in llm.stream_text(messages=msgs):
+                    if first is None:
+                        first = time.time()
+                    parts.append(d)
+                    await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+                t1 = time.time()
+                greeting_text = "".join(parts).strip()
+                if first is not None:
+                    llm_ttfb_ms = int(round((first - t0) * 1000.0))
+                llm_total_ms = int(round((t1 - t0) * 1000.0))
+
+                # Estimate cost for this greeting turn.
+                input_tokens_est = estimate_messages_tokens(msgs, bot.openai_model)
+                output_tokens_est = estimate_text_tokens(greeting_text, bot.openai_model)
+                price = _get_openai_pricing().get(bot.openai_model)
+                cost_usd_est = estimate_cost_usd(
+                    model_price=price, input_tokens=input_tokens_est, output_tokens=output_tokens_est
+                )
+
+            if not greeting_text:
+                greeting_text = "Hi! How can I help you today?"
+
+            # Store assistant greeting as first message.
+            add_message_with_metrics(
+                session,
+                conversation_id=conv_id,
+                role="assistant",
+                content=greeting_text,
+                input_tokens_est=input_tokens_est,
+                output_tokens_est=output_tokens_est,
+                cost_usd_est=cost_usd_est,
+                llm_ttfb_ms=llm_ttfb_ms,
+                llm_total_ms=llm_total_ms,
+            )
+            if input_tokens_est is not None or output_tokens_est is not None or cost_usd_est is not None:
+                update_conversation_metrics(
+                    session,
+                    conversation_id=conv_id,
+                    add_input_tokens_est=int(input_tokens_est or 0),
+                    add_output_tokens_est=int(output_tokens_est or 0),
+                    add_cost_usd_est=float(cost_usd_est or 0.0),
+                    last_asr_ms=None,
+                    last_llm_ttfb_ms=llm_ttfb_ms,
+                    last_llm_total_ms=llm_total_ms,
+                    last_tts_first_audio_ms=None,
+                    last_total_ms=None,
+                )
+
+            if speak:
+                tts_handle = _get_tts_handle(
+                    bot.xtts_model,
+                    bot.speaker_wav,
+                    bot.speaker_id,
+                    True,
+                    bot.tts_split_sentences,
+                    bot.tts_language,
+                )
+                # Synthesize whole greeting as one chunk for now.
+                a = await asyncio.to_thread(_tts_synthesize, tts_handle, greeting_text)
+                await _ws_send_json(
+                    ws,
+                    {
+                        "type": "audio_wav",
+                        "req_id": req_id,
+                        "wav_base64": base64.b64encode(_wav_bytes(a.audio, a.sample_rate)).decode(),
+                        "sr": a.sample_rate,
+                    },
+                )
+
+        timings: dict[str, int] = {"total": int(round((time.time() - init_start) * 1000.0))}
+        if llm_ttfb_ms is not None:
+            timings["llm_ttfb"] = llm_ttfb_ms
+        if llm_total_ms is not None:
+            timings["llm_total"] = llm_total_ms
+        await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
+        return conv_id
+
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False))
 
@@ -464,6 +599,40 @@ def create_app() -> FastAPI:
 
                     msg_type = payload.get("type")
                     req_id = str(payload.get("req_id") or "")
+                    if msg_type == "init":
+                        if not req_id:
+                            await _ws_send_json(ws, {"type": "error", "error": "Missing req_id"})
+                            continue
+                        if active_req_id is not None:
+                            await _ws_send_json(
+                                ws,
+                                {
+                                    "type": "error",
+                                    "req_id": req_id,
+                                    "error": "Another request is already in progress",
+                                },
+                            )
+                            continue
+                        active_req_id = req_id
+                        speak = bool(payload.get("speak", True))
+                        test_flag = bool(payload.get("test_flag", True))
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "init"})
+                        try:
+                            conv_id = await _init_conversation_and_greet(
+                                bot_id=bot_id, speak=speak, test_flag=test_flag, ws=ws, req_id=req_id
+                            )
+                        except Exception as exc:
+                            await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
+                            await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                            active_req_id = None
+                            conv_id = None
+                            continue
+                        await _ws_send_json(ws, {"type": "conversation", "req_id": req_id, "id": str(conv_id)})
+                        await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                        active_req_id = None
+                        continue
+
                     if msg_type == "start":
                         if not req_id:
                             await _ws_send_json(ws, {"type": "error", "error": "Missing req_id"})
@@ -562,39 +731,47 @@ def create_app() -> FastAPI:
                                 )
                                 asr_end_ts = time.time()
 
-                                user_text = (asr.text or "").strip()
-                                await _ws_send_json(ws, {"type": "asr", "req_id": req_id, "text": user_text})
-                                if not user_text:
-                                    await _ws_send_json(
-                                        ws,
-                                        {
-                                            "type": "metrics",
-                                            "req_id": req_id,
-                                            "timings_ms": {
-                                                "asr": int(round((asr_end_ts - asr_start_ts) * 1000.0)),
-                                                "total": int(round((time.time() - (stop_ts or asr_start_ts)) * 1000.0)),
-                                            },
+                            user_text = (asr.text or "").strip()
+                            await _ws_send_json(ws, {"type": "asr", "req_id": req_id, "text": user_text})
+                            if not user_text:
+                                await _ws_send_json(
+                                    ws,
+                                    {
+                                        "type": "metrics",
+                                        "req_id": req_id,
+                                        "timings_ms": {
+                                            "asr": int(round((asr_end_ts - asr_start_ts) * 1000.0)),
+                                            "total": int(
+                                                round((time.time() - (stop_ts or asr_start_ts)) * 1000.0)
+                                            ),
                                         },
-                                    )
-                                    await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
-                                    await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
-                                    active_req_id = None
-                                    conv_id = None
-                                    continue
-
-                                add_message(session, conversation_id=conv_id, role="user", content=user_text)
-                                history = _build_history(session, bot, conv_id)
-
-                                llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                                tts_handle = await asyncio.to_thread(
-                                    _get_tts_handle,
-                                    bot.xtts_model,
-                                    bot.speaker_wav,
-                                    bot.speaker_id,
-                                    True,
-                                    bot.tts_split_sentences,
-                                    bot.tts_language,
+                                    },
                                 )
+                                await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
+                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                                active_req_id = None
+                                conv_id = None
+                                continue
+
+                            add_message_with_metrics(
+                                session,
+                                conversation_id=conv_id,
+                                role="user",
+                                content=user_text,
+                                asr_ms=int(round((asr_end_ts - asr_start_ts) * 1000.0)),
+                            )
+                            history = _build_history(session, bot, conv_id)
+
+                            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                            tts_handle = await asyncio.to_thread(
+                                _get_tts_handle,
+                                bot.xtts_model,
+                                bot.speaker_wav,
+                                bot.speaker_id,
+                                True,
+                                bot.tts_split_sentences,
+                                bot.tts_language,
+                            )
                         except Exception as exc:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
                             await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
@@ -732,9 +909,6 @@ def create_app() -> FastAPI:
                         llm_end_ts = time.time()
 
                         final_text = "".join(full_text_parts).strip()
-                        with Session(engine) as session:
-                            if final_text and conv_id:
-                                add_message(session, conversation_id=conv_id, role="assistant", content=final_text)
 
                         timings: dict[str, int] = {
                             "asr": int(round((asr_end_ts - asr_start_ts) * 1000.0)),
@@ -753,6 +927,21 @@ def create_app() -> FastAPI:
                                 bot=bot, history=history, assistant_text=final_text
                             )
                             with Session(engine) as session:
+                                if final_text and conv_id:
+                                    add_message_with_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        role="assistant",
+                                        content=final_text,
+                                        input_tokens_est=in_tok,
+                                        output_tokens_est=out_tok,
+                                        cost_usd_est=cost,
+                                        asr_ms=timings.get("asr"),
+                                        llm_ttfb_ms=timings.get("llm_ttfb"),
+                                        llm_total_ms=timings.get("llm_total"),
+                                        tts_first_audio_ms=timings.get("tts_first_audio"),
+                                        total_ms=timings.get("total"),
+                                    )
                                 update_conversation_metrics(
                                     session,
                                     conversation_id=conv_id,

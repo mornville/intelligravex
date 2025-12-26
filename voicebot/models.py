@@ -41,6 +41,10 @@ class Bot(SQLModel, table=True):
     tts_chunk_min_chars: int = 20
     tts_chunk_max_chars: int = 120
 
+    # Conversation start message (assistant speaks first)
+    start_message_mode: str = "llm"  # "static" | "llm"
+    start_message_text: str = ""
+
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
 
@@ -70,4 +74,13 @@ class ConversationMessage(SQLModel, table=True):
     conversation_id: UUID = Field(foreign_key="conversation.id", index=True)
     role: str = Field(index=True)  # system/user/assistant
     content: str
+    # Optional per-message metrics (typically set on assistant messages)
+    input_tokens_est: Optional[int] = Field(default=None)
+    output_tokens_est: Optional[int] = Field(default=None)
+    cost_usd_est: Optional[float] = Field(default=None)
+    asr_ms: Optional[int] = Field(default=None)
+    llm_ttfb_ms: Optional[int] = Field(default=None)
+    llm_total_ms: Optional[int] = Field(default=None)
+    tts_first_audio_ms: Optional[int] = Field(default=None)
+    total_ms: Optional[int] = Field(default=None)
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)

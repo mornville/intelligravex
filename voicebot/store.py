@@ -175,6 +175,43 @@ def add_message(session: Session, *, conversation_id: UUID, role: str, content: 
     return msg
 
 
+def add_message_with_metrics(
+    session: Session,
+    *,
+    conversation_id: UUID,
+    role: str,
+    content: str,
+    input_tokens_est: Optional[int] = None,
+    output_tokens_est: Optional[int] = None,
+    cost_usd_est: Optional[float] = None,
+    asr_ms: Optional[int] = None,
+    llm_ttfb_ms: Optional[int] = None,
+    llm_total_ms: Optional[int] = None,
+    tts_first_audio_ms: Optional[int] = None,
+    total_ms: Optional[int] = None,
+) -> ConversationMessage:
+    msg = ConversationMessage(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        input_tokens_est=input_tokens_est,
+        output_tokens_est=output_tokens_est,
+        cost_usd_est=cost_usd_est,
+        asr_ms=asr_ms,
+        llm_ttfb_ms=llm_ttfb_ms,
+        llm_total_ms=llm_total_ms,
+        tts_first_audio_ms=tts_first_audio_ms,
+        total_ms=total_ms,
+    )
+    session.add(msg)
+    session.commit()
+    session.refresh(msg)
+    conv = session.get(Conversation, conversation_id)
+    if conv:
+        touch_conversation(session, conv)
+    return msg
+
+
 def list_messages(session: Session, *, conversation_id: UUID) -> List[ConversationMessage]:
     stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
     stmt = stmt.order_by(ConversationMessage.created_at.asc())

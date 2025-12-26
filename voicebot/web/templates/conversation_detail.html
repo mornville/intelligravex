@@ -33,6 +33,18 @@
     {% for m in messages %}
       <div style="margin-top: 12px;">
         <div class="muted">{{ m.created_at }} — <span class="pill">{{ m.role }}</span></div>
+        {% if m.input_tokens_est is not none or m.output_tokens_est is not none or m.cost_usd_est is not none or m.asr_ms is not none or m.llm_ttfb_ms is not none or m.llm_total_ms is not none or m.tts_first_audio_ms is not none or m.total_ms is not none %}
+          <div class="row" style="gap: 8px; margin-top: 6px;">
+            {% if m.input_tokens_est is not none %}<span class="pill">in: {{ m.input_tokens_est }}</span>{% endif %}
+            {% if m.output_tokens_est is not none %}<span class="pill">out: {{ m.output_tokens_est }}</span>{% endif %}
+            {% if m.cost_usd_est is not none %}<span class="pill">cost: ${{ "%.6f"|format(m.cost_usd_est or 0.0) }}</span>{% endif %}
+            {% if m.asr_ms is not none %}<span class="pill">ASR: {{ m.asr_ms }}ms</span>{% endif %}
+            {% if m.llm_ttfb_ms is not none %}<span class="pill">LLM 1st: {{ m.llm_ttfb_ms }}ms</span>{% endif %}
+            {% if m.llm_total_ms is not none %}<span class="pill">LLM: {{ m.llm_total_ms }}ms</span>{% endif %}
+            {% if m.tts_first_audio_ms is not none %}<span class="pill">TTS 1st: {{ m.tts_first_audio_ms }}ms</span>{% endif %}
+            {% if m.total_ms is not none %}<span class="pill">total: {{ m.total_ms }}ms</span>{% endif %}
+          </div>
+        {% endif %}
         <pre style="white-space: pre-wrap; margin-top: 8px;">{{ m.content }}</pre>
       </div>
     {% endfor %}
