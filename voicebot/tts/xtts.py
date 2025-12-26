@@ -26,7 +26,13 @@ class XTTSv2:
         split_sentences: bool,
         language: str,
     ) -> None:
-        self._ensure_torch_mps_compat()
+        # Ensure MPS shims are present before importing Coqui TTS.
+        try:
+            from voicebot.compat.torch_mps import ensure_torch_mps_compat
+
+            ensure_torch_mps_compat()
+        except Exception:
+            pass
         try:
             from TTS.api import TTS  # type: ignore
         except Exception as exc:  # pragma: no cover
@@ -56,28 +62,6 @@ class XTTSv2:
             log.info("XTTS voice: speaker_id=%s", self._speaker_id)
         else:
             log.warning("XTTS voice: no speaker_wav or speaker_id; synthesis may fail for XTTS.")
-
-    @staticmethod
-    def _ensure_torch_mps_compat() -> None:
-        """
-        Newer PyTorch versions expose MPS via `torch.backends.mps`, but may not expose
-        CUDA-like helpers (e.g. `torch.mps.current_device`) that some libraries assume.
-
-        Coqui TTS / downstream code can try to call these; we shim them when missing to
-        avoid runtime crashes on macOS.
-        """
-        try:
-            import torch
-
-            mps = getattr(torch, "mps", None)
-            if mps is None:
-                return
-            if not hasattr(mps, "current_device"):
-                setattr(mps, "current_device", lambda: 0)
-            if not hasattr(mps, "device_count"):
-                setattr(mps, "device_count", lambda: 1)
-        except Exception:
-            return
 
     @staticmethod
     def _resolve_device(requested: bool) -> str:

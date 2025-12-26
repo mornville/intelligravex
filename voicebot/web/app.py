@@ -349,6 +349,12 @@ def create_app() -> FastAPI:
     @lru_cache(maxsize=8)
     def _get_tts_meta(model_name: str) -> dict:
         try:
+            from voicebot.compat.torch_mps import ensure_torch_mps_compat
+
+            ensure_torch_mps_compat()
+        except Exception:
+            pass
+        try:
             from TTS.api import TTS  # type: ignore
         except Exception:
             return {"speakers": [], "languages": []}
