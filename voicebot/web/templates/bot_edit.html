@@ -177,14 +177,16 @@
 
 	        function setStatus(newStage) {
             currentStage = newStage;
-	          statusPill.textContent = `status: ${currentStage}`;
+		          statusPill.textContent = `status: ${currentStage}`;
             statusPill.style.borderColor = currentStage === "recording" ? "rgba(255, 94, 140, 0.45)" : "rgba(120, 150, 220, 0.22)";
+            refreshControls();
 	        }
 
           function setRecUi(state) {
             isRecording = state;
             toggleBtn.textContent = state ? "Stop" : "Start";
             toggleBtn.classList.toggle("recOn", state);
+            refreshControls();
           }
 
           function setBusy(state) {
@@ -192,11 +194,18 @@
             toggleBtn.disabled = state;
             newConvBtn.disabled = state || isRecording;
             speak.disabled = state || isRecording;
+            refreshControls();
           }
 
           function canStartRecording() {
             // Only allow starting mic when the bot is idle-ish (not in ASR/LLM/TTS/init/sending).
             return !isBusy && !isRecording && (currentStage === "idle" || currentStage === "connected");
+          }
+
+          function refreshControls() {
+            // Hide the mic toggle when the bot isn't ready (avoids "click does nothing").
+            const show = isRecording || canStartRecording();
+            toggleBtn.style.display = show ? "" : "none";
           }
 
           function fmtMs(ms) {
@@ -566,6 +575,7 @@
         }
         document.getElementById("xtts_model").addEventListener("change", loadSpeakers);
         loadSpeakers();
+        refreshControls();
       </script>
 
       <style>
