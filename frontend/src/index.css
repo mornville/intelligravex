@@ -10,6 +10,7 @@
   --accent2: #2dd4bf;
   --danger: #ff4d6d;
 
+  font-size: 14px;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'Apple Color Emoji',
     'Segoe UI Emoji';
   line-height: 1.5;
@@ -119,7 +120,7 @@ a {
 
 h1 {
   margin: 0;
-  font-size: 34px;
+  font-size: 28px;
   line-height: 1.15;
   letter-spacing: -0.02em;
 }
