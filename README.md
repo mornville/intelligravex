@@ -91,6 +91,36 @@ voicebot run --bot <uuid>
   - `POST /api/bots/<uuid>/talk/stream` (WAV upload → Whisper → streaming LLM → streaming TTS, NDJSON)
   - `POST /api/bots/<uuid>/chat` (text → LLM → optional TTS; JSON)
 
+## React Studio (Two-Server Dev)
+
+The repo also includes a React (Vite) frontend under `frontend/`.
+
+1) Start the backend:
+
+```bash
+./start.sh web --host 127.0.0.1 --port 8000
+```
+
+2) Start the React frontend (separate terminal):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Then open `http://localhost:5173`.
+
+Notes:
+- Backend JSON APIs used by the React app:
+  - `GET/POST/PUT/DELETE /api/bots`
+  - `GET/POST/DELETE /api/keys`
+  - `GET /api/conversations` (paginated), `GET /api/conversations/<uuid>`
+  - `WS /ws/bots/<uuid>/talk` (mic audio + streamed status/audio)
+- Dev CORS is enabled for `localhost:5173` by default. Override with:
+  - `VOICEBOT_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`
+  - React can also be pointed at a different backend using `VITE_BACKEND_URL` in `frontend/.env`.
+
 ## Context / Architecture (for handoff)
 
 - Local loop (mic): `voicebot/dialog/session.py` (VAD → Whisper → OpenAI Responses stream → chunked XTTS → playback)

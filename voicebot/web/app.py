@@ -13,6 +13,7 @@ from typing import Generator, Optional, Tuple
 from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -60,12 +61,72 @@ class TalkResponseEvent(BaseModel):
     type: str
 
 
+class ApiKeyCreateRequest(BaseModel):
+    provider: str = "openai"
+    name: str
+    secret: str
+
+
+class BotCreateRequest(BaseModel):
+    name: str
+    openai_model: str = "gpt-4o"
+    system_prompt: str
+    language: str = "en"
+    tts_language: str = "en"
+    whisper_model: str = "small"
+    whisper_device: str = "auto"
+    xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
+    speaker_id: Optional[str] = None
+    speaker_wav: Optional[str] = None
+    openai_key_id: Optional[UUID] = None
+    tts_split_sentences: bool = False
+    tts_chunk_min_chars: int = 20
+    tts_chunk_max_chars: int = 120
+    start_message_mode: str = "llm"
+    start_message_text: str = ""
+
+
+class BotUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    openai_model: Optional[str] = None
+    system_prompt: Optional[str] = None
+    language: Optional[str] = None
+    tts_language: Optional[str] = None
+    whisper_model: Optional[str] = None
+    whisper_device: Optional[str] = None
+    xtts_model: Optional[str] = None
+    speaker_id: Optional[str] = None
+    speaker_wav: Optional[str] = None
+    openai_key_id: Optional[UUID] = None
+    tts_split_sentences: Optional[bool] = None
+    tts_chunk_min_chars: Optional[int] = None
+    tts_chunk_max_chars: Optional[int] = None
+    start_message_mode: Optional[str] = None
+    start_message_text: Optional[str] = None
+
+
 def create_app() -> FastAPI:
     settings = Settings()
     engine = make_engine(settings.db_url)
     init_db(engine)
 
     app = FastAPI(title="Intelligravex VoiceBot Studio")
+    cors_raw = (os.environ.get("VOICEBOT_CORS_ORIGINS") or "").strip()
+    cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()] if cors_raw else []
+    if not cors_origins:
+        cors_origins = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     templates_dir = Path(__file__).parent / "templates"
     templates = Jinja2Templates(directory=str(templates_dir))
@@ -1190,6 +1251,239 @@ def create_app() -> FastAPI:
     @app.get("/api/tts/meta")
     def tts_meta(model_name: str) -> dict:
         return _get_tts_meta(model_name)
+
+    @app.get("/api/options")
+    def api_options() -> dict:
+        pricing = _get_openai_pricing()
+        openai_models = sorted(set(ui_options.get("openai_models", []) + list(pricing.keys())))
+        return {
+            "openai_models": openai_models,
+            "openai_pricing": {k: {"input_per_1m": v.input_per_1m, "output_per_1m": v.output_per_1m} for k, v in pricing.items()},
+            "whisper_models": ui_options.get("whisper_models", []),
+            "whisper_devices": ui_options.get("whisper_devices", []),
+            "languages": ui_options.get("languages", []),
+            "xtts_models": ui_options.get("xtts_models", []),
+            "start_message_modes": ["llm", "static"],
+            "asr_vendors": ["whisper_local"],
+            "tts_vendors": ["xtts_local"],
+        }
+
+    def _bot_to_dict(bot: Bot) -> dict:
+        return {
+            "id": str(bot.id),
+            "name": bot.name,
+            "openai_model": bot.openai_model,
+            "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
+            "system_prompt": bot.system_prompt,
+            "language": bot.language,
+            "tts_language": bot.tts_language,
+            "whisper_model": bot.whisper_model,
+            "whisper_device": bot.whisper_device,
+            "xtts_model": bot.xtts_model,
+            "speaker_id": bot.speaker_id,
+            "speaker_wav": bot.speaker_wav,
+            "tts_split_sentences": bool(bot.tts_split_sentences),
+            "tts_chunk_min_chars": int(bot.tts_chunk_min_chars),
+            "tts_chunk_max_chars": int(bot.tts_chunk_max_chars),
+            "start_message_mode": bot.start_message_mode,
+            "start_message_text": bot.start_message_text,
+            "created_at": bot.created_at.isoformat(),
+            "updated_at": bot.updated_at.isoformat(),
+        }
+
+    @app.get("/api/bots")
+    def api_list_bots(session: Session = Depends(get_session)) -> dict:
+        bots = list_bots(session)
+        return {"items": [_bot_to_dict(b) for b in bots]}
+
+    @app.post("/api/bots")
+    def api_create_bot(payload: BotCreateRequest, session: Session = Depends(get_session)) -> dict:
+        bot = Bot(
+            name=payload.name,
+            openai_model=payload.openai_model,
+            system_prompt=payload.system_prompt,
+            language=payload.language,
+            tts_language=payload.tts_language,
+            whisper_model=payload.whisper_model,
+            whisper_device=payload.whisper_device,
+            xtts_model=payload.xtts_model,
+            speaker_id=(payload.speaker_id or "").strip() or None,
+            speaker_wav=(payload.speaker_wav or "").strip() or None,
+            openai_key_id=payload.openai_key_id,
+            tts_split_sentences=bool(payload.tts_split_sentences),
+            tts_chunk_min_chars=int(payload.tts_chunk_min_chars),
+            tts_chunk_max_chars=int(payload.tts_chunk_max_chars),
+            start_message_mode=(payload.start_message_mode or "llm").strip() or "llm",
+            start_message_text=payload.start_message_text or "",
+        )
+        create_bot(session, bot)
+        return _bot_to_dict(bot)
+
+    @app.get("/api/bots/{bot_id}")
+    def api_get_bot(bot_id: UUID, session: Session = Depends(get_session)) -> dict:
+        bot = get_bot(session, bot_id)
+        return _bot_to_dict(bot)
+
+    @app.put("/api/bots/{bot_id}")
+    def api_update_bot(bot_id: UUID, payload: BotUpdateRequest, session: Session = Depends(get_session)) -> dict:
+        patch = {}
+        for k, v in payload.model_dump(exclude_unset=True).items():
+            if k in ("speaker_id", "speaker_wav"):
+                patch[k] = (v or "").strip() or None
+            else:
+                patch[k] = v
+        bot = update_bot(session, bot_id, patch)
+        return _bot_to_dict(bot)
+
+    @app.delete("/api/bots/{bot_id}")
+    def api_delete_bot(bot_id: UUID, session: Session = Depends(get_session)) -> dict:
+        delete_bot(session, bot_id)
+        return {"ok": True}
+
+    @app.get("/api/keys")
+    def api_list_keys(provider: Optional[str] = None, session: Session = Depends(get_session)) -> dict:
+        keys = list_keys(session, provider=provider)
+        return {
+            "items": [
+                {
+                    "id": str(k.id),
+                    "provider": k.provider,
+                    "name": k.name,
+                    "hint": k.hint,
+                    "created_at": k.created_at.isoformat(),
+                }
+                for k in keys
+            ]
+        }
+
+    @app.post("/api/keys")
+    def api_create_key(payload: ApiKeyCreateRequest, session: Session = Depends(get_session)) -> dict:
+        provider = (payload.provider or "").strip() or "openai"
+        if provider != "openai":
+            raise HTTPException(status_code=400, detail="Only provider=openai is supported right now.")
+        crypto = require_crypto()
+        k = create_key(session, crypto=crypto, provider=provider, name=payload.name, secret=payload.secret)
+        return {
+            "id": str(k.id),
+            "provider": k.provider,
+            "name": k.name,
+            "hint": k.hint,
+            "created_at": k.created_at.isoformat(),
+        }
+
+    @app.delete("/api/keys/{key_id}")
+    def api_delete_key(key_id: UUID, session: Session = Depends(get_session)) -> dict:
+        # Prevent deleting a key that's still referenced by a bot.
+        bots = list_bots(session)
+        if any(b.openai_key_id == key_id for b in bots):
+            raise HTTPException(status_code=400, detail="Key is in use by one or more bots. Remove it from bots first.")
+        delete_key(session, key_id)
+        return {"ok": True}
+
+    @app.get("/api/conversations")
+    def api_list_conversations(
+        page: int = 1,
+        page_size: int = 50,
+        bot_id: Optional[UUID] = None,
+        test_flag: Optional[bool] = None,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        page = max(1, int(page))
+        page_size = min(200, max(10, int(page_size)))
+        offset = (page - 1) * page_size
+        total = count_conversations(session, bot_id=bot_id, test_flag=test_flag)
+        convs = list_conversations(session, bot_id=bot_id, test_flag=test_flag, limit=page_size, offset=offset)
+        bots_by_id = {b.id: b for b in list_bots(session)}
+        items = []
+        for c in convs:
+            b = bots_by_id.get(c.bot_id)
+            items.append(
+                {
+                    "id": str(c.id),
+                    "bot_id": str(c.bot_id),
+                    "bot_name": b.name if b else None,
+                    "test_flag": bool(c.test_flag),
+                    "metadata_json": c.metadata_json or "{}",
+                    "llm_input_tokens_est": int(c.llm_input_tokens_est or 0),
+                    "llm_output_tokens_est": int(c.llm_output_tokens_est or 0),
+                    "cost_usd_est": float(c.cost_usd_est or 0.0),
+                    "last_asr_ms": c.last_asr_ms,
+                    "last_llm_ttfb_ms": c.last_llm_ttfb_ms,
+                    "last_llm_total_ms": c.last_llm_total_ms,
+                    "last_tts_first_audio_ms": c.last_tts_first_audio_ms,
+                    "last_total_ms": c.last_total_ms,
+                    "created_at": c.created_at.isoformat(),
+                    "updated_at": c.updated_at.isoformat(),
+                }
+            )
+        return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+    @app.get("/api/conversations/{conversation_id}")
+    def api_conversation_detail(conversation_id: UUID, session: Session = Depends(get_session)) -> dict:
+        conv = get_conversation(session, conversation_id)
+        bot = get_bot(session, conv.bot_id)
+        msgs_raw = list_messages(session, conversation_id=conversation_id)
+
+        def _safe_json_loads(s: str) -> dict | None:
+            try:
+                obj = json.loads(s)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                return None
+
+        messages: list[dict] = []
+        for m in msgs_raw:
+            tool_obj = _safe_json_loads(m.content) if m.role == "tool" else None
+            tool_name = tool_obj.get("tool") if tool_obj and isinstance(tool_obj.get("tool"), str) else None
+            tool_kind = None
+            if tool_obj:
+                if "arguments" in tool_obj:
+                    tool_kind = "call"
+                elif "result" in tool_obj:
+                    tool_kind = "result"
+            messages.append(
+                {
+                    "id": str(m.id),
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat(),
+                    "tool": tool_obj,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "metrics": {
+                        "in": m.input_tokens_est,
+                        "out": m.output_tokens_est,
+                        "cost": m.cost_usd_est,
+                        "asr": m.asr_ms,
+                        "llm1": m.llm_ttfb_ms,
+                        "llm": m.llm_total_ms,
+                        "tts1": m.tts_first_audio_ms,
+                        "total": m.total_ms,
+                    },
+                }
+            )
+
+        return {
+            "conversation": {
+                "id": str(conv.id),
+                "bot_id": str(conv.bot_id),
+                "bot_name": bot.name,
+                "test_flag": bool(conv.test_flag),
+                "metadata_json": conv.metadata_json or "{}",
+                "llm_input_tokens_est": int(conv.llm_input_tokens_est or 0),
+                "llm_output_tokens_est": int(conv.llm_output_tokens_est or 0),
+                "cost_usd_est": float(conv.cost_usd_est or 0.0),
+                "last_asr_ms": conv.last_asr_ms,
+                "last_llm_ttfb_ms": conv.last_llm_ttfb_ms,
+                "last_llm_total_ms": conv.last_llm_total_ms,
+                "last_tts_first_audio_ms": conv.last_tts_first_audio_ms,
+                "last_total_ms": conv.last_total_ms,
+                "created_at": conv.created_at.isoformat(),
+                "updated_at": conv.updated_at.isoformat(),
+            },
+            "bot": _bot_to_dict(bot),
+            "messages": messages,
+        }
 
     @app.post("/api/bots/{bot_id}/chat/stream")
     def chat_stream(

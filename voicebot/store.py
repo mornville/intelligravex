@@ -87,6 +87,13 @@ def delete_bot(session: Session, bot_id: UUID) -> None:
     bot = session.get(Bot, bot_id)
     if not bot:
         return
+    # Delete dependent conversations + messages (SQLite doesn't always enforce FK cascades).
+    convs = list_conversations(session, bot_id=bot_id, limit=1000000, offset=0)
+    for c in convs:
+        stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == c.id)
+        for m in session.exec(stmt):
+            session.delete(m)
+        session.delete(c)
     session.delete(bot)
     session.commit()
 
@@ -155,21 +162,30 @@ def merge_conversation_metadata(session: Session, *, conversation_id: UUID, patc
 
 
 def list_conversations(
-    session: Session, *, bot_id: Optional[UUID] = None, limit: int = 50, offset: int = 0
+    session: Session,
+    *,
+    bot_id: Optional[UUID] = None,
+    test_flag: Optional[bool] = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> List[Conversation]:
     stmt = select(Conversation)
     if bot_id:
         stmt = stmt.where(Conversation.bot_id == bot_id)
+    if test_flag is not None:
+        stmt = stmt.where(Conversation.test_flag == bool(test_flag))
     stmt = stmt.order_by(Conversation.updated_at.desc())
     stmt = stmt.offset(int(offset)).limit(int(limit))
     return list(session.exec(stmt))
 
-def count_conversations(session: Session, *, bot_id: Optional[UUID] = None) -> int:
+def count_conversations(session: Session, *, bot_id: Optional[UUID] = None, test_flag: Optional[bool] = None) -> int:
     from sqlmodel import func
 
     stmt = select(func.count(Conversation.id))
     if bot_id:
         stmt = stmt.where(Conversation.bot_id == bot_id)
+    if test_flag is not None:
+        stmt = stmt.where(Conversation.test_flag == bool(test_flag))
     return int(session.exec(stmt).one())
 
 

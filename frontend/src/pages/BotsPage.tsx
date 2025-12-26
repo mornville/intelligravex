@@ -1,0 +1,267 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { apiDelete, apiGet, apiPost } from '../api/client'
+import type { Bot, Options } from '../types'
+import { fmtIso } from '../utils/format'
+
+export default function BotsPage() {
+  const nav = useNavigate()
+  const [bots, setBots] = useState<Bot[]>([])
+  const [options, setOptions] = useState<Options | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+
+  const defaultPrompt = useMemo(
+    () => 'You are a fast, helpful voice assistant. Keep answers concise unless asked.',
+    [],
+  )
+
+  const [newBot, setNewBot] = useState({
+    name: '',
+    openai_model: 'gpt-4o',
+    system_prompt: defaultPrompt,
+    language: 'en',
+    tts_language: 'en',
+    whisper_model: 'small',
+    whisper_device: 'auto',
+    xtts_model: 'tts_models/multilingual/multi-dataset/xtts_v2',
+    speaker_id: '',
+    speaker_wav: '',
+    openai_key_id: '',
+    tts_split_sentences: false,
+    tts_chunk_min_chars: 20,
+    tts_chunk_max_chars: 120,
+    start_message_mode: 'llm' as const,
+    start_message_text: '',
+  })
+
+  async function reload() {
+    setLoading(true)
+    setErr(null)
+    try {
+      const [b, o] = await Promise.all([
+        apiGet<{ items: Bot[] }>('/api/bots'),
+        apiGet<Options>('/api/options'),
+      ])
+      setBots(b.items)
+      setOptions(o)
+      setNewBot((p) => ({
+        ...p,
+        openai_model: o.openai_models.includes(p.openai_model) ? p.openai_model : o.openai_models[0] || p.openai_model,
+      }))
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void reload()
+  }, [])
+
+  async function onCreate() {
+    if (!newBot.name.trim()) return
+    setCreating(true)
+    setErr(null)
+    try {
+      const payload: any = { ...newBot }
+      payload.speaker_id = payload.speaker_id.trim() || null
+      payload.speaker_wav = payload.speaker_wav.trim() || null
+      payload.openai_key_id = payload.openai_key_id.trim() || null
+      const created = await apiPost<Bot>('/api/bots', payload)
+      nav(`/bots/${created.id}`)
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function onDelete(bot: Bot) {
+    const ok = window.confirm(
+      `Delete bot "${bot.name}"?\n\nThis will also delete its conversations and messages.\nThis is NOT reversible.`,
+    )
+    if (!ok) return
+    setErr(null)
+    try {
+      await apiDelete(`/api/bots/${bot.id}`)
+      await reload()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
+
+  return (
+    <div className="page">
+      <div className="pageHeader">
+        <h1>Bots</h1>
+        <div className="muted">Create, configure, and test voice bots.</div>
+      </div>
+
+      {err ? <div className="alert">{err}</div> : null}
+
+      <div className="grid2">
+        <section className="card">
+          <div className="cardTitle">New bot</div>
+          <div className="formRow">
+            <label>Name</label>
+            <input
+              value={newBot.name}
+              onChange={(e) => setNewBot((p) => ({ ...p, name: e.target.value }))}
+              placeholder="e.g. Sales Assistant"
+            />
+          </div>
+          <div className="formRow">
+            <label>OpenAI model</label>
+            <select
+              value={newBot.openai_model}
+              onChange={(e) => setNewBot((p) => ({ ...p, openai_model: e.target.value }))}
+            >
+              {(options?.openai_models || ['gpt-4o']).map((m) => (
+                <option value={m} key={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="formRow">
+            <label>System prompt</label>
+            <textarea
+              value={newBot.system_prompt}
+              onChange={(e) => setNewBot((p) => ({ ...p, system_prompt: e.target.value }))}
+              rows={6}
+            />
+          </div>
+          <div className="formRowGrid2">
+            <div className="formRow">
+              <label>ASR language</label>
+              <select value={newBot.language} onChange={(e) => setNewBot((p) => ({ ...p, language: e.target.value }))}>
+                {(options?.languages || ['en']).map((l) => (
+                  <option value={l} key={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="formRow">
+              <label>TTS language</label>
+              <select
+                value={newBot.tts_language}
+                onChange={(e) => setNewBot((p) => ({ ...p, tts_language: e.target.value }))}
+              >
+                {(options?.languages || ['en']).map((l) => (
+                  <option value={l} key={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="formRowGrid2">
+            <div className="formRow">
+              <label>Whisper model</label>
+              <select
+                value={newBot.whisper_model}
+                onChange={(e) => setNewBot((p) => ({ ...p, whisper_model: e.target.value }))}
+              >
+                {(options?.whisper_models || ['small']).map((m) => (
+                  <option value={m} key={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="formRow">
+              <label>Whisper device</label>
+              <select
+                value={newBot.whisper_device}
+                onChange={(e) => setNewBot((p) => ({ ...p, whisper_device: e.target.value }))}
+              >
+                {(options?.whisper_devices || ['auto']).map((d) => (
+                  <option value={d} key={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="formRow">
+            <label>XTTS v2 model</label>
+            <select value={newBot.xtts_model} onChange={(e) => setNewBot((p) => ({ ...p, xtts_model: e.target.value }))}>
+              {(options?.xtts_models || ['tts_models/multilingual/multi-dataset/xtts_v2']).map((m) => (
+                <option value={m} key={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="formRowGrid2">
+            <div className="formRow">
+              <label>Speaker ID (optional)</label>
+              <input
+                value={newBot.speaker_id}
+                onChange={(e) => setNewBot((p) => ({ ...p, speaker_id: e.target.value }))}
+                placeholder="(auto)"
+              />
+            </div>
+            <div className="formRow">
+              <label>Speaker WAV path (optional)</label>
+              <input
+                value={newBot.speaker_wav}
+                onChange={(e) => setNewBot((p) => ({ ...p, speaker_wav: e.target.value }))}
+                placeholder="/path/to/voice.wav"
+              />
+            </div>
+          </div>
+          <div className="row">
+            <button className="btn primary" onClick={onCreate} disabled={creating || !newBot.name.trim()}>
+              {creating ? 'Creating…' : 'Create bot'}
+            </button>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="cardTitle">Existing bots</div>
+          {loading ? (
+            <div className="muted">Loading…</div>
+          ) : bots.length === 0 ? (
+            <div className="muted">No bots yet.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Model</th>
+                  <th>Updated</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {bots.map((b) => (
+                  <tr key={b.id}>
+                    <td>
+                      <Link className="link" to={`/bots/${b.id}`}>
+                        {b.name}
+                      </Link>
+                      <div className="muted mono">{b.id}</div>
+                    </td>
+                    <td className="mono">{b.openai_model}</td>
+                    <td>{fmtIso(b.updated_at)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button className="btn danger ghost" onClick={() => onDelete(b)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
