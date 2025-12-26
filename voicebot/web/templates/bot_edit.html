@@ -162,6 +162,7 @@
         let inputSampleRate = 48000;
         let isRecording = false;
         let isBusy = false;
+        let currentStage = "idle";
 
 	        // Playback scheduling
 	        let playCtx = null;
@@ -174,9 +175,10 @@
 	          convPill.textContent = conversationId ? `conversation: ${conversationId}` : "conversation: (new)";
 	        }
 
-	        function setStatus(stage) {
-	          statusPill.textContent = `status: ${stage}`;
-            statusPill.style.borderColor = stage === "recording" ? "rgba(255, 94, 140, 0.45)" : "rgba(120, 150, 220, 0.22)";
+	        function setStatus(newStage) {
+            currentStage = newStage;
+	          statusPill.textContent = `status: ${currentStage}`;
+            statusPill.style.borderColor = currentStage === "recording" ? "rgba(255, 94, 140, 0.45)" : "rgba(120, 150, 220, 0.22)";
 	        }
 
           function setRecUi(state) {
@@ -190,6 +192,11 @@
             toggleBtn.disabled = state;
             newConvBtn.disabled = state || isRecording;
             speak.disabled = state || isRecording;
+          }
+
+          function canStartRecording() {
+            // Only allow starting mic when the bot is idle-ish (not in ASR/LLM/TTS/init/sending).
+            return !isBusy && !isRecording && (currentStage === "idle" || currentStage === "connected");
           }
 
           function fmtMs(ms) {
@@ -506,7 +513,10 @@
 
         toggleBtn.addEventListener("click", async () => {
           try {
-            if (!isRecording) await startRec();
+            if (!isRecording) {
+              if (!canStartRecording()) return;
+              await startRec();
+            }
             else await stopRec();
           } catch (e) {
             setRecUi(false);
