@@ -232,6 +232,28 @@ def create_app() -> FastAPI:
     def bots_edit(bot_id: UUID, request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
         bot = get_bot(session, bot_id)
         keys = list_keys(session, provider="openai")
+
+        # Warm heavy models in the background so first test turn doesn't pay the load cost.
+        warm_key = (bot.whisper_model, bot.whisper_device, bot.language, bot.xtts_model)
+        if not hasattr(app.state, "warmed"):
+            app.state.warmed = set()
+        warmed: set = app.state.warmed
+        if warm_key not in warmed:
+            warmed.add(warm_key)
+
+            def _warm() -> None:
+                try:
+                    _get_asr(bot.whisper_model, bot.whisper_device, bot.language)
+                except Exception:
+                    pass
+                try:
+                    _get_tts_handle(bot.xtts_model, True)
+                    _get_tts_meta(bot.xtts_model)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_warm, name="warm-models", daemon=True).start()
+
         return templates.TemplateResponse(
             "bot_edit.html", {"request": request, "bot": bot, "keys": keys, "options": ui_options}
         )
@@ -357,47 +379,46 @@ def create_app() -> FastAPI:
 
     @lru_cache(maxsize=8)
     def _get_tts_meta(model_name: str) -> dict:
+        # Use the cached XTTS handle (avoids loading the model twice).
         try:
-            from voicebot.compat.torch_mps import ensure_torch_mps_compat
-
-            ensure_torch_mps_compat()
-        except Exception:
-            pass
-        try:
-            from TTS.api import TTS  # type: ignore
+            handle = _get_tts_handle(model_name, True)
+            tts, lock = handle
+            with lock:
+                return tts.meta()
         except Exception:
             return {"speakers": [], "languages": []}
-
-        tts = TTS(model_name=model_name, gpu=False, progress_bar=False)
-        speakers = list(getattr(tts, "speakers", None) or [])
-        languages = list(getattr(tts, "languages", None) or [])
-        return {"speakers": speakers, "languages": languages}
 
     @lru_cache(maxsize=8)
     def _get_tts_handle(
         model_name: str,
-        speaker_wav: Optional[str],
-        speaker_id: Optional[str],
         use_gpu: bool,
-        split_sentences: bool,
-        language: str,
     ) -> Tuple[XTTSv2, threading.Lock]:
         return (
             XTTSv2(
                 model_name=model_name,
-                speaker_wav=speaker_wav,
-                speaker_id=speaker_id,
                 use_gpu=use_gpu,
-                split_sentences=split_sentences,
-                language=language,
             ),
             threading.Lock(),
         )
 
-    def _tts_synthesize(tts_handle: Tuple[XTTSv2, threading.Lock], text: str):
+    def _tts_synthesize(
+        tts_handle: Tuple[XTTSv2, threading.Lock],
+        text: str,
+        *,
+        speaker_wav: Optional[str],
+        speaker_id: Optional[str],
+        language: str,
+        split_sentences: bool,
+    ):
         tts, lock = tts_handle
         with lock:
-            return tts.synthesize(text)
+            return tts.synthesize(
+                text,
+                speaker_wav=speaker_wav,
+                speaker_id=speaker_id,
+                language=language,
+                split_sentences=split_sentences,
+            )
 
     def _build_history(session: Session, bot: Bot, conversation_id: Optional[UUID]) -> list[Message]:
         messages: list[Message] = [Message(role="system", content=bot.system_prompt)]
@@ -539,16 +560,17 @@ def create_app() -> FastAPI:
                 )
 
             if speak:
-                tts_handle = _get_tts_handle(
-                    bot.xtts_model,
-                    bot.speaker_wav,
-                    bot.speaker_id,
-                    True,
-                    bot.tts_split_sentences,
-                    bot.tts_language,
-                )
+                tts_handle = _get_tts_handle(bot.xtts_model, True)
                 # Synthesize whole greeting as one chunk for now.
-                a = await asyncio.to_thread(_tts_synthesize, tts_handle, greeting_text)
+                a = await asyncio.to_thread(
+                    _tts_synthesize,
+                    tts_handle,
+                    greeting_text,
+                    speaker_wav=bot.speaker_wav,
+                    speaker_id=bot.speaker_id,
+                    language=bot.tts_language,
+                    split_sentences=bot.tts_split_sentences,
+                )
                 await _ws_send_json(
                     ws,
                     {
@@ -763,15 +785,7 @@ def create_app() -> FastAPI:
                             history = _build_history(session, bot, conv_id)
 
                             llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                            tts_handle = await asyncio.to_thread(
-                                _get_tts_handle,
-                                bot.xtts_model,
-                                bot.speaker_wav,
-                                bot.speaker_id,
-                                True,
-                                bot.tts_split_sentences,
-                                bot.tts_language,
-                            )
+                            tts_handle = await asyncio.to_thread(_get_tts_handle, bot.xtts_model, True)
                         except Exception as exc:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
                             await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
@@ -825,7 +839,14 @@ def create_app() -> FastAPI:
                                         with metrics_lock:
                                             if tts_start_ts is None:
                                                 tts_start_ts = time.time()
-                                        a = _tts_synthesize(tts_handle, chunk)
+                                        a = _tts_synthesize(
+                                            tts_handle,
+                                            chunk,
+                                            speaker_wav=bot.speaker_wav,
+                                            speaker_id=bot.speaker_id,
+                                            language=bot.tts_language,
+                                            split_sentences=bot.tts_split_sentences,
+                                        )
                                         if not did_send_any:
                                             status(req_id, "tts")
                                             did_send_any = True
@@ -835,7 +856,14 @@ def create_app() -> FastAPI:
                                     with metrics_lock:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
-                                    a = _tts_synthesize(tts_handle, tail)
+                                    a = _tts_synthesize(
+                                        tts_handle,
+                                        tail,
+                                        speaker_wav=bot.speaker_wav,
+                                        speaker_id=bot.speaker_id,
+                                        language=bot.tts_language,
+                                        split_sentences=bot.tts_split_sentences,
+                                    )
                                     if not did_send_any:
                                         status(req_id, "tts")
                                         did_send_any = True
@@ -1003,14 +1031,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
         llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-        tts_handle = _get_tts_handle(
-            bot.xtts_model,
-            bot.speaker_wav,
-            bot.speaker_id,
-            True,
-            bot.tts_split_sentences,
-            bot.tts_language,
-        )
+        tts_handle = _get_tts_handle(bot.xtts_model, True)
         def gen() -> Generator[bytes, None, None]:
             text = (payload.text or "").strip()
             speak = bool(payload.speak)
@@ -1053,11 +1074,25 @@ def create_app() -> FastAPI:
                         if d is None:
                             break
                         for chunk in local_chunker.push(d):
-                            audio = _tts_synthesize(tts_handle, chunk)
+                            audio = _tts_synthesize(
+                                tts_handle,
+                                chunk,
+                                speaker_wav=bot.speaker_wav,
+                                speaker_id=bot.speaker_id,
+                                language=bot.tts_language,
+                                split_sentences=bot.tts_split_sentences,
+                            )
                             audio_q.put((_wav_bytes(audio.audio, audio.sample_rate), audio.sample_rate))
                     tail = local_chunker.flush()
                     if tail:
-                        audio = _tts_synthesize(tts_handle, tail)
+                        audio = _tts_synthesize(
+                            tts_handle,
+                            tail,
+                            speaker_wav=bot.speaker_wav,
+                            speaker_id=bot.speaker_id,
+                            language=bot.tts_language,
+                            split_sentences=bot.tts_split_sentences,
+                        )
                         audio_q.put((_wav_bytes(audio.audio, audio.sample_rate), audio.sample_rate))
                 finally:
                     audio_q.put(None)
@@ -1164,14 +1199,7 @@ def create_app() -> FastAPI:
         add_message(session, conversation_id=conv_id, role="user", content=user_text)
 
         llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-        tts_handle = _get_tts_handle(
-            bot.xtts_model,
-            bot.speaker_wav,
-            bot.speaker_id,
-            True,
-            bot.tts_split_sentences,
-            bot.tts_language,
-        )
+        tts_handle = _get_tts_handle(bot.xtts_model, True)
 
         def gen() -> Generator[bytes, None, None]:
             yield _ndjson({"type": "conversation", "id": str(conv_id)})
@@ -1212,11 +1240,25 @@ def create_app() -> FastAPI:
                         if d is None:
                             break
                         for chunk in local_chunker.push(d):
-                            a = _tts_synthesize(tts_handle, chunk)
+                            a = _tts_synthesize(
+                                tts_handle,
+                                chunk,
+                                speaker_wav=bot.speaker_wav,
+                                speaker_id=bot.speaker_id,
+                                language=bot.tts_language,
+                                split_sentences=bot.tts_split_sentences,
+                            )
                             audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
                     tail = local_chunker.flush()
                     if tail:
-                        a = _tts_synthesize(tts_handle, tail)
+                        a = _tts_synthesize(
+                            tts_handle,
+                            tail,
+                            speaker_wav=bot.speaker_wav,
+                            speaker_id=bot.speaker_id,
+                            language=bot.tts_language,
+                            split_sentences=bot.tts_split_sentences,
+                        )
                         audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
                 finally:
                     audio_q.put(None)
@@ -1308,15 +1350,15 @@ def create_app() -> FastAPI:
         if not payload.speak:
             return {"text": out_text}
 
-        tts_handle = _get_tts_handle(
-            bot.xtts_model,
-            bot.speaker_wav,
-            bot.speaker_id,
-            True,
-            bot.tts_split_sentences,
-            bot.tts_language,
+        tts_handle = _get_tts_handle(bot.xtts_model, True)
+        audio = _tts_synthesize(
+            tts_handle,
+            out_text,
+            speaker_wav=bot.speaker_wav,
+            speaker_id=bot.speaker_id,
+            language=bot.tts_language,
+            split_sentences=bot.tts_split_sentences,
         )
-        audio = _tts_synthesize(tts_handle, out_text)
         wav = _wav_bytes(audio.audio, audio.sample_rate)
         return {"text": out_text, "audio_wav_base64": base64.b64encode(wav).decode(), "sr": audio.sample_rate}
 
