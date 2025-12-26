@@ -52,22 +52,31 @@
               border-radius: 14px;
               background: {% if m.role == 'user' %}rgba(124,135,255,0.10){% elif m.role == 'tool' %}rgba(155,209,255,0.06){% else %}rgba(12,16,28,0.55){% endif %};
               white-space: pre-wrap;
-            ">{{ m.display }}</div>
+            ">{{ (m.display if m.display is defined and m.display) else m.content }}</div>
 
           <details style="max-width: 92%;">
             <summary class="muted" style="cursor:pointer;">details</summary>
             <div class="muted" style="margin-top:6px;">{{ m.created_at }}</div>
-            {% set t = m.metrics %}
-            {% if t["in"] is not none or t["out"] is not none or t["cost"] is not none or t["asr"] is not none or t["llm1"] is not none or t["llm"] is not none or t["tts1"] is not none or t["total"] is not none %}
+            {% set t = (m.metrics if m.metrics is defined and m.metrics) else {
+              "in": m.input_tokens_est if m.input_tokens_est is defined else none,
+              "out": m.output_tokens_est if m.output_tokens_est is defined else none,
+              "cost": m.cost_usd_est if m.cost_usd_est is defined else none,
+              "asr": m.asr_ms if m.asr_ms is defined else none,
+              "llm1": m.llm_ttfb_ms if m.llm_ttfb_ms is defined else none,
+              "llm": m.llm_total_ms if m.llm_total_ms is defined else none,
+              "tts1": m.tts_first_audio_ms if m.tts_first_audio_ms is defined else none,
+              "total": m.total_ms if m.total_ms is defined else none
+            } %}
+            {% if t.get("in") is not none or t.get("out") is not none or t.get("cost") is not none or t.get("asr") is not none or t.get("llm1") is not none or t.get("llm") is not none or t.get("tts1") is not none or t.get("total") is not none %}
               <div class="row" style="gap:8px; margin-top: 8px;">
-                {% if t["in"] is not none %}<span class="pill">in: {{ t["in"] }}</span>{% endif %}
-                {% if t["out"] is not none %}<span class="pill">out: {{ t["out"] }}</span>{% endif %}
-                {% if t["cost"] is not none %}<span class="pill">cost: ${{ "%.6f"|format(t["cost"] or 0.0) }}</span>{% endif %}
-                {% if t["asr"] is not none %}<span class="pill">ASR: {{ t["asr"] }}ms</span>{% endif %}
-                {% if t["llm1"] is not none %}<span class="pill">LLM 1st: {{ t["llm1"] }}ms</span>{% endif %}
-                {% if t["llm"] is not none %}<span class="pill">LLM: {{ t["llm"] }}ms</span>{% endif %}
-                {% if t["tts1"] is not none %}<span class="pill">TTS 1st: {{ t["tts1"] }}ms</span>{% endif %}
-                {% if t["total"] is not none %}<span class="pill">total: {{ t["total"] }}ms</span>{% endif %}
+                {% if t.get("in") is not none %}<span class="pill">in: {{ t.get("in") }}</span>{% endif %}
+                {% if t.get("out") is not none %}<span class="pill">out: {{ t.get("out") }}</span>{% endif %}
+                {% if t.get("cost") is not none %}<span class="pill">cost: ${{ "%.6f"|format(t.get("cost") or 0.0) }}</span>{% endif %}
+                {% if t.get("asr") is not none %}<span class="pill">ASR: {{ t.get("asr") }}ms</span>{% endif %}
+                {% if t.get("llm1") is not none %}<span class="pill">LLM 1st: {{ t.get("llm1") }}ms</span>{% endif %}
+                {% if t.get("llm") is not none %}<span class="pill">LLM: {{ t.get("llm") }}ms</span>{% endif %}
+                {% if t.get("tts1") is not none %}<span class="pill">TTS 1st: {{ t.get("tts1") }}ms</span>{% endif %}
+                {% if t.get("total") is not none %}<span class="pill">total: {{ t.get("total") }}ms</span>{% endif %}
               </div>
             {% endif %}
 
