@@ -84,6 +84,8 @@ def _parse_stream_events(
                 args_json = arguments
             else:
                 args_json = "".join(fc_args)
+            if fc_first_ts is None:
+                fc_first_ts = now_fn()
             tool_name = fc_name or tool_name_hint or "set_metadata"
             if args_json:
                 yield ToolCall(name=tool_name, arguments_json=args_json, first_event_ts=fc_first_ts)

@@ -1089,14 +1089,7 @@ def create_app() -> FastAPI:
 
                                 if speak:
                                     status(req_id, "tts")
-                                    a = _tts_synthesize(
-                                        tts_handle,
-                                        next_reply,
-                                        speaker_wav=bot.speaker_wav,
-                                        speaker_id=bot.speaker_id,
-                                        language=bot.tts_language,
-                                        split_sentences=bot.tts_split_sentences,
-                                    )
+                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, next_reply)
                                     await _ws_send_json(
                                         ws,
                                         {
