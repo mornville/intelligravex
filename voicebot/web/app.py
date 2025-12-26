@@ -722,6 +722,7 @@ def create_app() -> FastAPI:
         speak = True
         test_flag = True
         stop_ts: Optional[float] = None
+        accepting_audio = False
 
         try:
             while True:
@@ -752,6 +753,7 @@ def create_app() -> FastAPI:
                         active_req_id = req_id
                         speak = bool(payload.get("speak", True))
                         test_flag = bool(payload.get("test_flag", True))
+                        accepting_audio = False
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "init"})
                         try:
                             conv_id = await _init_conversation_and_greet(
@@ -770,6 +772,7 @@ def create_app() -> FastAPI:
                         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                         active_req_id = None
+                        accepting_audio = False
                         continue
 
                     if msg_type == "start":
@@ -791,6 +794,7 @@ def create_app() -> FastAPI:
                         audio_buf = bytearray()
                         speak = bool(payload.get("speak", True))
                         test_flag = bool(payload.get("test_flag", True))
+                        accepting_audio = True
 
                         conversation_id_str = str(payload.get("conversation_id") or "").strip()
 
@@ -840,6 +844,7 @@ def create_app() -> FastAPI:
                         test_flag = bool(payload.get("test_flag", True))
                         user_text = str(payload.get("text") or "").strip()
                         conversation_id_str = str(payload.get("conversation_id") or "").strip()
+                        accepting_audio = False
                         if not user_text:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": "Empty text"})
                             await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
@@ -1194,6 +1199,7 @@ def create_app() -> FastAPI:
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                         active_req_id = None
                         conv_id = None
+                        accepting_audio = False
                         continue
 
                     elif msg_type == "stop":
@@ -1202,6 +1208,7 @@ def create_app() -> FastAPI:
                                 ws, {"type": "error", "req_id": req_id or None, "error": "Unknown req_id"}
                             )
                             continue
+                        accepting_audio = False
                         if not conv_id:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": "No conversation"})
                             active_req_id = None
@@ -1612,6 +1619,7 @@ def create_app() -> FastAPI:
                         active_req_id = None
                         conv_id = None
                         audio_buf = bytearray()
+                        accepting_audio = False
 
                     else:
                         await _ws_send_json(
@@ -1620,8 +1628,8 @@ def create_app() -> FastAPI:
                         )
 
                 elif "bytes" in msg and msg["bytes"] is not None:
-                    if active_req_id is None:
-                        await _ws_send_json(ws, {"type": "error", "error": "Send start before audio"})
+                    # Be tolerant to stray/late audio frames (browser worklet flush, etc.)
+                    if active_req_id is None or not accepting_audio:
                         continue
                     audio_buf.extend(msg["bytes"])
                 else:
@@ -1629,6 +1637,9 @@ def create_app() -> FastAPI:
                     pass
 
         except WebSocketDisconnect:
+            return
+        except RuntimeError:
+            # Starlette can raise RuntimeError if receive() is called after disconnect was already processed.
             return
 
     @app.get("/api/tts/meta")

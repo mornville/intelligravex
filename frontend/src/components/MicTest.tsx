@@ -50,12 +50,13 @@ export default function MicTest({ botId }: { botId: string }) {
   const recorderRef = useRef<Recorder | null>(null)
   const playerRef = useRef<WavQueuePlayer | null>(null)
   const activeReqIdRef = useRef<string | null>(null)
+  const recordingRef = useRef(false)
   const draftAssistantIdRef = useRef<string | null>(null)
   const timingsByReq = useRef<Record<string, Timings>>({})
   const scrollerRef = useRef<HTMLDivElement | null>(null)
 
   const canInit = useMemo(() => stage === 'idle' || stage === 'disconnected' || stage === 'error', [stage])
-  const canRecord = useMemo(() => stage === 'idle' && !!conversationId, [stage, conversationId])
+  const canRecord = useMemo(() => speak && stage === 'idle' && !!conversationId, [speak, stage, conversationId])
 
   useEffect(() => {
     const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk`)
@@ -245,7 +246,10 @@ export default function MicTest({ botId }: { botId: string }) {
     wsRef.current.send(
       JSON.stringify({ type: 'start', req_id: reqId, conversation_id: conversationId, speak, test_flag: testFlag }),
     )
+    recordingRef.current = true
     const rec = await createRecorder((pcm16) => {
+      if (!recordingRef.current) return
+      if (!activeReqIdRef.current) return
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) wsRef.current.send(pcm16)
     })
     recorderRef.current = rec
@@ -255,6 +259,7 @@ export default function MicTest({ botId }: { botId: string }) {
 
   async function stopRecording() {
     setRecording(false)
+    recordingRef.current = false
     try {
       await recorderRef.current?.stop()
       await recorderRef.current?.close()
@@ -302,8 +307,8 @@ export default function MicTest({ botId }: { botId: string }) {
           {conversationId ? 'New conversation' : 'Start conversation'}
         </button>
         <div className="spacer" />
-        {recordBtn}
-        {recording ? <div className="recDot" title="Recording" /> : null}
+        {speak ? recordBtn : null}
+        {speak && recording ? <div className="recDot" title="Recording" /> : null}
       </div>
 
       {!speak ? (
