@@ -63,6 +63,8 @@ export default function MicTest({ botId }: { botId: string }) {
     try {
       const d = await apiGet<ConversationDetail>(`/api/conversations/${cid}`)
       hydratedConvIdRef.current = cid
+      // Hydration replaces the rendered list; any in-flight streaming draft id becomes invalid.
+      draftAssistantIdRef.current = null
       const mapped: ChatItem[] = d.messages.map((m) => {
         let role: ChatItem['role'] = m.role === 'assistant' ? 'assistant' : m.role === 'tool' ? 'tool' : 'user'
         let text = m.content
@@ -172,7 +174,8 @@ export default function MicTest({ botId }: { botId: string }) {
         if (!delta) return
         setItems((prev) => {
           let draftId = draftAssistantIdRef.current
-          if (!draftId) {
+          const hasDraft = draftId ? prev.some((it) => it.id === draftId) : false
+          if (!draftId || !hasDraft) {
             draftId = crypto.randomUUID()
             draftAssistantIdRef.current = draftId
             return [...prev, { id: draftId, role: 'assistant', text: delta }]
@@ -200,15 +203,22 @@ export default function MicTest({ botId }: { botId: string }) {
         const t = reqId ? timingsByReq.current[reqId] : undefined
         const doneText = String(msg.text || '')
         const draftId = draftAssistantIdRef.current
-        if (!draftId && doneText.trim()) {
-          const newId = crypto.randomUUID()
-          draftAssistantIdRef.current = newId
-          setItems((prev) => [...prev, { id: newId, role: 'assistant', text: doneText, timings: t }])
-          return
-        }
-        if (draftId && t) {
-          setItems((prev) => prev.map((it) => (it.id === draftId ? { ...it, timings: t } : it)))
-        }
+        setItems((prev) => {
+          const hasDraft = draftId ? prev.some((it) => it.id === draftId) : false
+          if (doneText.trim() && (!draftId || !hasDraft)) {
+            const newId = crypto.randomUUID()
+            draftAssistantIdRef.current = newId
+            return [...prev, { id: newId, role: 'assistant', text: doneText, timings: t }]
+          }
+          if (draftId && hasDraft) {
+            return prev.map((it) => {
+              if (it.id !== draftId) return it
+              const fixedText = doneText.trim() && it.text.trim().length < doneText.trim().length ? doneText : it.text
+              return { ...it, text: fixedText, timings: t ?? it.timings }
+            })
+          }
+          return prev
+        })
         return
       }
     }
@@ -239,6 +249,7 @@ export default function MicTest({ botId }: { botId: string }) {
     setConversationId(null)
     setItems([])
     hydratedConvIdRef.current = null
+    draftAssistantIdRef.current = null
     const reqId = crypto.randomUUID()
     activeReqIdRef.current = reqId
     wsRef.current.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag }))
@@ -258,6 +269,7 @@ export default function MicTest({ botId }: { botId: string }) {
     if (stage !== 'idle') return
     setErr(null)
     setChatText('')
+    draftAssistantIdRef.current = null
     setItems((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', text }])
     const reqId = crypto.randomUUID()
     activeReqIdRef.current = reqId
@@ -284,6 +296,7 @@ export default function MicTest({ botId }: { botId: string }) {
     }
     if (!canRecord) return
     setErr(null)
+    draftAssistantIdRef.current = null
     const reqId = crypto.randomUUID()
     activeReqIdRef.current = reqId
     wsRef.current.send(
