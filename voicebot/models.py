@@ -85,3 +85,28 @@ class ConversationMessage(SQLModel, table=True):
     tts_first_audio_ms: Optional[int] = Field(default=None)
     total_ms: Optional[int] = Field(default=None)
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+
+class IntegrationTool(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    bot_id: UUID = Field(foreign_key="bot.id", index=True)
+
+    # OpenAI tool name (unique per bot, enforced at app layer)
+    name: str = Field(index=True)
+    description: str = Field(default="")
+
+    url: str
+    method: str = Field(default="GET")  # GET/POST/PUT/PATCH/DELETE
+    request_body_template: str = Field(default="{}")  # JSON template string
+
+    # JSON schema for tool call args (object schema). Stored as JSON string.
+    parameters_schema_json: str = Field(default='{"type":"object","properties":{},"additionalProperties":true}')
+
+    # Maps conversation metadata keys to template values using {{response...}} or {{.meta...}}.
+    response_mapper_json: str = Field(default="{}")
+
+    # Optional: if set, ignore LLM-provided next_reply and render this template instead (Jinja2).
+    static_reply_template: str = Field(default="")
+
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)

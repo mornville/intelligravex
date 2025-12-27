@@ -51,7 +51,7 @@ def _parse_stream_events(
     """
     Parses Responses streaming events.
 
-    References:
+    Event types used:
     - response.output_text.delta
     - response.function_call_arguments.delta/done
     """
@@ -89,7 +89,10 @@ def _parse_stream_events(
             tool_name = fc_name or tool_name_hint or "set_metadata"
             if args_json:
                 yield ToolCall(name=tool_name, arguments_json=args_json, first_event_ts=fc_first_ts)
-                return
+                # Reset for potential additional tool calls in the same stream.
+                fc_name = None
+                fc_args = []
+                fc_first_ts = None
             continue
 
         # Some SDK versions may include tool info on output_item events.
@@ -146,8 +149,8 @@ class OpenAILLM:
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> Generator[str | ToolCall, None, None]:
         """
-        Streams assistant text deltas. If the model emits a function/tool call,
-        yields a single ToolCall at the end (and typically no text deltas).
+        Streams assistant text deltas. If the model emits function/tool calls,
+        yields ToolCall events (may be multiple in one stream).
         """
         stream = self._client.responses.create(
             model=self._model,

@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from voicebot.crypto import CryptoBox, build_hint
-from voicebot.models import ApiKey, Bot, Conversation, ConversationMessage
+from voicebot.models import ApiKey, Bot, Conversation, ConversationMessage, IntegrationTool
 
 
 class NotFoundError(RuntimeError):
@@ -94,6 +94,10 @@ def delete_bot(session: Session, bot_id: UUID) -> None:
         for m in session.exec(stmt):
             session.delete(m)
         session.delete(c)
+    # Delete tools
+    stmt = select(IntegrationTool).where(IntegrationTool.bot_id == bot_id)
+    for t in session.exec(stmt):
+        session.delete(t)
     session.delete(bot)
     session.commit()
 
@@ -155,7 +159,25 @@ def merge_conversation_metadata(session: Session, *, conversation_id: UUID, patc
     except Exception:
         current = {}
     for k, v in (patch or {}).items():
-        current[str(k)] = v
+        key = str(k)
+        if "." in key and key.strip(".") != key:
+            # Don't treat leading/trailing dots as paths; store as-is.
+            current[key] = v
+            continue
+        if "." in key:
+            parts = [p for p in key.split(".") if p]
+            if not parts:
+                continue
+            d = current
+            for p in parts[:-1]:
+                nxt = d.get(p)
+                if not isinstance(nxt, dict):
+                    nxt = {}
+                    d[p] = nxt
+                d = nxt
+            d[parts[-1]] = v
+        else:
+            current[key] = v
     conv.metadata_json = json.dumps(current, ensure_ascii=False)
     touch_conversation(session, conv)
     return current
@@ -248,3 +270,49 @@ def list_messages(session: Session, *, conversation_id: UUID) -> List[Conversati
     stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
     stmt = stmt.order_by(ConversationMessage.created_at.asc())
     return list(session.exec(stmt))
+
+
+def list_integration_tools(session: Session, *, bot_id: UUID) -> List[IntegrationTool]:
+    stmt = select(IntegrationTool).where(IntegrationTool.bot_id == bot_id)
+    stmt = stmt.order_by(IntegrationTool.updated_at.desc())
+    return list(session.exec(stmt))
+
+
+def get_integration_tool(session: Session, tool_id: UUID) -> IntegrationTool:
+    tool = session.get(IntegrationTool, tool_id)
+    if not tool:
+        raise NotFoundError("Tool not found")
+    return tool
+
+
+def get_integration_tool_by_name(session: Session, *, bot_id: UUID, name: str) -> IntegrationTool | None:
+    stmt = select(IntegrationTool).where(IntegrationTool.bot_id == bot_id).where(IntegrationTool.name == name)
+    return session.exec(stmt).first()
+
+
+def create_integration_tool(session: Session, tool: IntegrationTool) -> IntegrationTool:
+    tool.created_at = dt.datetime.now(dt.timezone.utc)
+    tool.updated_at = tool.created_at
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+    return tool
+
+
+def update_integration_tool(session: Session, tool_id: UUID, patch: dict) -> IntegrationTool:
+    tool = get_integration_tool(session, tool_id)
+    for k, v in patch.items():
+        setattr(tool, k, v)
+    tool.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(tool)
+    session.commit()
+    session.refresh(tool)
+    return tool
+
+
+def delete_integration_tool(session: Session, tool_id: UUID) -> None:
+    tool = session.get(IntegrationTool, tool_id)
+    if not tool:
+        return
+    session.delete(tool)
+    session.commit()

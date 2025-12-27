@@ -116,10 +116,85 @@ Notes:
   - `GET/POST/PUT/DELETE /api/bots`
   - `GET/POST/DELETE /api/keys`
   - `GET /api/conversations` (paginated), `GET /api/conversations/<uuid>`
+  - `GET/POST/PUT/DELETE /api/bots/<uuid>/tools` (integration tools)
   - `WS /ws/bots/<uuid>/talk` (mic audio + streamed status/audio)
 - Dev CORS is enabled for `localhost:5173` by default. Override with:
   - `VOICEBOT_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`
   - React can also be pointed at a different backend using `VITE_BACKEND_URL` in `frontend/.env`.
+
+## Variables (Metadata Templating)
+
+Prompts and replies can reference conversation metadata using `{{...}}` placeholders.
+
+- Shorthand metadata lookup:
+  - `{{.first_name}}`
+  - `{{.user.profile.firstName}}` (nested)
+- Other contexts (used by integrations):
+  - `{{args.user_id}}` / `{{params.user_id}}` (tool-call arguments)
+  - `{{response.data.first_name}}` (HTTP response JSON)
+
+Where variables are applied:
+- Bot `system_prompt` is rendered with metadata before every LLM call.
+- Message history is rendered with metadata before sending to the LLM.
+- Tool `next_reply` is rendered with metadata before sending back to the user.
+
+Missing variables resolve to an empty string.
+
+## Integration Tools (HTTP → Metadata)
+
+You can attach HTTP API “integration tools” to a bot. The LLM can call them, and the backend will:
+1) Execute the HTTP request.
+2) Map selected response fields into conversation metadata (via a response mapper).
+3) Return `next_reply` to the user (with variables resolved), without making a second LLM call.
+
+Important:
+- Raw HTTP responses are **not** sent back to the LLM.
+- Only the mapped keys are merged into conversation metadata.
+
+### Tool call schema (LLM-facing)
+
+Each integration tool is exposed to the LLM as a function tool with:
+- Your custom parameters (JSON schema object)
+- A required `next_reply` string (can contain variables like `{{.firstName}}`)
+
+### Static reply (optional, Jinja2)
+
+Integrations can also be configured with an optional `static_reply_template`.
+
+If `static_reply_template` is set:
+- The backend ignores the LLM-provided `next_reply`.
+- The backend renders `static_reply_template` using **Jinja2** (supports `{% if %}`, `{% for %}`, etc).
+- Shorthand `.key` is supported inside Jinja expressions and is treated as `meta.key` (e.g. `{{.firstName}}`, `{% if .vip %}`).
+
+Template context:
+- `meta`: current conversation metadata (after response mapping)
+- `response`: raw HTTP response JSON
+- `args` / `params`: tool-call arguments (excluding `next_reply`)
+
+### Response mapper
+
+Response mapper is a JSON object: `metadata_key -> template`.
+
+Example:
+```json
+{
+  "firstName": "{{response.data.first_name}}",
+  "user.id": "{{response.data.id}}"
+}
+```
+
+Notes:
+- Keys with dots (e.g. `user.id`) are stored as nested objects in `metadata_json`.
+- Templates can return raw JSON values if the whole value is a single placeholder.
+
+### UI / API
+
+- React Studio: Bot page → “Integrations (HTTP tools)” → Add integration.
+- REST:
+  - `GET /api/bots/<bot_uuid>/tools`
+  - `POST /api/bots/<bot_uuid>/tools`
+  - `PUT /api/bots/<bot_uuid>/tools/<tool_uuid>`
+  - `DELETE /api/bots/<bot_uuid>/tools/<tool_uuid>`
 
 ## Context / Architecture (for handoff)
 

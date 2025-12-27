@@ -34,3 +34,13 @@ def set_metadata_tool_def() -> dict:
         "strict": False,
     }
 
+
+def set_variable_tool_def() -> dict:
+    """Alias for set_metadata (user-friendly name used in prompts)."""
+    d = set_metadata_tool_def()
+    d["name"] = "set_variable"
+    d["description"] = (
+        "Set or update conversation variables/metadata as key/value pairs. "
+        "Include a 'next_reply' string to say to the user after updating variables."
+    )
+    return d

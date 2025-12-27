@@ -1,10 +1,19 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { apiDelete, apiGet, apiPut } from '../api/client'
+import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import MicTest from '../components/MicTest'
-import type { ApiKey, Bot, Options } from '../types'
+import type { ApiKey, Bot, IntegrationTool, Options } from '../types'
 
 type TtsMeta = { speakers: string[]; languages: string[] }
+
+function HelpTip({ children }: { children: ReactNode }) {
+  return (
+    <span className="helpTipWrap" tabIndex={0} role="button" aria-label="Show example">
+      <span className="helpTipIcon">?</span>
+      <span className="helpTipBubble">{children}</span>
+    </span>
+  )
+}
 
 export default function BotDetailPage() {
   const { botId } = useParams()
@@ -13,6 +22,18 @@ export default function BotDetailPage() {
   const [keys, setKeys] = useState<ApiKey[]>([])
   const [options, setOptions] = useState<Options | null>(null)
   const [ttsMeta, setTtsMeta] = useState<TtsMeta | null>(null)
+  const [tools, setTools] = useState<IntegrationTool[]>([])
+  const [showToolModal, setShowToolModal] = useState(false)
+  const [toolForm, setToolForm] = useState({
+    id: '',
+    name: '',
+    description: '',
+    url: '',
+    method: 'GET',
+    request_body_template: '{}',
+    response_mapper_json: '{}',
+    static_reply_template: '',
+  })
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -33,6 +54,8 @@ export default function BotDetailPage() {
       setBot(b)
       setKeys(k.items)
       setOptions(o)
+      const t = await apiGet<{ items: IntegrationTool[] }>(`/api/bots/${botId}/tools`)
+      setTools(t.items)
     } catch (e: any) {
       setErr(String(e?.message || e))
     }
@@ -83,6 +106,85 @@ export default function BotDetailPage() {
   }
 
   if (!botId) return null
+
+  function openNewTool() {
+    setToolForm({
+      id: '',
+      name: '',
+      description: '',
+      url: '',
+      method: (options?.http_methods?.[0] || 'GET') as any,
+      request_body_template: '{}',
+      response_mapper_json: '{}',
+      static_reply_template: '',
+    })
+    setShowToolModal(true)
+  }
+
+  function openEditTool(t: IntegrationTool) {
+    setToolForm({
+      id: t.id,
+      name: t.name,
+      description: t.description || '',
+      url: t.url,
+      method: t.method || 'GET',
+      request_body_template: t.request_body_template || '{}',
+      response_mapper_json: t.response_mapper_json || '{}',
+      static_reply_template: t.static_reply_template || '',
+    })
+    setShowToolModal(true)
+  }
+
+  async function saveTool() {
+    if (!botId) return
+    const name = toolForm.name.trim()
+    const url = toolForm.url.trim()
+    if (!name || !url) {
+      setErr('Tool name and url are required.')
+      return
+    }
+    setErr(null)
+    try {
+      if (toolForm.id) {
+        await apiPut<IntegrationTool>(`/api/bots/${botId}/tools/${toolForm.id}`, {
+          name,
+          description: toolForm.description,
+          url,
+          method: toolForm.method,
+          request_body_template: toolForm.request_body_template || '{}',
+          response_mapper_json: toolForm.response_mapper_json || '{}',
+          static_reply_template: toolForm.static_reply_template || '',
+        })
+      } else {
+        await apiPost<IntegrationTool>(`/api/bots/${botId}/tools`, {
+          name,
+          description: toolForm.description,
+          url,
+          method: toolForm.method,
+          request_body_template: toolForm.request_body_template || '{}',
+          response_mapper_json: toolForm.response_mapper_json || '{}',
+          static_reply_template: toolForm.static_reply_template || '',
+        })
+      }
+      setShowToolModal(false)
+      await reload()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
+
+  async function deleteTool(t: IntegrationTool) {
+    if (!botId) return
+    const ok = window.confirm(`Delete integration "${t.name}"?\n\nThis is NOT reversible.`)
+    if (!ok) return
+    setErr(null)
+    try {
+      await apiDelete(`/api/bots/${botId}/tools/${t.id}`)
+      await reload()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
 
   return (
     <div className="page">
@@ -287,13 +389,196 @@ export default function BotDetailPage() {
                   />
                 </div>
               </div>
+
+              <div className="cardSubTitle">Integrations (HTTP tools)</div>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                <div className="muted">
+                  Use variables like <span className="mono">{'{{.firstName}}'}</span> in prompts and tool next_reply.
+                </div>
+                <button className="btn primary" onClick={openNewTool}>
+                  Add integration
+                </button>
+              </div>
+              {tools.length === 0 ? (
+                <div className="muted">No integrations yet.</div>
+              ) : (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Method</th>
+                      <th>URL</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tools.map((t) => (
+                      <tr key={t.id}>
+                        <td className="mono">{t.name}</td>
+                        <td className="mono">{t.method}</td>
+                        <td className="mono" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {t.url}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <div className="row" style={{ justifyContent: 'flex-end' }}>
+                            <button className="btn" onClick={() => openEditTool(t)}>
+                              Edit
+                            </button>
+                            <button className="btn danger ghost" onClick={() => void deleteTool(t)}>
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </>
           )}
         </section>
 
         <MicTest botId={botId} />
       </div>
+
+      {showToolModal ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true">
+          <div className="modalCard">
+            <div className="cardTitleRow">
+              <div className="cardTitle">{toolForm.id ? 'Edit integration' : 'New integration'}</div>
+              <button className="btn" onClick={() => setShowToolModal(false)}>
+                Close
+              </button>
+            </div>
+            <div className="formRow">
+              <label>
+                Tool name (used by LLM){' '}
+                <HelpTip>
+                  <div className="tipTitle">Example</div>
+                  <pre className="tipPre">{'get_user'}</pre>
+                </HelpTip>
+              </label>
+              <input
+                value={toolForm.name}
+                onChange={(e) => setToolForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder=""
+              />
+            </div>
+            <div className="formRow">
+              <label>
+                Description{' '}
+                <HelpTip>
+                  <div className="tipTitle">Example</div>
+                  <pre className="tipPre">{'Fetch user profile (firstName, lastName, dob) by user_id.'}</pre>
+                </HelpTip>
+              </label>
+              <input
+                value={toolForm.description}
+                onChange={(e) => setToolForm((p) => ({ ...p, description: e.target.value }))}
+                placeholder=""
+              />
+            </div>
+            <div className="formRowGrid2">
+              <div className="formRow">
+                <label>Method</label>
+                <select value={toolForm.method} onChange={(e) => setToolForm((p) => ({ ...p, method: e.target.value }))}>
+                  {(options?.http_methods || ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).map((m) => (
+                    <option value={m} key={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="formRow">
+                <label>
+                  URL{' '}
+                  <HelpTip>
+                    <div className="tipTitle">Examples</div>
+                    <pre className="tipPre">
+                      {'http://127.0.0.1:9001/v1/user?user_id={{args.user_id}}\n'}
+                      {'http://127.0.0.1:9001/v1/doctors?city={{.city}}&specialty={{.specialty}}'}
+                    </pre>
+                  </HelpTip>
+                </label>
+                <input
+                  value={toolForm.url}
+                  onChange={(e) => setToolForm((p) => ({ ...p, url: e.target.value }))}
+                  placeholder=""
+                />
+              </div>
+            </div>
+            <div className="formRow">
+              <label>
+                Request body template (JSON){' '}
+                <HelpTip>
+                  <div className="tipTitle">Example (POST)</div>
+                  <pre className="tipPre">{'{\n  \"user_id\": \"{{args.user_id}}\",\n  \"dob\": \"{{.dob}}\"\n}'}</pre>
+                </HelpTip>
+              </label>
+              <textarea
+                value={toolForm.request_body_template}
+                onChange={(e) => setToolForm((p) => ({ ...p, request_body_template: e.target.value }))}
+                rows={4}
+                placeholder=""
+              />
+              <div className="muted">
+                You can reference metadata with <span className="mono">{'{{.path}}'}</span> and tool args with{' '}
+                <span className="mono">{'{{args.user_id}}'}</span>.
+              </div>
+            </div>
+            <div className="formRow">
+              <label>
+                Response mapper (JSON: metadata_key → template){' '}
+                <HelpTip>
+                  <div className="tipTitle">Example</div>
+                  <pre className="tipPre">
+                    {'{\n  \"firstName\": \"{{response.data.firstName}}\",\n  \"lastName\": \"{{response.data.lastName}}\",\n  \"dob\": \"{{response.data.dob}}\"\n}'}
+                  </pre>
+                </HelpTip>
+              </label>
+              <textarea
+                value={toolForm.response_mapper_json}
+                onChange={(e) => setToolForm((p) => ({ ...p, response_mapper_json: e.target.value }))}
+                rows={5}
+                placeholder=""
+              />
+              <div className="muted">
+                Templates can reference the HTTP response JSON via <span className="mono">{'{{response...}}'}</span>.
+              </div>
+            </div>
+            <div className="formRow">
+              <label>
+                Static reply template (optional, Jinja2){' '}
+                <HelpTip>
+                  <div className="tipTitle">Example</div>
+                  <pre className="tipPre">
+                    {'{% if meta.firstName %}\n'}
+                    {'Hello {{meta.firstName}}. What can I do for you today?\n'}
+                    {'{% else %}\n'}
+                    {'Hello! What is your name?\n'}
+                    {'{% endif %}\n'}
+                  </pre>
+                </HelpTip>
+              </label>
+              <textarea
+                value={toolForm.static_reply_template}
+                onChange={(e) => setToolForm((p) => ({ ...p, static_reply_template: e.target.value }))}
+                rows={6}
+                placeholder=""
+              />
+              <div className="muted">
+                Supports <span className="mono">{'{% if %}'}</span> / <span className="mono">{'{% for %}'}</span>. Shorthand{' '}
+                <span className="mono">{'{{.key}}'}</span> works (rewritten to <span className="mono">{'meta.key'}</span>).
+              </div>
+            </div>
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn primary" onClick={() => void saveTool()}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
-

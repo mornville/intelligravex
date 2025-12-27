@@ -59,11 +59,10 @@ export default function MicTest({ botId }: { botId: string }) {
 
   async function hydrateConversation(cid: string) {
     if (!cid) return
-    if (hydratedConvIdRef.current === cid && items.length > 0) return
+    if (hydratedConvIdRef.current === cid) return
     try {
       const d = await apiGet<ConversationDetail>(`/api/conversations/${cid}`)
       hydratedConvIdRef.current = cid
-      // Hydration replaces the rendered list; any in-flight streaming draft id becomes invalid.
       draftAssistantIdRef.current = null
       const mapped: ChatItem[] = d.messages.map((m) => {
         let role: ChatItem['role'] = m.role === 'assistant' ? 'assistant' : m.role === 'tool' ? 'tool' : 'user'
@@ -172,14 +171,11 @@ export default function MicTest({ botId }: { botId: string }) {
       if (msg.type === 'text_delta') {
         const delta = String(msg.delta || '')
         if (!delta) return
+        if (!draftAssistantIdRef.current) draftAssistantIdRef.current = crypto.randomUUID()
+        const draftId = draftAssistantIdRef.current
         setItems((prev) => {
-          let draftId = draftAssistantIdRef.current
-          const hasDraft = draftId ? prev.some((it) => it.id === draftId) : false
-          if (!draftId || !hasDraft) {
-            draftId = crypto.randomUUID()
-            draftAssistantIdRef.current = draftId
-            return [...prev, { id: draftId, role: 'assistant', text: delta }]
-          }
+          const hasDraft = prev.some((it) => it.id === draftId)
+          if (!hasDraft) return [...prev, { id: draftId, role: 'assistant', text: delta }]
           return prev.map((it) => (it.id === draftId ? { ...it, text: it.text + delta } : it))
         })
         return

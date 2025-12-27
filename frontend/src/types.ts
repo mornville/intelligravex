@@ -84,5 +84,19 @@ export type Options = {
   xtts_models: string[]
   start_message_modes: string[]
   openai_pricing: Record<string, { input_per_1m: number; output_per_1m: number }>
+  http_methods?: string[]
 }
 
+export type IntegrationTool = {
+  id: UUID
+  bot_id: UUID
+  name: string
+  description: string
+  url: string
+  method: string
+  request_body_template: string
+  response_mapper_json: string
+  static_reply_template: string
+  created_at: string
+  updated_at: string
+}

@@ -9,8 +9,10 @@ import threading
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Generator, Optional, Tuple
+from typing import Any, Generator, Optional, Tuple
 from uuid import UUID
+
+import httpx
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,11 +47,19 @@ from voicebot.store import (
     count_conversations,
     list_messages,
     update_bot,
+    list_integration_tools,
+    create_integration_tool,
+    update_integration_tool,
+    delete_integration_tool,
+    get_integration_tool,
+    get_integration_tool_by_name,
 )
 from voicebot.tts.xtts import XTTSv2
 from voicebot.utils.text import SentenceChunker
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
-from voicebot.tools.set_metadata import set_metadata_tool_def
+from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
+from voicebot.models import IntegrationTool
+from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
 
 
 class ChatRequest(BaseModel):
@@ -103,6 +113,26 @@ class BotUpdateRequest(BaseModel):
     tts_chunk_max_chars: Optional[int] = None
     start_message_mode: Optional[str] = None
     start_message_text: Optional[str] = None
+
+
+class IntegrationToolCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    url: str
+    method: str = "GET"
+    request_body_template: str = "{}"
+    response_mapper_json: str = "{}"
+    static_reply_template: str = ""
+
+
+class IntegrationToolUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    url: Optional[str] = None
+    method: Optional[str] = None
+    request_body_template: Optional[str] = None
+    response_mapper_json: Optional[str] = None
+    static_reply_template: Optional[str] = None
 
 
 def create_app() -> FastAPI:
@@ -528,18 +558,61 @@ def create_app() -> FastAPI:
         conv = get_conversation(session, conversation_id)
         if conv.bot_id != bot.id:
             raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
-        if conv.metadata_json and conv.metadata_json.strip() and conv.metadata_json.strip() != "{}":
-            messages.append(Message(role="system", content=f"Conversation metadata (JSON): {conv.metadata_json}"))
+        meta = safe_json_loads(conv.metadata_json or "{}") or {}
+        ctx = {"meta": meta}
+        # Render system prompt with metadata variables (if any)
+        messages = [Message(role="system", content=render_template(bot.system_prompt, ctx=ctx))]
+        if meta:
+            messages.append(Message(role="system", content=f"Conversation metadata (JSON): {json.dumps(meta, ensure_ascii=False)}"))
         for m in list_messages(session, conversation_id=conversation_id):
             if m.role in ("user", "assistant"):
-                messages.append(Message(role=m.role, content=m.content))
+                messages.append(Message(role=m.role, content=render_template(m.content, ctx=ctx)))
             elif m.role == "tool":
                 # Store tool calls/results as system breadcrumbs to prevent repeated calls.
-                messages.append(Message(role="system", content=f"Tool event: {m.content}"))
+                messages.append(Message(role="system", content=render_template(f"Tool event: {m.content}", ctx=ctx)))
         return messages
+
+    def _get_conversation_meta(session: Session, *, conversation_id: UUID) -> dict:
+        conv = get_conversation(session, conversation_id)
+        meta = safe_json_loads(conv.metadata_json or "{}") or {}
+        return meta if isinstance(meta, dict) else {}
 
     def _set_metadata_tool_def() -> dict:
         return set_metadata_tool_def()
+
+    def _set_variable_tool_def() -> dict:
+        return set_variable_tool_def()
+
+    def _integration_tool_def(t: IntegrationTool) -> dict[str, Any]:
+        schema = {
+            "type": "object",
+            "properties": {
+                "next_reply": {
+                    "type": "string",
+                    "description": "What the assistant should say next (no second LLM call). Variables like {{.firstName}} are allowed.",
+                }
+            },
+            "required": ["next_reply"],
+            "additionalProperties": True,
+        }
+        return {
+            "type": "function",
+            "name": t.name,
+            "description": (t.description or "").strip()
+            + " This tool calls an external HTTP API and maps selected response fields into conversation metadata. "
+            + "Return your spoken/text response in next_reply (you can use metadata variables like {{.firstName}}).",
+            "parameters": schema,
+            "strict": False,
+        }
+
+    def _build_tools_for_bot(session: Session, bot_id: UUID) -> list[dict[str, Any]]:
+        tools: list[dict[str, Any]] = [_set_metadata_tool_def(), _set_variable_tool_def()]
+        for t in list_integration_tools(session, bot_id=bot_id):
+            try:
+                tools.append(_integration_tool_def(t))
+            except Exception:
+                continue
+        return tools
 
     @lru_cache(maxsize=1)
     def _get_openai_pricing() -> dict[str, ModelPrice]:
@@ -615,7 +688,7 @@ def create_app() -> FastAPI:
             else:
                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                 msgs = [
-                    Message(role="system", content=bot.system_prompt),
+                    Message(role="system", content=render_template(bot.system_prompt, ctx={"meta": {}})),
                     Message(role="user", content=_make_start_message_instruction(bot)),
                 ]
                 t0 = time.time()
@@ -702,6 +775,84 @@ def create_app() -> FastAPI:
             timings["llm_total"] = llm_total_ms
         await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
         return conv_id
+
+    def _apply_response_mapper(
+        *,
+        mapper_json: str,
+        response_json: Any,
+        meta: dict,
+        tool_args: dict,
+    ) -> dict:
+        mapper = safe_json_loads(mapper_json or "{}") or {}
+        if not isinstance(mapper, dict):
+            return {}
+        out: dict = {}
+        ctx = {"response": response_json, "meta": meta, "args": tool_args, "params": tool_args}
+        for k, tmpl in mapper.items():
+            if not isinstance(k, str):
+                continue
+            if isinstance(tmpl, (dict, list)):
+                out[k] = tmpl
+                continue
+            if tmpl is None:
+                out[k] = None
+                continue
+            out[k] = eval_template_value(str(tmpl), ctx=ctx)
+        return out
+
+    def _render_with_meta(text: str, meta: dict) -> str:
+        return render_template(text, ctx={"meta": meta})
+
+    def _render_static_reply(
+        *,
+        template_text: str,
+        meta: dict,
+        response_json: Any,
+        tool_args: dict,
+    ) -> str:
+        return render_jinja_template(
+            template_text,
+            ctx={"meta": meta, "response": response_json, "args": tool_args, "params": tool_args},
+        )
+
+    def _execute_integration_http(
+        *,
+        tool: IntegrationTool,
+        meta: dict,
+        tool_args: dict,
+    ) -> dict:
+        # Render URL/body templates using current metadata + tool args.
+        ctx = {"meta": meta, "args": tool_args, "params": tool_args}
+        url = render_template(tool.url, ctx=ctx)
+        method = (tool.method or "GET").upper()
+
+        body_template = tool.request_body_template or ""
+        body_obj = None
+        if body_template.strip():
+            rendered_body = render_template(body_template, ctx=ctx)
+            try:
+                body_obj = json.loads(rendered_body)
+            except Exception:
+                # If body isn't valid JSON, send as raw string.
+                body_obj = rendered_body
+
+        timeout = httpx.Timeout(20.0, connect=10.0)
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            if method == "GET":
+                resp = client.request(method, url, params=tool_args or None)
+            else:
+                # Prefer JSON for objects/lists; otherwise raw data.
+                if isinstance(body_obj, (dict, list)):
+                    resp = client.request(method, url, json=body_obj)
+                elif body_obj is None:
+                    resp = client.request(method, url, json=tool_args or None)
+                else:
+                    resp = client.request(method, url, content=str(body_obj))
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except Exception:
+            return {"raw": resp.text}
 
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False))
@@ -892,6 +1043,7 @@ def create_app() -> FastAPI:
                                     content=user_text,
                                 )
                                 history = _build_history(session, bot, conv_id)
+                                tools_defs = _build_tools_for_bot(session, bot.id)
                                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                                 tts_handle = await asyncio.to_thread(
                                     _get_tts_handle,
@@ -915,7 +1067,7 @@ def create_app() -> FastAPI:
                         delta_q_client: "queue.Queue[Optional[str]]" = queue.Queue()
                         delta_q_tts: "queue.Queue[Optional[str]]" = queue.Queue()
                         audio_q: "queue.Queue[Optional[tuple[bytes, int]]]" = queue.Queue()
-                        tool_q: "queue.Queue[Optional[ToolCall]]" = queue.Queue()
+                        tool_calls: list[ToolCall] = []
                         error_q: "queue.Queue[Optional[str]]" = queue.Queue()
                         full_text_parts: list[str] = []
                         metrics_lock = threading.Lock()
@@ -925,11 +1077,10 @@ def create_app() -> FastAPI:
 
                         def llm_thread() -> None:
                             try:
-                                tools = [_set_metadata_tool_def()]
-                                for ev in llm.stream_text_or_tool(messages=history, tools=tools):
+                                for ev in llm.stream_text_or_tool(messages=history, tools=tools_defs):
                                     if isinstance(ev, ToolCall):
-                                        tool_q.put(ev)
-                                        break
+                                        tool_calls.append(ev)
+                                        continue
                                     d = ev
                                     full_text_parts.append(d)
                                     delta_q_client.put(d)
@@ -941,7 +1092,6 @@ def create_app() -> FastAPI:
                                 delta_q_client.put(None)
                                 if speak:
                                     delta_q_tts.put(None)
-                                tool_q.put(None)
 
                         def tts_thread() -> None:
                             nonlocal tts_start_ts
@@ -988,22 +1138,11 @@ def create_app() -> FastAPI:
 
                         open_deltas = True
                         open_audio = True
-                        tool_call: Optional[ToolCall] = None
                         while open_deltas or open_audio:
                             try:
                                 err = error_q.get_nowait()
                                 if err:
                                     await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": err})
-                                    open_deltas = False
-                                    open_audio = False
-                                    break
-                            except queue.Empty:
-                                pass
-
-                            try:
-                                tc = tool_q.get_nowait()
-                                if tc is not None:
-                                    tool_call = tc
                                     open_deltas = False
                                     open_audio = False
                                     break
@@ -1058,71 +1197,114 @@ def create_app() -> FastAPI:
                         timings: dict[str, int] = {"total": int(round((llm_end_ts - llm_start_ts) * 1000.0))}
                         if first_token_ts is not None:
                             timings["llm_ttfb"] = int(round((first_token_ts - llm_start_ts) * 1000.0))
+                        elif tool_calls and tool_calls[0].first_event_ts is not None:
+                            timings["llm_ttfb"] = int(round((tool_calls[0].first_event_ts - llm_start_ts) * 1000.0))
                         timings["llm_total"] = int(round((llm_end_ts - llm_start_ts) * 1000.0))
                         if first_audio_ts is not None and tts_start_ts is not None:
                             timings["tts_first_audio"] = int(round((first_audio_ts - tts_start_ts) * 1000.0))
 
                         await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
 
-                        if tool_call is not None and conv_id is not None:
-                            await _ws_send_json(
-                                ws,
-                                {
-                                    "type": "tool_call",
-                                    "req_id": req_id,
-                                    "name": tool_call.name,
-                                    "arguments_json": tool_call.arguments_json,
-                                },
-                            )
-                            try:
-                                tool_args = json.loads(tool_call.arguments_json or "{}")
-                                if not isinstance(tool_args, dict):
-                                    raise ValueError("tool args must be an object")
-                            except Exception as exc:
-                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
-                                await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
-                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
-                                active_req_id = None
-                                conv_id = None
-                                continue
-
-                            next_reply = str(tool_args.get("next_reply") or "").strip()
-                            meta_patch = dict(tool_args)
-                            meta_patch.pop("next_reply", None)
-
+                        if tool_calls and conv_id is not None:
+                            rendered_reply = ""
+                            tool_error: Optional[str] = None
                             with Session(engine) as session:
-                                add_message_with_metrics(
-                                    session,
-                                    conversation_id=conv_id,
-                                    role="tool",
-                                    content=json.dumps({"tool": tool_call.name, "arguments": tool_args}, ensure_ascii=False),
-                                )
-                                new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=meta_patch)
-                                tool_result = {"ok": True, "updated": meta_patch, "metadata": new_meta}
-                                add_message_with_metrics(
-                                    session,
-                                    conversation_id=conv_id,
-                                    role="tool",
-                                    content=json.dumps({"tool": tool_call.name, "result": tool_result}, ensure_ascii=False),
-                                )
+                                bot = get_bot(session, bot_id)
+                                meta_current = _get_conversation_meta(session, conversation_id=conv_id)
 
-                            await _ws_send_json(
-                                ws,
-                                {"type": "tool_result", "req_id": req_id, "name": tool_call.name, "result": tool_result},
-                            )
+                                for tc in tool_calls:
+                                    tool_name = tc.name
+                                    if tool_name == "set_variable":
+                                        tool_name = "set_metadata"
 
-                            if next_reply:
-                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": next_reply})
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "tool_call",
+                                            "req_id": req_id,
+                                            "name": tool_name,
+                                            "arguments_json": tc.arguments_json,
+                                        },
+                                    )
+                                    try:
+                                        tool_args = json.loads(tc.arguments_json or "{}")
+                                        if not isinstance(tool_args, dict):
+                                            raise ValueError("tool args must be an object")
+                                    except Exception as exc:
+                                        tool_error = str(exc)
+                                        break
+
+                                    add_message_with_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        role="tool",
+                                        content=json.dumps({"tool": tool_name, "arguments": tool_args}, ensure_ascii=False),
+                                    )
+
+                                    next_reply = str(tool_args.get("next_reply") or "").strip()
+                                    patch = dict(tool_args)
+                                    patch.pop("next_reply", None)
+
+                                    tool_cfg: IntegrationTool | None = None
+                                    response_json: Any | None = None
+
+                                    if tool_name == "set_metadata":
+                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
+                                        tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+                                    else:
+                                        tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
+                                        if not tool_cfg:
+                                            raise RuntimeError(f"Unknown tool: {tool_name}")
+                                        response_json = _execute_integration_http(tool=tool_cfg, meta=meta_current, tool_args=patch)
+                                        mapped = _apply_response_mapper(
+                                            mapper_json=tool_cfg.response_mapper_json,
+                                            response_json=response_json,
+                                            meta=meta_current,
+                                            tool_args=patch,
+                                        )
+                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
+                                        tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+
+                                    add_message_with_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        role="tool",
+                                        content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                                    )
+                                    meta_current = tool_result.get("metadata") or meta_current
+
+                                    await _ws_send_json(
+                                        ws,
+                                        {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
+                                    )
+
+                                    candidate = ""
+                                    if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
+                                        candidate = _render_static_reply(
+                                            template_text=tool_cfg.static_reply_template,
+                                            meta=meta_current,
+                                            response_json=response_json,
+                                            tool_args=patch,
+                                        ).strip()
+                                    if not candidate:
+                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                    rendered_reply = candidate or rendered_reply
+
+                            if tool_error:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": tool_error})
+
+                            if rendered_reply:
+                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
                                 try:
                                     in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                        bot=bot, history=history, assistant_text=next_reply
+                                        bot=bot, history=history, assistant_text=rendered_reply
                                     )
                                     with Session(engine) as session:
                                         add_message_with_metrics(
                                             session,
                                             conversation_id=conv_id,
                                             role="assistant",
-                                            content=next_reply,
+                                            content=rendered_reply,
                                             input_tokens_est=in_tok,
                                             output_tokens_est=out_tok,
                                             cost_usd_est=cost,
@@ -1147,7 +1329,7 @@ def create_app() -> FastAPI:
 
                                 if speak:
                                     status(req_id, "tts")
-                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, next_reply)
+                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, rendered_reply)
                                     await _ws_send_json(
                                         ws,
                                         {
@@ -1158,7 +1340,7 @@ def create_app() -> FastAPI:
                                         },
                                     )
 
-                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": next_reply})
+                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": rendered_reply})
                         else:
                             # Store assistant response.
                             try:
@@ -1287,6 +1469,7 @@ def create_app() -> FastAPI:
                                 asr_ms=int(round((asr_end_ts - asr_start_ts) * 1000.0)),
                             )
                             history = _build_history(session, bot, conv_id)
+                            tools_defs = _build_tools_for_bot(session, bot.id)
 
                             llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                             tts_handle = await asyncio.to_thread(
@@ -1312,7 +1495,7 @@ def create_app() -> FastAPI:
                         delta_q_client: "queue.Queue[Optional[str]]" = queue.Queue()
                         delta_q_tts: "queue.Queue[Optional[str]]" = queue.Queue()
                         audio_q: "queue.Queue[Optional[tuple[bytes, int]]]" = queue.Queue()
-                        tool_q: "queue.Queue[Optional[ToolCall]]" = queue.Queue()
+                        tool_calls: list[ToolCall] = []
                         error_q: "queue.Queue[Optional[str]]" = queue.Queue()
                         full_text_parts: list[str] = []
                         metrics_lock = threading.Lock()
@@ -1322,11 +1505,10 @@ def create_app() -> FastAPI:
 
                         def llm_thread() -> None:
                             try:
-                                tools = [_set_metadata_tool_def()]
-                                for ev in llm.stream_text_or_tool(messages=history, tools=tools):
+                                for ev in llm.stream_text_or_tool(messages=history, tools=tools_defs):
                                     if isinstance(ev, ToolCall):
-                                        tool_q.put(ev)
-                                        break
+                                        tool_calls.append(ev)
+                                        continue
                                     d = ev
                                     full_text_parts.append(d)
                                     delta_q_client.put(d)
@@ -1338,7 +1520,6 @@ def create_app() -> FastAPI:
                                 delta_q_client.put(None)
                                 if speak:
                                     delta_q_tts.put(None)
-                                tool_q.put(None)
 
                         def tts_thread() -> None:
                             nonlocal tts_start_ts
@@ -1386,7 +1567,6 @@ def create_app() -> FastAPI:
                         # Pump the queues to the websocket.
                         open_deltas = True
                         open_audio = True
-                        tool_call: Optional[ToolCall] = None
                         while open_deltas or open_audio:
                             try:
                                 err = error_q.get_nowait()
@@ -1399,15 +1579,6 @@ def create_app() -> FastAPI:
                                 pass
 
                             sent_any = False
-                            try:
-                                tc = tool_q.get_nowait()
-                                if tc is not None:
-                                    tool_call = tc
-                                    open_deltas = False
-                                    open_audio = False
-                                    break
-                            except queue.Empty:
-                                pass
                             try:
                                 d = delta_q_client.get_nowait()
                                 if d is None:
@@ -1460,8 +1631,8 @@ def create_app() -> FastAPI:
                         }
                         if first_token_ts is not None:
                             timings["llm_ttfb"] = int(round((first_token_ts - llm_start_ts) * 1000.0))
-                        elif tool_call is not None and tool_call.first_event_ts is not None:
-                            timings["llm_ttfb"] = int(round((tool_call.first_event_ts - llm_start_ts) * 1000.0))
+                        elif tool_calls and tool_calls[0].first_event_ts is not None:
+                            timings["llm_ttfb"] = int(round((tool_calls[0].first_event_ts - llm_start_ts) * 1000.0))
                         if speak and tts_start_ts is not None and first_audio_ts is not None:
                             timings["tts_first_audio"] = int(round((first_audio_ts - tts_start_ts) * 1000.0))
                             timings["tts_from_llm_start"] = int(round((first_audio_ts - llm_start_ts) * 1000.0))
@@ -1472,7 +1643,7 @@ def create_app() -> FastAPI:
                                 bot=bot, history=history, assistant_text=final_text
                             )
                             with Session(engine) as session:
-                                if final_text and conv_id and tool_call is None:
+                                if final_text and conv_id and not tool_calls:
                                     add_message_with_metrics(
                                         session,
                                         conversation_id=conv_id,
@@ -1504,76 +1675,106 @@ def create_app() -> FastAPI:
 
                         await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
 
-                        if tool_call is not None and conv_id is not None:
-                            # Apply tool locally and respond with `next_reply` (no second LLM call).
-                            await _ws_send_json(
-                                ws,
-                                {
-                                    "type": "tool_call",
-                                    "req_id": req_id,
-                                    "name": tool_call.name,
-                                    "arguments_json": tool_call.arguments_json,
-                                },
-                            )
-                            try:
-                                tool_args = json.loads(tool_call.arguments_json or "{}")
-                                if not isinstance(tool_args, dict):
-                                    raise ValueError("tool args must be an object")
-                            except Exception as exc:
-                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
-                                await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
-                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
-                                active_req_id = None
-                                conv_id = None
-                                audio_buf = bytearray()
-                                continue
-
-                            next_reply = str(tool_args.get("next_reply") or "").strip()
-                            meta_patch = dict(tool_args)
-                            meta_patch.pop("next_reply", None)
+                        if tool_calls and conv_id is not None:
+                            rendered_reply = ""
+                            tool_error: Optional[str] = None
 
                             with Session(engine) as session:
-                                # Store tool call + tool result in message history.
-                                add_message_with_metrics(
-                                    session,
-                                    conversation_id=conv_id,
-                                    role="tool",
-                                    content=json.dumps(
-                                        {"tool": tool_call.name, "arguments": tool_args}, ensure_ascii=False
-                                    ),
-                                )
-                                new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=meta_patch)
-                                tool_result = {"ok": True, "updated": meta_patch, "metadata": new_meta}
-                                add_message_with_metrics(
-                                    session,
-                                    conversation_id=conv_id,
-                                    role="tool",
-                                    content=json.dumps({"tool": tool_call.name, "result": tool_result}, ensure_ascii=False),
-                                )
+                                meta_current = _get_conversation_meta(session, conversation_id=conv_id)
 
-                            await _ws_send_json(
-                                ws,
-                                {
-                                    "type": "tool_result",
-                                    "req_id": req_id,
-                                    "name": tool_call.name,
-                                    "result": tool_result,
-                                },
-                            )
+                                for tc in tool_calls:
+                                    tool_name = tc.name
+                                    if tool_name == "set_variable":
+                                        tool_name = "set_metadata"
 
-                            if next_reply:
-                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": next_reply})
-                                # Store assistant response and update aggregates.
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "tool_call",
+                                            "req_id": req_id,
+                                            "name": tool_name,
+                                            "arguments_json": tc.arguments_json,
+                                        },
+                                    )
+                                    try:
+                                        tool_args = json.loads(tc.arguments_json or "{}")
+                                        if not isinstance(tool_args, dict):
+                                            raise ValueError("tool args must be an object")
+                                    except Exception as exc:
+                                        tool_error = str(exc)
+                                        break
+
+                                    add_message_with_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        role="tool",
+                                        content=json.dumps({"tool": tool_name, "arguments": tool_args}, ensure_ascii=False),
+                                    )
+
+                                    next_reply = str(tool_args.get("next_reply") or "").strip()
+                                    patch = dict(tool_args)
+                                    patch.pop("next_reply", None)
+
+                                    tool_cfg: IntegrationTool | None = None
+                                    response_json: Any | None = None
+
+                                    if tool_name == "set_metadata":
+                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
+                                        tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+                                    else:
+                                        tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
+                                        if not tool_cfg:
+                                            raise RuntimeError(f"Unknown tool: {tool_name}")
+                                        response_json = _execute_integration_http(tool=tool_cfg, meta=meta_current, tool_args=patch)
+                                        mapped = _apply_response_mapper(
+                                            mapper_json=tool_cfg.response_mapper_json,
+                                            response_json=response_json,
+                                            meta=meta_current,
+                                            tool_args=patch,
+                                        )
+                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
+                                        tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+
+                                    add_message_with_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        role="tool",
+                                        content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                                    )
+                                    meta_current = tool_result.get("metadata") or meta_current
+
+                                    await _ws_send_json(
+                                        ws,
+                                        {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
+                                    )
+
+                                    candidate = ""
+                                    if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
+                                        candidate = _render_static_reply(
+                                            template_text=tool_cfg.static_reply_template,
+                                            meta=meta_current,
+                                            response_json=response_json,
+                                            tool_args=patch,
+                                        ).strip()
+                                    if not candidate:
+                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                    rendered_reply = candidate or rendered_reply
+
+                            if tool_error:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": tool_error})
+
+                            if rendered_reply:
+                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
                                 try:
                                     in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                        bot=bot, history=history, assistant_text=next_reply
+                                        bot=bot, history=history, assistant_text=rendered_reply
                                     )
                                     with Session(engine) as session:
                                         add_message_with_metrics(
                                             session,
                                             conversation_id=conv_id,
                                             role="assistant",
-                                            content=next_reply,
+                                            content=rendered_reply,
                                             input_tokens_est=in_tok,
                                             output_tokens_est=out_tok,
                                             cost_usd_est=cost,
@@ -1599,7 +1800,7 @@ def create_app() -> FastAPI:
 
                                 if speak:
                                     status(req_id, "tts")
-                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, next_reply)
+                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, rendered_reply)
                                     await _ws_send_json(
                                         ws,
                                         {
@@ -1610,7 +1811,7 @@ def create_app() -> FastAPI:
                                         },
                                     )
 
-                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": next_reply})
+                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": rendered_reply})
                         else:
                             await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": final_text})
 
@@ -1660,6 +1861,7 @@ def create_app() -> FastAPI:
             "start_message_modes": ["llm", "static"],
             "asr_vendors": ["whisper_local"],
             "tts_vendors": ["xtts_local"],
+            "http_methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
         }
 
     def _bot_to_dict(bot: Bot) -> dict:
@@ -1683,6 +1885,21 @@ def create_app() -> FastAPI:
             "start_message_text": bot.start_message_text,
             "created_at": bot.created_at.isoformat(),
             "updated_at": bot.updated_at.isoformat(),
+        }
+
+    def _tool_to_dict(t: IntegrationTool) -> dict:
+        return {
+            "id": str(t.id),
+            "bot_id": str(t.bot_id),
+            "name": t.name,
+            "description": t.description,
+            "url": t.url,
+            "method": t.method,
+            "request_body_template": t.request_body_template,
+            "response_mapper_json": t.response_mapper_json,
+            "static_reply_template": t.static_reply_template,
+            "created_at": t.created_at.isoformat(),
+            "updated_at": t.updated_at.isoformat(),
         }
 
     @app.get("/api/bots")
@@ -1732,6 +1949,64 @@ def create_app() -> FastAPI:
     @app.delete("/api/bots/{bot_id}")
     def api_delete_bot(bot_id: UUID, session: Session = Depends(get_session)) -> dict:
         delete_bot(session, bot_id)
+        return {"ok": True}
+
+    @app.get("/api/bots/{bot_id}/tools")
+    def api_list_tools(bot_id: UUID, session: Session = Depends(get_session)) -> dict:
+        _ = get_bot(session, bot_id)
+        tools = list_integration_tools(session, bot_id=bot_id)
+        return {"items": [_tool_to_dict(t) for t in tools]}
+
+    @app.post("/api/bots/{bot_id}/tools")
+    def api_create_tool(bot_id: UUID, payload: IntegrationToolCreateRequest, session: Session = Depends(get_session)) -> dict:
+        _ = get_bot(session, bot_id)
+        name = (payload.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Tool name is required")
+        if get_integration_tool_by_name(session, bot_id=bot_id, name=name):
+            raise HTTPException(status_code=400, detail="Tool name already exists for this bot")
+        tool = IntegrationTool(
+            bot_id=bot_id,
+            name=name,
+            description=payload.description or "",
+            url=payload.url,
+            method=(payload.method or "GET").upper(),
+            request_body_template=payload.request_body_template or "{}",
+            response_mapper_json=payload.response_mapper_json or "{}",
+            static_reply_template=payload.static_reply_template or "",
+        )
+        create_integration_tool(session, tool)
+        return _tool_to_dict(tool)
+
+    @app.put("/api/bots/{bot_id}/tools/{tool_id}")
+    def api_update_tool(
+        bot_id: UUID, tool_id: UUID, payload: IntegrationToolUpdateRequest, session: Session = Depends(get_session)
+    ) -> dict:
+        _ = get_bot(session, bot_id)
+        tool = get_integration_tool(session, tool_id)
+        if tool.bot_id != bot_id:
+            raise HTTPException(status_code=400, detail="Tool does not belong to bot")
+        patch = payload.model_dump(exclude_unset=True)
+        if "name" in patch:
+            name = str(patch["name"] or "").strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="Tool name is required")
+            existing = get_integration_tool_by_name(session, bot_id=bot_id, name=name)
+            if existing and existing.id != tool_id:
+                raise HTTPException(status_code=400, detail="Tool name already exists for this bot")
+            patch["name"] = name
+        if "method" in patch and patch["method"] is not None:
+            patch["method"] = str(patch["method"]).upper()
+        tool = update_integration_tool(session, tool_id, patch)
+        return _tool_to_dict(tool)
+
+    @app.delete("/api/bots/{bot_id}/tools/{tool_id}")
+    def api_delete_tool(bot_id: UUID, tool_id: UUID, session: Session = Depends(get_session)) -> dict:
+        _ = get_bot(session, bot_id)
+        tool = get_integration_tool(session, tool_id)
+        if tool.bot_id != bot_id:
+            raise HTTPException(status_code=400, detail="Tool does not belong to bot")
+        delete_integration_tool(session, tool_id)
         return {"ok": True}
 
     @app.get("/api/keys")

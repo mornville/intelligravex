@@ -81,6 +81,20 @@ def _apply_light_migrations(engine) -> None:
         add_msg_col("tts_first_audio_ms", "INTEGER")
         add_msg_col("total_ms", "INTEGER")
 
+        # IntegrationTool
+        try:
+            rows = conn.execute(text("PRAGMA table_info(integrationtool)")).fetchall()
+        except Exception:
+            rows = []
+        existing = {r[1] for r in rows} if rows else set()
+
+        def add_tool_col(name: str, ddl: str) -> None:
+            if not existing or name in existing:
+                return
+            conn.execute(text(f"ALTER TABLE integrationtool ADD COLUMN {name} {ddl}"))
+
+        add_tool_col("static_reply_template", "TEXT NOT NULL DEFAULT ''")
+
 
 def get_session(engine) -> Session:
     return Session(engine)
