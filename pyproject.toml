@@ -50,7 +50,7 @@ voicebot = "voicebot.cli:app"
 include-package-data = true
 
 [tool.setuptools.package-data]
-"voicebot.web" = ["templates/*.html", "static/*"]
+"voicebot.web" = ["static/*"]
 
 [tool.ruff]
 line-length = 100

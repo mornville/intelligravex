@@ -6,8 +6,8 @@ from typing import Optional
 from typing import Generator
 
 
-_SENTENCE_END_RE = re.compile(r"([.!?]+)(\s+)$")
-_SOFT_BREAK_RE = re.compile(r"([,:;]+)(\s+)$")
+_SENTENCE_END_RE = re.compile(r"([.!?]+)(?:\s+|$)")
+_SOFT_BREAK_RE = re.compile(r"([,:;]+)(?:\s+|$)")
 
 
 @dataclass

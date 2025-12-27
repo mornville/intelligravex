@@ -57,7 +57,7 @@ voicebot tts-speakers
 voicebot web --help
 ```
 
-## VoiceBot Studio (Web UI)
+## Studio API server
 
 1) Set a DB URL + secret key in `.env`:
    - `VOICEBOT_DB_URL=sqlite:///voicebot.db`
@@ -71,7 +71,7 @@ voicebot web --host 127.0.0.1 --port 8000
 ./start.sh web --host 127.0.0.1 --port 8000
 ```
 
-Then open the UI, create keys + bots, and run locally by UUID:
+Then open the React Studio UI (see below) to create keys + bots, and run locally by UUID:
 
 ```bash
 voicebot run --bot <uuid>
@@ -79,7 +79,7 @@ voicebot run --bot <uuid>
 
 ### Test from UI / API
 
-- Mic conversation test is on each bot page (`/bots/<uuid>`). Conversations are stored in the DB with `test_flag=true`.
+- Mic conversation test is in the React Studio bot page. Conversations are stored in the DB with `test_flag=true`.
 - The bot page uses a **WebSocket** for mic audio + live status + streamed TTS audio:
   - `WS /ws/bots/<uuid>/talk`
   - Client protocol:
@@ -199,7 +199,7 @@ Notes:
 ## Context / Architecture (for handoff)
 
 - Local loop (mic): `voicebot/dialog/session.py` (VAD → Whisper → OpenAI Responses stream → chunked XTTS → playback)
-- Studio server: `voicebot/web/app.py` (FastAPI + Jinja templates + NDJSON streaming)
+- Studio server: `voicebot/web/app.py` (FastAPI JSON + WebSocket APIs)
 - DB: SQLite by default (`VOICEBOT_DB_URL`), models in `voicebot/models.py` (`Bot`, `ApiKey`, `Conversation`, `ConversationMessage`)
 - Secrets: encrypted with Fernet using `VOICEBOT_SECRET_KEY` (`voicebot/crypto.py`); UI only shows masked hints for keys.
 
@@ -208,3 +208,52 @@ Notes:
 - This is a **local** voice loop (mic + speakers). For web/telephony deployment, build a streaming server
   (WebRTC/WebSocket) around the same pipeline.
 - For safety/quality, add policy checks and user authentication if you ship beyond local use.
+
+## Embed (Text-only)
+
+You can embed a bot on a third-party website using:
+- A **Client Key** (generated in Studio → Keys → “Add client key”)
+- A WebSocket endpoint that streams assistant replies
+- A plug-and-play widget script (`/public/widget.js` or `/static/embed-widget.js`)
+
+### Client Key
+
+Client keys are separate from OpenAI keys and are used to authenticate embeds.
+They can be restricted by allowed origins and (optionally) allowed bot ids.
+
+### WebSocket API
+
+Endpoint:
+- `GET /public/v1/ws/bots/<bot_uuid>/chat?key=<client_key>&user_conversation_id=<stable_user_id>`
+
+Messages (client → server):
+- Start (assistant speaks first): `{"type":"start","req_id":"<uuid>"}`
+- User reply: `{"type":"chat","req_id":"<uuid>","text":"Hello"}`
+
+Events (server → client):
+- `conversation`: includes `conversation_id` (internal UUID)
+- `status`: `llm` / `idle`
+- `text_delta`: streaming assistant tokens
+- `done`: final turn text + `metrics` (model, token estimates, cost, latencies)
+
+Tool calls/results are executed server-side but **not exposed** over the public WebSocket.
+
+### Widget script
+
+Load:
+- `GET /public/widget.js` (same contents as `/static/embed-widget.js`)
+
+Auto-init (script tag):
+```html
+<div id="igx-voicebot"></div>
+<script
+  src="http://127.0.0.1:8000/public/widget.js"
+  data-target="#igx-voicebot"
+  data-bot-id="BOT_UUID"
+  data-api-key="igx_..."
+  data-user-conversation-id="user_123"
+></script>
+```
+
+Demo page:
+- `examples/embed_demo.html`

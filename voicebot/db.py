@@ -50,6 +50,8 @@ def _apply_light_migrations(engine) -> None:
         add_col("last_tts_first_audio_ms", "INTEGER")
         add_col("last_total_ms", "INTEGER")
         add_col("metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        add_col("external_id", "TEXT")
+        add_col("client_key_id", "TEXT")
 
         # Bot
         rows = conn.execute(text("PRAGMA table_info(bot)")).fetchall()
@@ -94,6 +96,23 @@ def _apply_light_migrations(engine) -> None:
             conn.execute(text(f"ALTER TABLE integrationtool ADD COLUMN {name} {ddl}"))
 
         add_tool_col("static_reply_template", "TEXT NOT NULL DEFAULT ''")
+
+        # ClientKey
+        try:
+            rows = conn.execute(text("PRAGMA table_info(clientkey)")).fetchall()
+        except Exception:
+            rows = []
+        if not rows:
+            return
+        existing = {r[1] for r in rows}
+
+        def add_client_key_col(name: str, ddl: str) -> None:
+            if name in existing:
+                return
+            conn.execute(text(f"ALTER TABLE clientkey ADD COLUMN {name} {ddl}"))
+
+        add_client_key_col("allowed_origins", "TEXT NOT NULL DEFAULT ''")
+        add_client_key_col("allowed_bot_ids_json", "TEXT NOT NULL DEFAULT '[]'")
 
 
 def get_session(engine) -> Session:

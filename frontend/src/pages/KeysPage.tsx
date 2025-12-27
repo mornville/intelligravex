@@ -1,21 +1,29 @@
 import { useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '../api/client'
-import type { ApiKey } from '../types'
+import type { ApiKey, ClientKey } from '../types'
 import { fmtIso } from '../utils/format'
 
 export default function KeysPage() {
   const [keys, setKeys] = useState<ApiKey[]>([])
+  const [clientKeys, setClientKeys] = useState<ClientKey[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ name: '', secret: '' })
+  const [creatingClient, setCreatingClient] = useState(false)
+  const [clientForm, setClientForm] = useState({ name: '', allowed_origins: '' })
+  const [newClientSecret, setNewClientSecret] = useState<string | null>(null)
 
   async function reload() {
     setLoading(true)
     setErr(null)
     try {
-      const r = await apiGet<{ items: ApiKey[] }>('/api/keys?provider=openai')
+      const [r, c] = await Promise.all([
+        apiGet<{ items: ApiKey[] }>('/api/keys?provider=openai'),
+        apiGet<{ items: ClientKey[] }>('/api/client-keys'),
+      ])
       setKeys(r.items)
+      setClientKeys(c.items)
     } catch (e: any) {
       setErr(String(e?.message || e))
     } finally {
@@ -42,12 +50,44 @@ export default function KeysPage() {
     }
   }
 
+  async function onCreateClient() {
+    if (!clientForm.name.trim()) return
+    setCreatingClient(true)
+    setErr(null)
+    setNewClientSecret(null)
+    try {
+      const created: any = await apiPost<any>('/api/client-keys', {
+        name: clientForm.name.trim(),
+        allowed_origins: clientForm.allowed_origins.trim(),
+      })
+      if (created?.secret) setNewClientSecret(String(created.secret))
+      setClientForm({ name: '', allowed_origins: '' })
+      await reload()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setCreatingClient(false)
+    }
+  }
+
   async function onDelete(k: ApiKey) {
     const ok = window.confirm(`Delete key "${k.name}"?\n\nThis is NOT reversible.`)
     if (!ok) return
     setErr(null)
     try {
       await apiDelete(`/api/keys/${k.id}`)
+      await reload()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
+
+  async function onDeleteClient(k: ClientKey) {
+    const ok = window.confirm(`Delete client key "${k.name}"?\n\nThis is NOT reversible.`)
+    if (!ok) return
+    setErr(null)
+    try {
+      await apiDelete(`/api/client-keys/${k.id}`)
       await reload()
     } catch (e: any) {
       setErr(String(e?.message || e))
@@ -122,7 +162,78 @@ export default function KeysPage() {
           )}
         </section>
       </div>
+
+      <div style={{ height: 16 }} />
+
+      <div className="grid2">
+        <section className="card">
+          <div className="cardTitle">Add client key (embed)</div>
+          {newClientSecret ? (
+            <div className="alert">
+              Copy this key now (it will not be shown again): <span className="mono">{newClientSecret}</span>
+            </div>
+          ) : null}
+          <div className="formRow">
+            <label>Name</label>
+            <input
+              value={clientForm.name}
+              onChange={(e) => setClientForm((p) => ({ ...p, name: e.target.value }))}
+              placeholder="e.g. Acme Website"
+            />
+          </div>
+          <div className="formRow">
+            <label>Allowed origins (comma-separated, optional)</label>
+            <input
+              value={clientForm.allowed_origins}
+              onChange={(e) => setClientForm((p) => ({ ...p, allowed_origins: e.target.value }))}
+              placeholder="https://acme.com, https://www.acme.com"
+            />
+          </div>
+          <div className="row">
+            <button className="btn primary" onClick={() => void onCreateClient()} disabled={creatingClient || !clientForm.name.trim()}>
+              {creatingClient ? 'Generating…' : 'Generate key'}
+            </button>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="cardTitle">Existing client keys</div>
+          {loading ? (
+            <div className="muted">Loading…</div>
+          ) : clientKeys.length === 0 ? (
+            <div className="muted">No client keys yet.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Hint</th>
+                  <th>Allowed origins</th>
+                  <th>Created</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {clientKeys.map((k) => (
+                  <tr key={k.id}>
+                    <td>{k.name}</td>
+                    <td className="mono">{k.hint}</td>
+                    <td className="mono" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {k.allowed_origins || '(any)'}
+                    </td>
+                    <td>{fmtIso(k.created_at)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button className="btn danger ghost" onClick={() => void onDeleteClient(k)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      </div>
     </div>
   )
 }
-

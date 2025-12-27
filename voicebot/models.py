@@ -53,6 +53,9 @@ class Conversation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     bot_id: UUID = Field(foreign_key="bot.id", index=True)
     test_flag: bool = Field(default=True, index=True)
+    # External, client-provided stable conversation id (used for embeds).
+    external_id: Optional[str] = Field(default=None, index=True)
+    client_key_id: Optional[UUID] = Field(default=None, index=True)
     metadata_json: str = Field(default="{}")
     # LLM usage + cost (estimated)
     llm_input_tokens_est: int = Field(default=0)
@@ -110,3 +113,13 @@ class IntegrationTool(SQLModel, table=True):
 
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+
+class ClientKey(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    name: str = Field(index=True)
+    hint: str = Field(default="")  # masked preview, e.g. igx_****abcd
+    secret_hash: str  # sha256 hex
+    allowed_origins: str = Field(default="")  # comma-separated
+    allowed_bot_ids_json: str = Field(default="[]")  # JSON list of UUID strings (empty = all)
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)

@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Intelligravex Embed Demo</title>
+    <style>
+      body {
+        margin: 0;
+        background: #0b0c12;
+        color: #fff;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      input {
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        color: #fff;
+        min-width: 280px;
+      }
+      button {
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(124, 108, 255, 0.35);
+        background: rgba(124, 108, 255, 0.22);
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .muted {
+        opacity: 0.7;
+        font-size: 13px;
+      }
+      #mount {
+        margin-top: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1 style="margin: 0 0 6px">Embed Demo (Text-only)</h1>
+      <div class="muted">Run the backend on <code>http://127.0.0.1:8000</code>, generate a client key in Studio → Keys.</div>
+
+      <div style="height: 14px"></div>
+      <div class="row">
+        <input id="botId" placeholder="bot_id (UUID)" />
+        <input id="apiKey" placeholder="client api key (igx_...)" />
+        <input id="userConv" placeholder="user_conversation_id (any stable string)" value="user_123" />
+        <button id="start">Start</button>
+      </div>
+
+      <div id="mount"></div>
+    </div>
+
+    <script src="http://127.0.0.1:8000/public/widget.js"></script>
+    <script>
+      const mount = document.getElementById('mount')
+      let widget = null
+      document.getElementById('start').onclick = () => {
+        if (widget) widget.close()
+        mount.innerHTML = ''
+        widget = window.IntelligravexVoiceBot.create({
+          botId: document.getElementById('botId').value.trim(),
+          apiKey: document.getElementById('apiKey').value.trim(),
+          userConversationId: document.getElementById('userConv').value.trim(),
+          target: mount,
+          title: 'Embedded Bot',
+          baseOrigin: 'http://127.0.0.1:8000',
+        })
+      }
+    </script>
+  </body>
+</html>

@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import queue
+import secrets
 import threading
 import time
 from functools import lru_cache
@@ -16,9 +17,8 @@ import httpx
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -32,16 +32,22 @@ from voicebot.store import (
     create_bot,
     create_conversation,
     create_key,
+    create_client_key,
     add_message,
     add_message_with_metrics,
     update_conversation_metrics,
     merge_conversation_metadata,
     decrypt_openai_key,
     delete_bot,
+    delete_client_key,
     delete_key,
     get_bot,
+    get_client_key,
     list_bots,
+    bots_aggregate_metrics,
+    list_client_keys,
     list_keys,
+    get_or_create_conversation_by_external_id,
     get_conversation,
     list_conversations,
     count_conversations,
@@ -53,6 +59,7 @@ from voicebot.store import (
     delete_integration_tool,
     get_integration_tool,
     get_integration_tool_by_name,
+    verify_client_key,
 )
 from voicebot.tts.xtts import XTTSv2
 from voicebot.utils.text import SentenceChunker
@@ -75,6 +82,13 @@ class ApiKeyCreateRequest(BaseModel):
     provider: str = "openai"
     name: str
     secret: str
+
+
+class ClientKeyCreateRequest(BaseModel):
+    name: str
+    allowed_origins: str = ""
+    allowed_bot_ids: list[str] = []
+    secret: Optional[str] = None
 
 
 class BotCreateRequest(BaseModel):
@@ -158,9 +172,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    templates_dir = Path(__file__).parent / "templates"
-    templates = Jinja2Templates(directory=str(templates_dir))
-
     ui_options = {
         "openai_models": [
             "gpt-4o",
@@ -196,276 +207,9 @@ def create_app() -> FastAPI:
         except CryptoError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    @app.get("/", response_class=HTMLResponse)
-    def root() -> RedirectResponse:
-        return RedirectResponse(url="/bots")
-
-    @app.get("/bots", response_class=HTMLResponse)
-    def bots_index(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        bots = list_bots(session)
-        keys = list_keys(session, provider="openai")
-        return templates.TemplateResponse(
-            "bots.html",
-            {"request": request, "bots": bots, "keys": keys},
-        )
-
-    @app.get("/conversations", response_class=HTMLResponse)
-    def conversations_index(
-        request: Request,
-        page: int = 1,
-        page_size: int = 50,
-        session: Session = Depends(get_session),
-    ) -> HTMLResponse:
-        page = max(1, int(page))
-        page_size = min(200, max(10, int(page_size)))
-        offset = (page - 1) * page_size
-        total = count_conversations(session)
-        convs = list_conversations(session, limit=page_size, offset=offset)
-        bots = {b.id: b for b in list_bots(session)}
-        return templates.TemplateResponse(
-            "conversations.html",
-            {
-                "request": request,
-                "conversations": convs,
-                "bots_by_id": bots,
-                "page": page,
-                "page_size": page_size,
-                "total": total,
-            },
-        )
-
-    @app.get("/bots/{bot_id}/conversations", response_class=HTMLResponse)
-    def bot_conversations(
-        bot_id: UUID,
-        request: Request,
-        page: int = 1,
-        page_size: int = 50,
-        session: Session = Depends(get_session),
-    ) -> HTMLResponse:
-        bot = get_bot(session, bot_id)
-        page = max(1, int(page))
-        page_size = min(200, max(10, int(page_size)))
-        offset = (page - 1) * page_size
-        total = count_conversations(session, bot_id=bot_id)
-        convs = list_conversations(session, bot_id=bot_id, limit=page_size, offset=offset)
-        return templates.TemplateResponse(
-            "conversations.html",
-            {
-                "request": request,
-                "conversations": convs,
-                "bots_by_id": {bot.id: bot},
-                "bot": bot,
-                "page": page,
-                "page_size": page_size,
-                "total": total,
-            },
-        )
-
-    @app.get("/conversations/{conversation_id}", response_class=HTMLResponse)
-    def conversation_detail(
-        conversation_id: UUID, request: Request, session: Session = Depends(get_session)
-    ) -> HTMLResponse:
-        conv = get_conversation(session, conversation_id)
-        bot = get_bot(session, conv.bot_id)
-        msgs_raw = list_messages(session, conversation_id=conversation_id)
-
-        def _safe_json_loads(s: str) -> dict | None:
-            try:
-                obj = json.loads(s)
-                return obj if isinstance(obj, dict) else None
-            except Exception:
-                return None
-
-        msgs: list[dict] = []
-        for m in msgs_raw:
-            tool_obj = _safe_json_loads(m.content) if m.role == "tool" else None
-            tool_name = None
-            tool_kind = None
-            display = m.content
-            if tool_obj and isinstance(tool_obj.get("tool"), str):
-                tool_name = tool_obj.get("tool")
-                if "arguments" in tool_obj:
-                    tool_kind = "call"
-                elif "result" in tool_obj:
-                    tool_kind = "result"
-                try:
-                    if tool_kind == "call":
-                        args = tool_obj.get("arguments") or {}
-                        if isinstance(args, dict):
-                            keys = [k for k in args.keys() if k != "next_reply"]
-                            display = f"Tool call: {tool_name} ({', '.join(keys) or 'no keys'})"
-                    elif tool_kind == "result":
-                        res = tool_obj.get("result") or {}
-                        if isinstance(res, dict):
-                            updated = res.get("updated") or {}
-                            if isinstance(updated, dict):
-                                display = f"Tool result: {tool_name} (updated {', '.join(updated.keys()) or 'none'})"
-                            else:
-                                display = f"Tool result: {tool_name}"
-                except Exception:
-                    display = f"Tool: {tool_name}"
-
-            metrics = {
-                "in": m.input_tokens_est,
-                "out": m.output_tokens_est,
-                "cost": m.cost_usd_est,
-                "asr": m.asr_ms,
-                "llm1": m.llm_ttfb_ms,
-                "llm": m.llm_total_ms,
-                "tts1": m.tts_first_audio_ms,
-                "total": m.total_ms,
-            }
-            msgs.append(
-                {
-                    "role": m.role,
-                    "created_at": m.created_at,
-                    "content": m.content,
-                    "display": display,
-                    "tool": tool_obj,
-                    "tool_name": tool_name,
-                    "tool_kind": tool_kind,
-                    "metrics": metrics,
-                }
-            )
-        return templates.TemplateResponse(
-            "conversation_detail.html",
-            {"request": request, "conversation": conv, "bot": bot, "messages": msgs},
-        )
-
-    @app.get("/bots/new", response_class=HTMLResponse)
-    def bots_new(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        keys = list_keys(session, provider="openai")
-        return templates.TemplateResponse(
-            "bot_new.html", {"request": request, "keys": keys, "options": ui_options}
-        )
-
-    @app.post("/bots")
-    def bots_create(
-        name: str = Form(...),
-        openai_model: str = Form("gpt-4o"),
-        system_prompt: str = Form(...),
-        language: str = Form("en"),
-        tts_language: str = Form("en"),
-        whisper_model: str = Form("small"),
-        whisper_device: str = Form("auto"),
-        xtts_model: str = Form("tts_models/multilingual/multi-dataset/xtts_v2"),
-        speaker_id: str = Form(""),
-        speaker_wav: str = Form(""),
-        openai_key_id: str = Form(""),
-        tts_split_sentences: bool = Form(False),
-        tts_chunk_min_chars: int = Form(20),
-        tts_chunk_max_chars: int = Form(120),
-        start_message_mode: str = Form("llm"),
-        start_message_text: str = Form(""),
-        session: Session = Depends(get_session),
-    ) -> RedirectResponse:
-        bot = Bot(
-            name=name,
-            openai_model=openai_model,
-            system_prompt=system_prompt,
-            language=language,
-            tts_language=tts_language,
-            whisper_model=whisper_model,
-            whisper_device=whisper_device,
-            xtts_model=xtts_model,
-            speaker_id=speaker_id.strip() or None,
-            speaker_wav=speaker_wav.strip() or None,
-            openai_key_id=UUID(openai_key_id) if openai_key_id.strip() else None,
-            tts_split_sentences=tts_split_sentences,
-            tts_chunk_min_chars=int(tts_chunk_min_chars),
-            tts_chunk_max_chars=int(tts_chunk_max_chars),
-            start_message_mode=(start_message_mode or "llm").strip() or "llm",
-            start_message_text=start_message_text or "",
-        )
-        create_bot(session, bot)
-        return RedirectResponse(url=f"/bots/{bot.id}", status_code=303)
-
-    @app.get("/bots/{bot_id}", response_class=HTMLResponse)
-    def bots_edit(bot_id: UUID, request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        bot = get_bot(session, bot_id)
-        keys = list_keys(session, provider="openai")
-        return templates.TemplateResponse(
-            "bot_edit.html", {"request": request, "bot": bot, "keys": keys, "options": ui_options}
-        )
-
-    @app.post("/bots/{bot_id}")
-    def bots_update(
-        bot_id: UUID,
-        name: str = Form(...),
-        openai_model: str = Form("gpt-4o"),
-        system_prompt: str = Form(...),
-        language: str = Form("en"),
-        tts_language: str = Form("en"),
-        whisper_model: str = Form("small"),
-        whisper_device: str = Form("auto"),
-        xtts_model: str = Form("tts_models/multilingual/multi-dataset/xtts_v2"),
-        speaker_id: str = Form(""),
-        speaker_wav: str = Form(""),
-        openai_key_id: str = Form(""),
-        tts_split_sentences: bool = Form(False),
-        tts_chunk_min_chars: int = Form(20),
-        tts_chunk_max_chars: int = Form(120),
-        start_message_mode: str = Form("llm"),
-        start_message_text: str = Form(""),
-        session: Session = Depends(get_session),
-    ) -> RedirectResponse:
-        update_bot(
-            session,
-            bot_id,
-            {
-                "name": name,
-                "openai_model": openai_model,
-                "system_prompt": system_prompt,
-                "language": language,
-                "tts_language": tts_language,
-                "whisper_model": whisper_model,
-                "whisper_device": whisper_device,
-                "xtts_model": xtts_model,
-                "speaker_id": speaker_id.strip() or None,
-                "speaker_wav": speaker_wav.strip() or None,
-                "openai_key_id": UUID(openai_key_id) if openai_key_id.strip() else None,
-                "tts_split_sentences": tts_split_sentences,
-                "tts_chunk_min_chars": int(tts_chunk_min_chars),
-                "tts_chunk_max_chars": int(tts_chunk_max_chars),
-                "start_message_mode": (start_message_mode or "llm").strip() or "llm",
-                "start_message_text": start_message_text or "",
-            },
-        )
-        return RedirectResponse(url=f"/bots/{bot_id}", status_code=303)
-
-    @app.post("/bots/{bot_id}/delete")
-    def bots_delete(bot_id: UUID, session: Session = Depends(get_session)) -> RedirectResponse:
-        delete_bot(session, bot_id)
-        return RedirectResponse(url="/bots", status_code=303)
-
-    @app.get("/keys", response_class=HTMLResponse)
-    def keys_index(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        keys = list_keys(session)
-        return templates.TemplateResponse(
-            "keys.html", {"request": request, "keys": keys, "secret_configured": bool(settings.secret_key)}
-        )
-
-    @app.get("/keys/new", response_class=HTMLResponse)
-    def keys_new(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse(
-            "key_new.html", {"request": request, "secret_configured": bool(settings.secret_key)}
-        )
-
-    @app.post("/keys")
-    def keys_create(
-        provider: str = Form("openai"),
-        name: str = Form(...),
-        secret: str = Form(...),
-        session: Session = Depends(get_session),
-    ) -> RedirectResponse:
-        crypto = require_crypto()
-        create_key(session, crypto=crypto, provider=provider, name=name, secret=secret)
-        return RedirectResponse(url="/keys", status_code=303)
-
-    @app.post("/keys/{key_id}/delete")
-    def keys_delete(key_id: UUID, session: Session = Depends(get_session)) -> RedirectResponse:
-        delete_key(session, key_id)
-        return RedirectResponse(url="/keys", status_code=303)
+    @app.get("/")
+    def root() -> dict:
+        return {"ok": True, "api_base": "/api", "public_widget_js": "/public/widget.js", "docs": "/docs"}
 
     def _ndjson(obj: dict) -> bytes:
         return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
@@ -666,14 +410,6 @@ def create_app() -> FastAPI:
             conv = create_conversation(session, bot_id=bot.id, test_flag=test_flag)
             conv_id = conv.id
 
-            if bot.openai_key_id:
-                crypto = require_crypto()
-                api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-            else:
-                api_key = os.environ.get("OPENAI_API_KEY")
-            if not api_key:
-                raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
-
             greeting_text = (bot.start_message_text or "").strip()
             llm_ttfb_ms: Optional[int] = None
             llm_total_ms: Optional[int] = None
@@ -686,6 +422,13 @@ def create_app() -> FastAPI:
                 # Static greeting (no LLM).
                 pass
             else:
+                if bot.openai_key_id:
+                    crypto = require_crypto()
+                    api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
+                else:
+                    api_key = os.environ.get("OPENAI_API_KEY")
+                if not api_key:
+                    raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                 msgs = [
                     Message(role="system", content=render_template(bot.system_prompt, ctx={"meta": {}})),
@@ -1843,9 +1586,382 @@ def create_app() -> FastAPI:
             # Starlette can raise RuntimeError if receive() is called after disconnect was already processed.
             return
 
+    def _parse_allowed_bot_ids(k) -> set[str]:
+        try:
+            ids = json.loads(getattr(k, "allowed_bot_ids_json", "") or "[]")
+            if not isinstance(ids, list):
+                return set()
+            return {str(x) for x in ids if isinstance(x, str) and str(x).strip()}
+        except Exception:
+            return set()
+
+    def _origin_allowed(k, origin: Optional[str]) -> bool:
+        allowed = (getattr(k, "allowed_origins", "") or "").strip()
+        if not allowed:
+            return True
+        origin_val = (origin or "").strip()
+        allowset = {o.strip() for o in allowed.split(",") if o.strip()}
+        return origin_val in allowset
+
+    def _bot_allowed(k, bot_id: UUID) -> bool:
+        allowset = _parse_allowed_bot_ids(k)
+        if not allowset:
+            return True
+        return str(bot_id) in allowset
+
+    async def _public_send_done(ws: WebSocket, *, req_id: str, text: str, metrics: dict) -> None:
+        await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": text, "metrics": metrics})
+
+    async def _public_send_greeting(
+        *,
+        ws: WebSocket,
+        req_id: str,
+        bot: Bot,
+        conv_id: UUID,
+        api_key: str,
+    ) -> tuple[str, dict]:
+        greeting_text = (bot.start_message_text or "").strip()
+        llm_ttfb_ms: Optional[int] = None
+        llm_total_ms: Optional[int] = None
+        input_tokens_est: int = 0
+        output_tokens_est: int = 0
+        cost_usd_est: float = 0.0
+        sent_delta = False
+
+        if bot.start_message_mode == "static" and greeting_text:
+            pass
+        else:
+            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+            msgs = [
+                Message(role="system", content=render_template(bot.system_prompt, ctx={"meta": {}})),
+                Message(role="user", content=_make_start_message_instruction(bot)),
+            ]
+            t0 = time.time()
+            first = None
+            parts: list[str] = []
+            for d in llm.stream_text(messages=msgs):
+                if first is None:
+                    first = time.time()
+                parts.append(d)
+                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+                sent_delta = True
+            t1 = time.time()
+            greeting_text = "".join(parts).strip() or greeting_text
+            if first is not None:
+                llm_ttfb_ms = int(round((first - t0) * 1000.0))
+            llm_total_ms = int(round((t1 - t0) * 1000.0))
+
+            input_tokens_est = int(estimate_messages_tokens(msgs, bot.openai_model) or 0)
+            output_tokens_est = int(estimate_text_tokens(greeting_text, bot.openai_model) or 0)
+            price = _get_openai_pricing().get(bot.openai_model)
+            cost_usd_est = float(
+                estimate_cost_usd(model_price=price, input_tokens=input_tokens_est, output_tokens=output_tokens_est) or 0.0
+            )
+
+        if not greeting_text:
+            greeting_text = "Hi! How can I help you today?"
+
+        if not sent_delta:
+            await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": greeting_text})
+
+        with Session(engine) as session:
+            add_message_with_metrics(
+                session,
+                conversation_id=conv_id,
+                role="assistant",
+                content=greeting_text,
+                input_tokens_est=input_tokens_est or None,
+                output_tokens_est=output_tokens_est or None,
+                cost_usd_est=cost_usd_est or None,
+                llm_ttfb_ms=llm_ttfb_ms,
+                llm_total_ms=llm_total_ms,
+            )
+            update_conversation_metrics(
+                session,
+                conversation_id=conv_id,
+                add_input_tokens_est=input_tokens_est,
+                add_output_tokens_est=output_tokens_est,
+                add_cost_usd_est=cost_usd_est,
+                last_asr_ms=None,
+                last_llm_ttfb_ms=llm_ttfb_ms,
+                last_llm_total_ms=llm_total_ms,
+                last_tts_first_audio_ms=None,
+                last_total_ms=None,
+            )
+
+        metrics = {
+            "model": bot.openai_model,
+            "input_tokens_est": input_tokens_est,
+            "output_tokens_est": output_tokens_est,
+            "cost_usd_est": cost_usd_est,
+            "llm_ttfb_ms": llm_ttfb_ms,
+            "llm_total_ms": llm_total_ms,
+        }
+        return greeting_text, metrics
+
+    @app.websocket("/public/v1/ws/bots/{bot_id}/chat")
+    async def public_chat_ws(bot_id: UUID, ws: WebSocket) -> None:
+        await ws.accept()
+
+        key_secret = (ws.query_params.get("key") or "").strip()
+        external_id = (ws.query_params.get("user_conversation_id") or "").strip()
+        if not key_secret or not external_id:
+            await _ws_send_json(ws, {"type": "error", "error": "Missing key or user_conversation_id"})
+            await ws.close(code=4400)
+            return
+
+        origin = ws.headers.get("origin")
+        with Session(engine) as session:
+            ck = verify_client_key(session, secret=key_secret)
+            if not ck:
+                await _ws_send_json(ws, {"type": "error", "error": "Invalid client key"})
+                await ws.close(code=4401)
+                return
+            if not _origin_allowed(ck, origin):
+                await _ws_send_json(ws, {"type": "error", "error": "Origin not allowed"})
+                await ws.close(code=4403)
+                return
+            if not _bot_allowed(ck, bot_id):
+                await _ws_send_json(ws, {"type": "error", "error": "Bot not allowed for this key"})
+                await ws.close(code=4403)
+                return
+
+        conv_id: Optional[UUID] = None
+
+        try:
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    await _ws_send_json(ws, {"type": "error", "error": "Invalid JSON"})
+                    continue
+
+                msg_type = str(payload.get("type") or "")
+                req_id = str(payload.get("req_id") or "")
+                if not req_id:
+                    await _ws_send_json(ws, {"type": "error", "error": "Missing req_id"})
+                    continue
+
+                if msg_type == "start":
+                    with Session(engine) as session:
+                        bot = get_bot(session, bot_id)
+                        ck = verify_client_key(session, secret=key_secret)
+                        if not ck:
+                            raise HTTPException(status_code=401, detail="Invalid client key")
+                        conv = get_or_create_conversation_by_external_id(
+                            session, bot_id=bot.id, test_flag=False, client_key_id=ck.id, external_id=external_id
+                        )
+                        conv_id = conv.id
+
+                        await _ws_send_json(
+                            ws,
+                            {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
+                        )
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+
+                        if len(list_messages(session, conversation_id=conv_id)) == 0:
+                            need_llm = not (
+                                bot.start_message_mode == "static" and (bot.start_message_text or "").strip()
+                            )
+                            api_key = ""
+                            if need_llm:
+                                if bot.openai_key_id:
+                                    crypto = require_crypto()
+                                    api_key = decrypt_openai_key(session, crypto=crypto, bot=bot) or ""
+                                else:
+                                    api_key = os.environ.get("OPENAI_API_KEY") or ""
+                                if not api_key:
+                                    raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+                            text, metrics = await _public_send_greeting(
+                                ws=ws, req_id=req_id, bot=bot, conv_id=conv_id, api_key=api_key
+                            )
+                            await _public_send_done(ws, req_id=req_id, text=text, metrics=metrics)
+                        else:
+                            await _public_send_done(ws, req_id=req_id, text="", metrics={})
+
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                    continue
+
+                if msg_type == "chat":
+                    user_text = str(payload.get("text") or "").strip()
+                    if not user_text:
+                        await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": "Empty text"})
+                        continue
+
+                    with Session(engine) as session:
+                        bot = get_bot(session, bot_id)
+                        ck = verify_client_key(session, secret=key_secret)
+                        if not ck:
+                            raise HTTPException(status_code=401, detail="Invalid client key")
+                        conv = get_or_create_conversation_by_external_id(
+                            session, bot_id=bot.id, test_flag=False, client_key_id=ck.id, external_id=external_id
+                        )
+                        conv_id = conv.id
+                        await _ws_send_json(
+                            ws, {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)}
+                        )
+
+                        if bot.openai_key_id:
+                            crypto = require_crypto()
+                            api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
+                        else:
+                            api_key = os.environ.get("OPENAI_API_KEY")
+                        if not api_key:
+                            raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+
+                        add_message_with_metrics(session, conversation_id=conv_id, role="user", content=user_text)
+                        history = _build_history(session, bot, conv_id)
+                        tools_defs = _build_tools_for_bot(session, bot.id)
+                        llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                        t0 = time.time()
+                        first_token_ts: Optional[float] = None
+                        full_text_parts: list[str] = []
+                        tool_calls: list[ToolCall] = []
+
+                        for ev in llm.stream_text_or_tool(messages=history, tools=tools_defs):
+                            if isinstance(ev, ToolCall):
+                                tool_calls.append(ev)
+                                continue
+                            d = str(ev)
+                            if d:
+                                if first_token_ts is None:
+                                    first_token_ts = time.time()
+                                full_text_parts.append(d)
+                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+
+                        llm_end_ts = time.time()
+                        rendered_reply = "".join(full_text_parts).strip()
+
+                        llm_ttfb_ms: Optional[int] = None
+                        if first_token_ts is not None:
+                            llm_ttfb_ms = int(round((first_token_ts - t0) * 1000.0))
+                        elif tool_calls and tool_calls[0].first_event_ts is not None:
+                            llm_ttfb_ms = int(round((tool_calls[0].first_event_ts - t0) * 1000.0))
+                        llm_total_ms = int(round((llm_end_ts - t0) * 1000.0))
+
+                        if tool_calls:
+                            meta_current = _get_conversation_meta(session, conversation_id=conv_id)
+                            final = ""
+                            for tc in tool_calls:
+                                tool_name = tc.name
+                                if tool_name == "set_variable":
+                                    tool_name = "set_metadata"
+                                tool_args = json.loads(tc.arguments_json or "{}")
+                                if not isinstance(tool_args, dict):
+                                    tool_args = {}
+                                add_message_with_metrics(
+                                    session,
+                                    conversation_id=conv_id,
+                                    role="tool",
+                                    content=json.dumps({"tool": tool_name, "arguments": tool_args}, ensure_ascii=False),
+                                )
+                                next_reply = str(tool_args.get("next_reply") or "").strip()
+                                patch = dict(tool_args)
+                                patch.pop("next_reply", None)
+
+                                tool_cfg: IntegrationTool | None = None
+                                response_json: Any | None = None
+                                if tool_name == "set_metadata":
+                                    new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
+                                    tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+                                else:
+                                    tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
+                                    if not tool_cfg:
+                                        raise RuntimeError(f"Unknown tool: {tool_name}")
+                                    response_json = _execute_integration_http(tool=tool_cfg, meta=meta_current, tool_args=patch)
+                                    mapped = _apply_response_mapper(
+                                        mapper_json=tool_cfg.response_mapper_json,
+                                        response_json=response_json,
+                                        meta=meta_current,
+                                        tool_args=patch,
+                                    )
+                                    new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
+                                    tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+
+                                add_message_with_metrics(
+                                    session,
+                                    conversation_id=conv_id,
+                                    role="tool",
+                                    content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                                )
+                                meta_current = tool_result.get("metadata") or meta_current
+
+                                candidate = ""
+                                if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
+                                    candidate = _render_static_reply(
+                                        template_text=tool_cfg.static_reply_template,
+                                        meta=meta_current,
+                                        response_json=response_json,
+                                        tool_args=patch,
+                                    ).strip()
+                                if not candidate:
+                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                final = candidate or final
+
+                            rendered_reply = final
+                            if rendered_reply:
+                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
+
+                        in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                            bot=bot, history=history, assistant_text=rendered_reply
+                        )
+                        add_message_with_metrics(
+                            session,
+                            conversation_id=conv_id,
+                            role="assistant",
+                            content=rendered_reply,
+                            input_tokens_est=in_tok,
+                            output_tokens_est=out_tok,
+                            cost_usd_est=cost,
+                            llm_ttfb_ms=llm_ttfb_ms,
+                            llm_total_ms=llm_total_ms,
+                            total_ms=llm_total_ms,
+                        )
+                        update_conversation_metrics(
+                            session,
+                            conversation_id=conv_id,
+                            add_input_tokens_est=in_tok,
+                            add_output_tokens_est=out_tok,
+                            add_cost_usd_est=cost,
+                            last_asr_ms=None,
+                            last_llm_ttfb_ms=llm_ttfb_ms,
+                            last_llm_total_ms=llm_total_ms,
+                            last_tts_first_audio_ms=None,
+                            last_total_ms=llm_total_ms,
+                        )
+
+                        metrics = {
+                            "model": bot.openai_model,
+                            "input_tokens_est": in_tok,
+                            "output_tokens_est": out_tok,
+                            "cost_usd_est": cost,
+                            "llm_ttfb_ms": llm_ttfb_ms,
+                            "llm_total_ms": llm_total_ms,
+                        }
+                        await _public_send_done(ws, req_id=req_id, text=rendered_reply, metrics=metrics)
+                        await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                    continue
+
+                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": f"Unknown message type: {msg_type}"})
+
+        except WebSocketDisconnect:
+            return
+        except RuntimeError:
+            return
+
     @app.get("/api/tts/meta")
     def tts_meta(model_name: str) -> dict:
         return _get_tts_meta(model_name)
+
+    @app.get("/public/widget.js")
+    def public_widget_js() -> Response:
+        p = Path(__file__).parent / "static" / "embed-widget.js"
+        if not p.exists():
+            raise HTTPException(status_code=404, detail="widget.js not found")
+        return Response(content=p.read_text("utf-8"), media_type="application/javascript")
 
     @app.get("/api/options")
     def api_options() -> dict:
@@ -1905,7 +2021,24 @@ def create_app() -> FastAPI:
     @app.get("/api/bots")
     def api_list_bots(session: Session = Depends(get_session)) -> dict:
         bots = list_bots(session)
-        return {"items": [_bot_to_dict(b) for b in bots]}
+        stats = bots_aggregate_metrics(session)
+        items = []
+        for b in bots:
+            d = _bot_to_dict(b)
+            d["stats"] = stats.get(
+                b.id,
+                {
+                    "conversations": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost_usd": 0.0,
+                    "avg_llm_ttfb_ms": None,
+                    "avg_llm_total_ms": None,
+                    "avg_total_ms": None,
+                },
+            )
+            items.append(d)
+        return {"items": items}
 
     @app.post("/api/bots")
     def api_create_bot(payload: BotCreateRequest, session: Session = Depends(get_session)) -> dict:
@@ -2047,6 +2180,64 @@ def create_app() -> FastAPI:
         if any(b.openai_key_id == key_id for b in bots):
             raise HTTPException(status_code=400, detail="Key is in use by one or more bots. Remove it from bots first.")
         delete_key(session, key_id)
+        return {"ok": True}
+
+    @app.get("/api/client-keys")
+    def api_list_client_keys(session: Session = Depends(get_session)) -> dict:
+        items = []
+        for k in list_client_keys(session):
+            try:
+                allowed_bot_ids = json.loads(k.allowed_bot_ids_json or "[]")
+                if not isinstance(allowed_bot_ids, list):
+                    allowed_bot_ids = []
+            except Exception:
+                allowed_bot_ids = []
+            items.append(
+                {
+                    "id": str(k.id),
+                    "name": k.name,
+                    "hint": k.hint,
+                    "allowed_origins": k.allowed_origins,
+                    "allowed_bot_ids": [str(x) for x in allowed_bot_ids if isinstance(x, str)],
+                    "created_at": k.created_at.isoformat(),
+                }
+            )
+        return {"items": items}
+
+    @app.post("/api/client-keys")
+    def api_create_client_key(payload: ClientKeyCreateRequest, session: Session = Depends(get_session)) -> dict:
+        name = (payload.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
+        secret = (payload.secret or "").strip()
+        generated = False
+        if not secret:
+            generated = True
+            secret = "igx_" + secrets.token_urlsafe(24)
+        allowed_bot_ids = [str(x) for x in (payload.allowed_bot_ids or []) if str(x).strip()]
+        k = create_client_key(
+            session,
+            name=name,
+            secret=secret,
+            allowed_origins=(payload.allowed_origins or "").strip(),
+            allowed_bot_ids=allowed_bot_ids,
+        )
+        out = {
+            "id": str(k.id),
+            "name": k.name,
+            "hint": k.hint,
+            "allowed_origins": k.allowed_origins,
+            "allowed_bot_ids": allowed_bot_ids,
+            "created_at": k.created_at.isoformat(),
+        }
+        if generated:
+            out["secret"] = secret
+        return out
+
+    @app.delete("/api/client-keys/{key_id}")
+    def api_delete_client_key(key_id: UUID, session: Session = Depends(get_session)) -> dict:
+        _ = get_client_key(session, key_id)
+        delete_client_key(session, key_id)
         return {"ok": True}
 
     @app.get("/api/conversations")

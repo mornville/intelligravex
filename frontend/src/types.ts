@@ -18,8 +18,26 @@ export type Bot = {
   tts_chunk_max_chars: number
   start_message_mode: 'llm' | 'static'
   start_message_text: string
+  stats?: {
+    conversations: number
+    input_tokens: number
+    output_tokens: number
+    cost_usd: number
+    avg_llm_ttfb_ms?: number | null
+    avg_llm_total_ms?: number | null
+    avg_total_ms?: number | null
+  }
   created_at: string
   updated_at: string
+}
+
+export type ClientKey = {
+  id: UUID
+  name: string
+  hint: string
+  allowed_origins: string
+  allowed_bot_ids: string[]
+  created_at: string
 }
 
 export type ApiKey = {

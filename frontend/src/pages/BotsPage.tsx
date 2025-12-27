@@ -234,6 +234,10 @@ export default function BotsPage() {
                 <tr>
                   <th>Name</th>
                   <th>Model</th>
+                  <th>Conversations</th>
+                  <th>Tokens</th>
+                  <th>Cost</th>
+                  <th>Latency</th>
                   <th>Updated</th>
                   <th />
                 </tr>
@@ -248,6 +252,15 @@ export default function BotsPage() {
                       <div className="muted mono">{b.id}</div>
                     </td>
                     <td className="mono">{b.openai_model}</td>
+                    <td>{b.stats?.conversations ?? 0}</td>
+                    <td className="mono">
+                      {(b.stats?.input_tokens ?? 0).toLocaleString()} / {(b.stats?.output_tokens ?? 0).toLocaleString()}
+                    </td>
+                    <td className="mono">${(b.stats?.cost_usd ?? 0).toFixed(6)}</td>
+                    <td className="mono">
+                      {(b.stats?.avg_llm_ttfb_ms ?? null) === null ? '—' : `${b.stats?.avg_llm_ttfb_ms}ms`} /{' '}
+                      {(b.stats?.avg_llm_total_ms ?? null) === null ? '—' : `${b.stats?.avg_llm_total_ms}ms`}
+                    </td>
                     <td>{fmtIso(b.updated_at)}</td>
                     <td style={{ textAlign: 'right' }}>
                       <button className="btn danger ghost" onClick={() => onDelete(b)}>
@@ -264,4 +277,3 @@ export default function BotsPage() {
     </div>
   )
 }
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 from typing import List, Optional
 from uuid import UUID
@@ -8,7 +9,7 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from voicebot.crypto import CryptoBox, build_hint
-from voicebot.models import ApiKey, Bot, Conversation, ConversationMessage, IntegrationTool
+from voicebot.models import ApiKey, Bot, ClientKey, Conversation, ConversationMessage, IntegrationTool
 
 
 class NotFoundError(RuntimeError):
@@ -54,6 +55,36 @@ def delete_key(session: Session, key_id: UUID) -> None:
 def list_bots(session: Session) -> List[Bot]:
     stmt = select(Bot).order_by(Bot.updated_at.desc())
     return list(session.exec(stmt))
+
+
+def bots_aggregate_metrics(session: Session) -> dict[UUID, dict]:
+    from sqlmodel import func
+
+    stmt = (
+        select(
+            Conversation.bot_id,
+            func.count(Conversation.id),
+            func.coalesce(func.sum(Conversation.llm_input_tokens_est), 0),
+            func.coalesce(func.sum(Conversation.llm_output_tokens_est), 0),
+            func.coalesce(func.sum(Conversation.cost_usd_est), 0.0),
+            func.avg(Conversation.last_llm_ttfb_ms),
+            func.avg(Conversation.last_llm_total_ms),
+            func.avg(Conversation.last_total_ms),
+        )
+        .group_by(Conversation.bot_id)
+    )
+    out: dict[UUID, dict] = {}
+    for bot_id, cnt, in_tok, out_tok, cost, avg_ttfb, avg_llm, avg_total in session.exec(stmt):
+        out[bot_id] = {
+            "conversations": int(cnt or 0),
+            "input_tokens": int(in_tok or 0),
+            "output_tokens": int(out_tok or 0),
+            "cost_usd": float(cost or 0.0),
+            "avg_llm_ttfb_ms": int(avg_ttfb) if avg_ttfb is not None else None,
+            "avg_llm_total_ms": int(avg_llm) if avg_llm is not None else None,
+            "avg_total_ms": int(avg_total) if avg_total is not None else None,
+        }
+    return out
 
 
 def get_bot(session: Session, bot_id: UUID) -> Bot:
@@ -102,6 +133,59 @@ def delete_bot(session: Session, bot_id: UUID) -> None:
     session.commit()
 
 
+def _sha256_hex(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def list_client_keys(session: Session) -> List[ClientKey]:
+    stmt = select(ClientKey).order_by(ClientKey.created_at.desc())
+    return list(session.exec(stmt))
+
+
+def get_client_key(session: Session, key_id: UUID) -> ClientKey:
+    k = session.get(ClientKey, key_id)
+    if not k:
+        raise NotFoundError("Client key not found")
+    return k
+
+
+def create_client_key(
+    session: Session,
+    *,
+    name: str,
+    secret: str,
+    allowed_origins: str = "",
+    allowed_bot_ids: Optional[list[str]] = None,
+) -> ClientKey:
+    k = ClientKey(
+        name=name,
+        hint=build_hint(secret),
+        secret_hash=_sha256_hex(secret),
+        allowed_origins=(allowed_origins or "").strip(),
+        allowed_bot_ids_json=json.dumps(allowed_bot_ids or [], ensure_ascii=False),
+    )
+    session.add(k)
+    session.commit()
+    session.refresh(k)
+    return k
+
+
+def delete_client_key(session: Session, key_id: UUID) -> None:
+    k = session.get(ClientKey, key_id)
+    if not k:
+        return
+    session.delete(k)
+    session.commit()
+
+
+def verify_client_key(session: Session, *, secret: str) -> Optional[ClientKey]:
+    if not secret:
+        return None
+    h = _sha256_hex(secret)
+    stmt = select(ClientKey).where(ClientKey.secret_hash == h).limit(1)
+    return session.exec(stmt).first()
+
+
 def decrypt_openai_key(session: Session, *, crypto: CryptoBox, bot: Bot) -> Optional[str]:
     if not bot.openai_key_id:
         return None
@@ -114,6 +198,40 @@ def decrypt_openai_key(session: Session, *, crypto: CryptoBox, bot: Bot) -> Opti
 def create_conversation(session: Session, *, bot_id: UUID, test_flag: bool) -> Conversation:
     now = dt.datetime.now(dt.timezone.utc)
     conv = Conversation(bot_id=bot_id, test_flag=test_flag, created_at=now, updated_at=now)
+    session.add(conv)
+    session.commit()
+    session.refresh(conv)
+    return conv
+
+
+def get_conversation_by_external_id(
+    session: Session, *, bot_id: UUID, client_key_id: Optional[UUID], external_id: str
+) -> Optional[Conversation]:
+    if not external_id:
+        return None
+    stmt = select(Conversation).where(Conversation.bot_id == bot_id).where(Conversation.external_id == external_id)
+    if client_key_id:
+        stmt = stmt.where(Conversation.client_key_id == client_key_id)
+    return session.exec(stmt).first()
+
+
+def get_or_create_conversation_by_external_id(
+    session: Session, *, bot_id: UUID, test_flag: bool, client_key_id: Optional[UUID], external_id: str
+) -> Conversation:
+    existing = get_conversation_by_external_id(
+        session, bot_id=bot_id, client_key_id=client_key_id, external_id=external_id
+    )
+    if existing:
+        return existing
+    now = dt.datetime.now(dt.timezone.utc)
+    conv = Conversation(
+        bot_id=bot_id,
+        test_flag=test_flag,
+        external_id=external_id,
+        client_key_id=client_key_id,
+        created_at=now,
+        updated_at=now,
+    )
     session.add(conv)
     session.commit()
     session.refresh(conv)
