@@ -100,6 +100,8 @@ class IntegrationTool(SQLModel, table=True):
 
     url: str
     method: str = Field(default="GET")  # GET/POST/PUT/PATCH/DELETE
+    # List of required keys inside the LLM tool-call `args` object (stored as JSON list).
+    args_required_json: str = Field(default="[]")
     # Optional request headers as a JSON template string.
     # Example: {"Authorization":"Bearer {{env.MEDICAL_SQL_API_TOKEN}}"}
     headers_template_json: str = Field(default="{}")

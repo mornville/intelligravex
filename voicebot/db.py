@@ -97,6 +97,7 @@ def _apply_light_migrations(engine) -> None:
 
         add_tool_col("static_reply_template", "TEXT NOT NULL DEFAULT ''")
         add_tool_col("headers_template_json", "TEXT NOT NULL DEFAULT '{}'")
+        add_tool_col("args_required_json", "TEXT NOT NULL DEFAULT '[]'")
 
         # ClientKey
         try:

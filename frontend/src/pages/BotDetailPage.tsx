@@ -30,6 +30,7 @@ export default function BotDetailPage() {
     description: '',
     url: '',
     method: 'GET',
+    args_required_csv: '',
     headers_template_json: '{}',
     headers_template_json_masked: '',
     headers_configured: false,
@@ -117,6 +118,7 @@ export default function BotDetailPage() {
       description: '',
       url: '',
       method: (options?.http_methods?.[0] || 'GET') as any,
+      args_required_csv: '',
       headers_template_json: '{}',
       headers_template_json_masked: '',
       headers_configured: false,
@@ -134,6 +136,7 @@ export default function BotDetailPage() {
       description: t.description || '',
       url: t.url,
       method: t.method || 'GET',
+      args_required_csv: (t.args_required || []).join(', '),
       // Write-only: never hydrate secrets back into the UI.
       headers_template_json: '',
       headers_template_json_masked: t.headers_template_json_masked || '',
@@ -155,12 +158,17 @@ export default function BotDetailPage() {
     }
     setErr(null)
     try {
+      const args_required = toolForm.args_required_csv
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
       if (toolForm.id) {
         const patch: any = {
           name,
           description: toolForm.description,
           url,
           method: toolForm.method,
+          args_required,
           request_body_template: toolForm.request_body_template || '{}',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
@@ -175,6 +183,7 @@ export default function BotDetailPage() {
           description: toolForm.description,
           url,
           method: toolForm.method,
+          args_required,
           headers_template_json: toolForm.headers_template_json || '{}',
           request_body_template: toolForm.request_body_template || '{}',
           response_mapper_json: toolForm.response_mapper_json || '{}',
@@ -520,6 +529,24 @@ export default function BotDetailPage() {
                   onChange={(e) => setToolForm((p) => ({ ...p, url: e.target.value }))}
                   placeholder=""
                 />
+              </div>
+            </div>
+            <div className="formRow">
+              <label>
+                Required args (comma-separated){' '}
+                <HelpTip>
+                  <div className="tipTitle">Examples</div>
+                  <pre className="tipPre">{'sql\nuser_id, city, specialty'}</pre>
+                </HelpTip>
+              </label>
+              <input
+                value={toolForm.args_required_csv}
+                onChange={(e) => setToolForm((p) => ({ ...p, args_required_csv: e.target.value }))}
+                placeholder=""
+              />
+              <div className="muted">
+                The LLM must call this tool with <span className="mono">{'{ "args": { ... }, "next_reply": "..." }'}</span>. These keys will be required
+                inside <span className="mono">args</span>.
               </div>
             </div>
             <div className="formRow">

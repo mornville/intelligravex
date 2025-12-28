@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import queue
+import re
 import secrets
 import threading
 import time
@@ -126,6 +127,81 @@ def _http_error_response(*, url: str, status_code: int | None, body: str | None,
     return {"__http_error__": out}
 
 
+_TEMPLATE_VAR_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
+
+
+def _extract_required_tool_args(tool: IntegrationTool) -> list[str]:
+    """
+    Best-effort: infer required tool args from {{args.*}} / {{params.*}} occurrences
+    in URL/body/headers templates.
+    """
+
+    def scan(text: str) -> set[str]:
+        if not text or "{{" not in text:
+            return set()
+        found: set[str] = set()
+        for m in _TEMPLATE_VAR_RE.finditer(text):
+            expr = (m.group(1) or "").strip()
+            for prefix in ("args.", "params."):
+                if not expr.startswith(prefix):
+                    continue
+                rest = expr[len(prefix) :].strip()
+                # First segment up to '.' or '['
+                key = ""
+                for ch in rest:
+                    if ch in ".[":
+                        break
+                    key += ch
+                key = key.strip()
+                if key:
+                    found.add(key)
+        return found
+
+    keys: set[str] = set()
+    keys |= scan(tool.url or "")
+    keys |= scan(tool.request_body_template or "")
+    keys |= scan(tool.headers_template_json or "")
+    return sorted(keys)
+
+
+def _parse_required_args_json(raw: str) -> list[str]:
+    try:
+        obj = json.loads(raw or "[]")
+    except Exception:
+        return []
+    if not isinstance(obj, list):
+        return []
+    out: list[str] = []
+    for v in obj:
+        if isinstance(v, str):
+            s = v.strip()
+            if s:
+                out.append(s)
+    # stable unique
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for s in out:
+        if s in seen:
+            continue
+        seen.add(s)
+        uniq.append(s)
+    return uniq
+
+
+def _missing_required_args(required: list[str], args: dict) -> list[str]:
+    missing: list[str] = []
+    for k in required:
+        if k not in args:
+            missing.append(k)
+            continue
+        v = args.get(k)
+        if v is None:
+            missing.append(k)
+        elif isinstance(v, str) and not v.strip():
+            missing.append(k)
+    return missing
+
+
 class ChatRequest(BaseModel):
     text: str
     speak: bool = True
@@ -191,6 +267,7 @@ class IntegrationToolCreateRequest(BaseModel):
     description: str = ""
     url: str
     method: str = "GET"
+    args_required: list[str] = []
     headers_template_json: str = "{}"
     request_body_template: str = "{}"
     response_mapper_json: str = "{}"
@@ -202,6 +279,7 @@ class IntegrationToolUpdateRequest(BaseModel):
     description: Optional[str] = None
     url: Optional[str] = None
     method: Optional[str] = None
+    args_required: Optional[list[str]] = None
     headers_template_json: Optional[str] = None
     request_body_template: Optional[str] = None
     response_mapper_json: Optional[str] = None
@@ -387,15 +465,26 @@ def create_app() -> FastAPI:
         return set_variable_tool_def()
 
     def _integration_tool_def(t: IntegrationTool) -> dict[str, Any]:
+        required_args = _parse_required_args_json(getattr(t, "args_required_json", "[]"))
+        args_schema = {
+            "type": "object",
+            "properties": {k: {"type": "string"} for k in required_args},
+            "required": required_args,
+            "additionalProperties": True,
+        }
         schema = {
             "type": "object",
             "properties": {
+                "args": {
+                    "description": "Arguments used to call the integration (required).",
+                    **args_schema,
+                },
                 "next_reply": {
                     "type": "string",
                     "description": "What the assistant should say next (no second LLM call). Variables like {{.firstName}} are allowed.",
-                }
+                },
             },
-            "required": ["next_reply"],
+            "required": ["args", "next_reply"],
             "additionalProperties": True,
         }
         return {
@@ -1066,8 +1155,13 @@ def create_app() -> FastAPI:
                                     )
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
-                                    patch = dict(tool_args)
-                                    patch.pop("next_reply", None)
+                                    raw_args = tool_args.get("args")
+                                    if isinstance(raw_args, dict):
+                                        patch = dict(raw_args)
+                                    else:
+                                        patch = dict(tool_args)
+                                        patch.pop("next_reply", None)
+                                        patch.pop("args", None)
 
                                     tool_cfg: IntegrationTool | None = None
                                     response_json: Any | None = None
@@ -1557,8 +1651,13 @@ def create_app() -> FastAPI:
                                     )
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
-                                    patch = dict(tool_args)
-                                    patch.pop("next_reply", None)
+                                    raw_args = tool_args.get("args")
+                                    if isinstance(raw_args, dict):
+                                        patch = dict(raw_args)
+                                    else:
+                                        patch = dict(tool_args)
+                                        patch.pop("next_reply", None)
+                                        patch.pop("args", None)
 
                                     tool_cfg: IntegrationTool | None = None
                                     response_json: Any | None = None
@@ -1982,8 +2081,13 @@ def create_app() -> FastAPI:
                                     content=json.dumps({"tool": tool_name, "arguments": tool_args}, ensure_ascii=False),
                                 )
                                 next_reply = str(tool_args.get("next_reply") or "").strip()
-                                patch = dict(tool_args)
-                                patch.pop("next_reply", None)
+                                raw_args = tool_args.get("args")
+                                if isinstance(raw_args, dict):
+                                    patch = dict(raw_args)
+                                else:
+                                    patch = dict(tool_args)
+                                    patch.pop("next_reply", None)
+                                    patch.pop("args", None)
 
                                 tool_cfg: IntegrationTool | None = None
                                 response_json: Any | None = None
@@ -2153,6 +2257,7 @@ def create_app() -> FastAPI:
             "description": t.description,
             "url": t.url,
             "method": t.method,
+            "args_required": _parse_required_args_json(getattr(t, "args_required_json", "[]")),
             # Never expose secret headers (write-only). Return masked preview for UI.
             "headers_template_json": "{}",
             "headers_template_json_masked": _mask_headers_json(t.headers_template_json),
@@ -2250,6 +2355,7 @@ def create_app() -> FastAPI:
             description=payload.description or "",
             url=payload.url,
             method=(payload.method or "GET").upper(),
+            args_required_json=json.dumps(payload.args_required or [], ensure_ascii=False),
             headers_template_json=payload.headers_template_json or "{}",
             request_body_template=payload.request_body_template or "{}",
             response_mapper_json=payload.response_mapper_json or "{}",
@@ -2277,6 +2383,8 @@ def create_app() -> FastAPI:
             patch["name"] = name
         if "method" in patch and patch["method"] is not None:
             patch["method"] = str(patch["method"]).upper()
+        if "args_required" in patch:
+            patch["args_required_json"] = json.dumps(patch.pop("args_required") or [], ensure_ascii=False)
         if "headers_template_json" in patch:
             patch["headers_template_json"] = patch["headers_template_json"] or "{}"
         tool = update_integration_tool(session, tool_id, patch)

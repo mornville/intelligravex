@@ -112,6 +112,7 @@ export type IntegrationTool = {
   description: string
   url: string
   method: string
+  args_required: string[]
   headers_template_json: string
   headers_template_json_masked?: string
   headers_configured?: boolean
