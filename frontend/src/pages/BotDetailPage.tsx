@@ -30,6 +30,9 @@ export default function BotDetailPage() {
     description: '',
     url: '',
     method: 'GET',
+    headers_template_json: '{}',
+    headers_template_json_masked: '',
+    headers_configured: false,
     request_body_template: '{}',
     response_mapper_json: '{}',
     static_reply_template: '',
@@ -114,6 +117,9 @@ export default function BotDetailPage() {
       description: '',
       url: '',
       method: (options?.http_methods?.[0] || 'GET') as any,
+      headers_template_json: '{}',
+      headers_template_json_masked: '',
+      headers_configured: false,
       request_body_template: '{}',
       response_mapper_json: '{}',
       static_reply_template: '',
@@ -128,6 +134,10 @@ export default function BotDetailPage() {
       description: t.description || '',
       url: t.url,
       method: t.method || 'GET',
+      // Write-only: never hydrate secrets back into the UI.
+      headers_template_json: '',
+      headers_template_json_masked: t.headers_template_json_masked || '',
+      headers_configured: Boolean(t.headers_configured),
       request_body_template: t.request_body_template || '{}',
       response_mapper_json: t.response_mapper_json || '{}',
       static_reply_template: t.static_reply_template || '',
@@ -146,7 +156,7 @@ export default function BotDetailPage() {
     setErr(null)
     try {
       if (toolForm.id) {
-        await apiPut<IntegrationTool>(`/api/bots/${botId}/tools/${toolForm.id}`, {
+        const patch: any = {
           name,
           description: toolForm.description,
           url,
@@ -154,13 +164,18 @@ export default function BotDetailPage() {
           request_body_template: toolForm.request_body_template || '{}',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
-        })
+        }
+        if (toolForm.headers_template_json.trim()) {
+          patch.headers_template_json = toolForm.headers_template_json
+        }
+        await apiPut<IntegrationTool>(`/api/bots/${botId}/tools/${toolForm.id}`, patch)
       } else {
         await apiPost<IntegrationTool>(`/api/bots/${botId}/tools`, {
           name,
           description: toolForm.description,
           url,
           method: toolForm.method,
+          headers_template_json: toolForm.headers_template_json || '{}',
           request_body_template: toolForm.request_body_template || '{}',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
@@ -505,6 +520,34 @@ export default function BotDetailPage() {
                   onChange={(e) => setToolForm((p) => ({ ...p, url: e.target.value }))}
                   placeholder=""
                 />
+              </div>
+            </div>
+            <div className="formRow">
+              <label>
+                Headers template (JSON, optional){' '}
+                <HelpTip>
+                  <div className="tipTitle">Examples</div>
+                  <pre className="tipPre">
+                    {'{\n  \"Authorization\": \"Bearer <PASTE_TOKEN_HERE>\"\n}\n\n'}
+                    {'{\n  \"X-Client\": \"intelligravex\"\n}'}
+                  </pre>
+                </HelpTip>
+              </label>
+              <textarea
+                value={toolForm.headers_template_json}
+                onChange={(e) => setToolForm((p) => ({ ...p, headers_template_json: e.target.value }))}
+                rows={3}
+                placeholder=""
+              />
+              {toolForm.headers_template_json_masked ? (
+                <div className="muted">
+                  Current (masked): <span className="mono">{toolForm.headers_template_json_masked}</span>
+                </div>
+              ) : toolForm.headers_configured ? (
+                <div className="muted">Current: configured (hidden)</div>
+              ) : null}
+              <div className="muted">
+                For secrets, paste them directly here. This field is write-only and will be masked after save.
               </div>
             </div>
             <div className="formRow">

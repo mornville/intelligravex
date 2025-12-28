@@ -69,6 +69,63 @@ from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
 
 
+def _mask_secret(value: str, *, keep_start: int = 10, keep_end: int = 6) -> str:
+    v = value or ""
+    if len(v) <= keep_start + keep_end + 3:
+        return "***"
+    return f"{v[:keep_start]}...{v[-keep_end:]}"
+
+
+def _mask_headers_json(headers_json: str) -> str:
+    try:
+        obj = json.loads(headers_json or "{}")
+    except Exception:
+        return ""
+    if not isinstance(obj, dict):
+        return ""
+    out: dict[str, Any] = {}
+    for k, v in obj.items():
+        if not isinstance(k, str):
+            continue
+        if not isinstance(v, str):
+            out[k] = v
+            continue
+        if k.lower() == "authorization":
+            vv = v.strip()
+            if vv.lower().startswith("bearer "):
+                token = vv.split(" ", 1)[1].strip()
+                out[k] = f"Bearer {_mask_secret(token)}"
+            else:
+                out[k] = _mask_secret(vv)
+        else:
+            out[k] = v
+    try:
+        return json.dumps(out, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def _headers_configured(headers_json: str) -> bool:
+    try:
+        obj = json.loads(headers_json or "{}")
+    except Exception:
+        return bool((headers_json or "").strip())
+    if not isinstance(obj, dict):
+        return bool((headers_json or "").strip())
+    return any(k for k, v in obj.items() if str(k).strip() and (v is not None and str(v).strip()))
+
+
+def _http_error_response(*, url: str, status_code: int | None, body: str | None, message: str | None) -> dict:
+    out: dict[str, Any] = {"url": url}
+    if status_code is not None:
+        out["status_code"] = int(status_code)
+    if message:
+        out["message"] = str(message)
+    if body:
+        out["body"] = str(body)[:1200]
+    return {"__http_error__": out}
+
+
 class ChatRequest(BaseModel):
     text: str
     speak: bool = True
@@ -134,6 +191,7 @@ class IntegrationToolCreateRequest(BaseModel):
     description: str = ""
     url: str
     method: str = "GET"
+    headers_template_json: str = "{}"
     request_body_template: str = "{}"
     response_mapper_json: str = "{}"
     static_reply_template: str = ""
@@ -144,6 +202,7 @@ class IntegrationToolUpdateRequest(BaseModel):
     description: Optional[str] = None
     url: Optional[str] = None
     method: Optional[str] = None
+    headers_template_json: Optional[str] = None
     request_body_template: Optional[str] = None
     response_mapper_json: Optional[str] = None
     static_reply_template: Optional[str] = None
@@ -569,6 +628,19 @@ def create_app() -> FastAPI:
         url = render_template(tool.url, ctx=ctx)
         method = (tool.method or "GET").upper()
 
+        headers_obj: dict[str, str] = {}
+        headers_template = tool.headers_template_json or ""
+        if headers_template.strip():
+            rendered_headers = render_template(headers_template, ctx=ctx)
+            try:
+                h = json.loads(rendered_headers)
+                if isinstance(h, dict):
+                    for k, v in h.items():
+                        if isinstance(k, str) and isinstance(v, str) and k.strip():
+                            headers_obj[k] = v
+            except Exception:
+                headers_obj = {}
+
         body_template = tool.request_body_template or ""
         body_obj = None
         if body_template.strip():
@@ -580,22 +652,31 @@ def create_app() -> FastAPI:
                 body_obj = rendered_body
 
         timeout = httpx.Timeout(20.0, connect=10.0)
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            if method == "GET":
-                resp = client.request(method, url, params=tool_args or None)
-            else:
-                # Prefer JSON for objects/lists; otherwise raw data.
-                if isinstance(body_obj, (dict, list)):
-                    resp = client.request(method, url, json=body_obj)
-                elif body_obj is None:
-                    resp = client.request(method, url, json=tool_args or None)
-                else:
-                    resp = client.request(method, url, content=str(body_obj))
-        resp.raise_for_status()
         try:
-            return resp.json()
-        except Exception:
-            return {"raw": resp.text}
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                if method == "GET":
+                    resp = client.request(method, url, params=tool_args or None, headers=headers_obj or None)
+                else:
+                    # Prefer JSON for objects/lists; otherwise raw data.
+                    if isinstance(body_obj, (dict, list)):
+                        resp = client.request(method, url, json=body_obj, headers=headers_obj or None)
+                    elif body_obj is None:
+                        resp = client.request(method, url, json=tool_args or None, headers=headers_obj or None)
+                    else:
+                        resp = client.request(method, url, content=str(body_obj), headers=headers_obj or None)
+            if resp.status_code >= 400:
+                return _http_error_response(
+                    url=str(resp.request.url),
+                    status_code=resp.status_code,
+                    body=(resp.text or None),
+                    message=resp.reason_phrase,
+                )
+            try:
+                return resp.json()
+            except Exception:
+                return {"raw": resp.text}
+        except httpx.RequestError as exc:
+            return _http_error_response(url=url, status_code=None, body=None, message=str(exc))
 
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False))
@@ -998,15 +1079,33 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        response_json = _execute_integration_http(tool=tool_cfg, meta=meta_current, tool_args=patch)
-                                        mapped = _apply_response_mapper(
-                                            mapper_json=tool_cfg.response_mapper_json,
-                                            response_json=response_json,
-                                            meta=meta_current,
-                                            tool_args=patch,
+                                        response_json = _execute_integration_http(
+                                            tool=tool_cfg, meta=meta_current, tool_args=patch
                                         )
-                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
-                                        tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+                                        if isinstance(response_json, dict) and "__http_error__" in response_json:
+                                            err = response_json["__http_error__"] or {}
+                                            tool_result = {"ok": False, "error": err}
+                                            sc = err.get("status_code")
+                                            tool_error = (
+                                                f"{tool_name}: HTTP {sc} Unauthorized"
+                                                if sc == 401
+                                                else f"{tool_name}: HTTP {sc or 'error'}"
+                                            )
+                                            rendered_reply = (
+                                                f"The integration '{tool_name}' failed with HTTP {sc} "
+                                                f"({err.get('message') or 'error'}). "
+                                                "Please update the integration Authorization token and try again. "
+                                                "What would you like to do next?"
+                                            )
+                                        else:
+                                            mapped = _apply_response_mapper(
+                                                mapper_json=tool_cfg.response_mapper_json,
+                                                response_json=response_json,
+                                                meta=meta_current,
+                                                tool_args=patch,
+                                            )
+                                            new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
+                                            tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
 
                                     add_message_with_metrics(
                                         session,
@@ -1020,6 +1119,9 @@ def create_app() -> FastAPI:
                                         ws,
                                         {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
                                     )
+
+                                    if tool_error:
+                                        break
 
                                     candidate = ""
                                     if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
@@ -1468,15 +1570,33 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        response_json = _execute_integration_http(tool=tool_cfg, meta=meta_current, tool_args=patch)
-                                        mapped = _apply_response_mapper(
-                                            mapper_json=tool_cfg.response_mapper_json,
-                                            response_json=response_json,
-                                            meta=meta_current,
-                                            tool_args=patch,
+                                        response_json = _execute_integration_http(
+                                            tool=tool_cfg, meta=meta_current, tool_args=patch
                                         )
-                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
-                                        tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+                                        if isinstance(response_json, dict) and "__http_error__" in response_json:
+                                            err = response_json["__http_error__"] or {}
+                                            tool_result = {"ok": False, "error": err}
+                                            sc = err.get("status_code")
+                                            tool_error = (
+                                                f"{tool_name}: HTTP {sc} Unauthorized"
+                                                if sc == 401
+                                                else f"{tool_name}: HTTP {sc or 'error'}"
+                                            )
+                                            rendered_reply = (
+                                                f"The integration '{tool_name}' failed with HTTP {sc} "
+                                                f"({err.get('message') or 'error'}). "
+                                                "Please update the integration Authorization token and try again. "
+                                                "What would you like to do next?"
+                                            )
+                                        else:
+                                            mapped = _apply_response_mapper(
+                                                mapper_json=tool_cfg.response_mapper_json,
+                                                response_json=response_json,
+                                                meta=meta_current,
+                                                tool_args=patch,
+                                            )
+                                            new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
+                                            tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
 
                                     add_message_with_metrics(
                                         session,
@@ -1490,6 +1610,9 @@ def create_app() -> FastAPI:
                                         ws,
                                         {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
                                     )
+
+                                    if tool_error:
+                                        break
 
                                     candidate = ""
                                     if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
@@ -1871,15 +1994,31 @@ def create_app() -> FastAPI:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:
                                         raise RuntimeError(f"Unknown tool: {tool_name}")
-                                    response_json = _execute_integration_http(tool=tool_cfg, meta=meta_current, tool_args=patch)
-                                    mapped = _apply_response_mapper(
-                                        mapper_json=tool_cfg.response_mapper_json,
-                                        response_json=response_json,
-                                        meta=meta_current,
-                                        tool_args=patch,
+                                    response_json = _execute_integration_http(
+                                        tool=tool_cfg, meta=meta_current, tool_args=patch
                                     )
-                                    new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
-                                    tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+                                    if isinstance(response_json, dict) and "__http_error__" in response_json:
+                                        err = response_json["__http_error__"] or {}
+                                        tool_result = {"ok": False, "error": err}
+                                        sc = err.get("status_code")
+                                        final = (
+                                            f"The integration '{tool_name}' failed with HTTP {sc} "
+                                            f"({err.get('message') or 'error'}). "
+                                            "Please update the integration Authorization token and try again."
+                                        )
+                                        await _ws_send_json(
+                                            ws,
+                                            {"type": "error", "req_id": req_id, "error": f"{tool_name}: HTTP {sc}"},
+                                        )
+                                    else:
+                                        mapped = _apply_response_mapper(
+                                            mapper_json=tool_cfg.response_mapper_json,
+                                            response_json=response_json,
+                                            meta=meta_current,
+                                            tool_args=patch,
+                                        )
+                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
+                                        tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
 
                                 add_message_with_metrics(
                                     session,
@@ -1888,6 +2027,9 @@ def create_app() -> FastAPI:
                                     content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
                                 )
                                 meta_current = tool_result.get("metadata") or meta_current
+
+                                if not tool_result.get("ok", True):
+                                    break
 
                                 candidate = ""
                                 if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
@@ -2011,6 +2153,10 @@ def create_app() -> FastAPI:
             "description": t.description,
             "url": t.url,
             "method": t.method,
+            # Never expose secret headers (write-only). Return masked preview for UI.
+            "headers_template_json": "{}",
+            "headers_template_json_masked": _mask_headers_json(t.headers_template_json),
+            "headers_configured": _headers_configured(t.headers_template_json),
             "request_body_template": t.request_body_template,
             "response_mapper_json": t.response_mapper_json,
             "static_reply_template": t.static_reply_template,
@@ -2104,6 +2250,7 @@ def create_app() -> FastAPI:
             description=payload.description or "",
             url=payload.url,
             method=(payload.method or "GET").upper(),
+            headers_template_json=payload.headers_template_json or "{}",
             request_body_template=payload.request_body_template or "{}",
             response_mapper_json=payload.response_mapper_json or "{}",
             static_reply_template=payload.static_reply_template or "",
@@ -2130,6 +2277,8 @@ def create_app() -> FastAPI:
             patch["name"] = name
         if "method" in patch and patch["method"] is not None:
             patch["method"] = str(patch["method"]).upper()
+        if "headers_template_json" in patch:
+            patch["headers_template_json"] = patch["headers_template_json"] or "{}"
         tool = update_integration_tool(session, tool_id, patch)
         return _tool_to_dict(tool)
 

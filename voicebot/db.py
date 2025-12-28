@@ -96,6 +96,7 @@ def _apply_light_migrations(engine) -> None:
             conn.execute(text(f"ALTER TABLE integrationtool ADD COLUMN {name} {ddl}"))
 
         add_tool_col("static_reply_template", "TEXT NOT NULL DEFAULT ''")
+        add_tool_col("headers_template_json", "TEXT NOT NULL DEFAULT '{}'")
 
         # ClientKey
         try:

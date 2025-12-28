@@ -100,6 +100,9 @@ class IntegrationTool(SQLModel, table=True):
 
     url: str
     method: str = Field(default="GET")  # GET/POST/PUT/PATCH/DELETE
+    # Optional request headers as a JSON template string.
+    # Example: {"Authorization":"Bearer {{env.MEDICAL_SQL_API_TOKEN}}"}
+    headers_template_json: str = Field(default="{}")
     request_body_template: str = Field(default="{}")  # JSON template string
 
     # JSON schema for tool call args (object schema). Stored as JSON string.
