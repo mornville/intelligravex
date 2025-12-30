@@ -48,12 +48,18 @@ class Settings(BaseSettings):
     tts_split_sentences: bool = False
     tts_chunk_min_chars: int = 20
     tts_chunk_max_chars: int = 120
+    tts_vendor: str = "xtts_local"  # xtts_local | openai_tts
 
     # XTTS v2
     xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
     speaker_wav: Optional[str] = None
     speaker_id: Optional[str] = None
     tts_language: str = "en"
+
+    # OpenAI TTS (only used when tts_vendor=openai_tts)
+    openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_tts_voice: str = "alloy"
+    openai_tts_speed: float = 1.0
 
     @field_validator("input_device", "output_device", "speaker_wav", "speaker_id", mode="before")
     @classmethod
@@ -79,6 +85,7 @@ class Settings(BaseSettings):
         print("whisper_model:", self.whisper_model)
         print("whisper_device:", self.whisper_device)
         print("tts_use_gpu:", self.tts_use_gpu)
+        print("tts_vendor:", self.tts_vendor)
         print("db_url:", self.db_url)
         print("VOICEBOT_SECRET_KEY set:", bool(self.secret_key))
         print("OPENAI_API_KEY set:", bool(os.environ.get("OPENAI_API_KEY")))

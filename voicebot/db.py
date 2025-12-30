@@ -64,6 +64,10 @@ def _apply_light_migrations(engine) -> None:
 
         add_bot_col("start_message_mode", "TEXT NOT NULL DEFAULT 'llm'")
         add_bot_col("start_message_text", "TEXT NOT NULL DEFAULT ''")
+        add_bot_col("tts_vendor", "TEXT NOT NULL DEFAULT 'xtts_local'")
+        add_bot_col("openai_tts_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini-tts'")
+        add_bot_col("openai_tts_voice", "TEXT NOT NULL DEFAULT 'alloy'")
+        add_bot_col("openai_tts_speed", "REAL NOT NULL DEFAULT 1.0")
 
         # ConversationMessage
         rows = conn.execute(text("PRAGMA table_info(conversationmessage)")).fetchall()

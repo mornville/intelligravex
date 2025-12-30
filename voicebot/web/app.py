@@ -11,7 +11,7 @@ import threading
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Generator, Optional, Tuple
+from typing import Any, Callable, Generator, Optional, Tuple
 from uuid import UUID
 
 import httpx
@@ -63,6 +63,7 @@ from voicebot.store import (
     verify_client_key,
 )
 from voicebot.tts.xtts import XTTSv2
+from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.text import SentenceChunker
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
@@ -202,6 +203,41 @@ def _missing_required_args(required: list[str], args: dict) -> list[str]:
     return missing
 
 
+def _integration_error_user_message(*, tool_name: str, err: dict) -> str:
+    sc = err.get("status_code")
+    msg = (err.get("message") or "error").strip()
+    body = (err.get("body") or "").strip()
+    if sc == 401:
+        return (
+            f"The integration '{tool_name}' failed with HTTP 401 (Unauthorized). "
+            "Please update the integration Authorization token and try again. "
+            "What would you like to do next?"
+        )
+    if sc == 400:
+        hint = "Bad Request"
+        if body:
+            hint = body
+        return (
+            f"The integration '{tool_name}' failed with HTTP 400 (Bad Request). "
+            f"Details: {hint}. "
+            "Do you want me to try a different SQL query?"
+        )
+    return (
+        f"The integration '{tool_name}' failed with HTTP {sc} ({msg}). "
+        "What would you like to do next?"
+    )
+
+
+def _should_followup_llm_for_tool(*, tool: IntegrationTool | None, static_rendered: str) -> bool:
+    if not tool:
+        return False
+    # If the tool has no static template, or it rendered empty, do a follow-up LLM call
+    # using the tool result stored in history.
+    if not (tool.static_reply_template or "").strip():
+        return True
+    return not static_rendered.strip()
+
+
 class ChatRequest(BaseModel):
     text: str
     speak: bool = True
@@ -230,11 +266,15 @@ class BotCreateRequest(BaseModel):
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
+    tts_vendor: str = "xtts_local"
     whisper_model: str = "small"
     whisper_device: str = "auto"
     xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
     speaker_id: Optional[str] = None
     speaker_wav: Optional[str] = None
+    openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_tts_voice: str = "alloy"
+    openai_tts_speed: float = 1.0
     openai_key_id: Optional[UUID] = None
     tts_split_sentences: bool = False
     tts_chunk_min_chars: int = 20
@@ -249,11 +289,15 @@ class BotUpdateRequest(BaseModel):
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     tts_language: Optional[str] = None
+    tts_vendor: Optional[str] = None
     whisper_model: Optional[str] = None
     whisper_device: Optional[str] = None
     xtts_model: Optional[str] = None
     speaker_id: Optional[str] = None
     speaker_wav: Optional[str] = None
+    openai_tts_model: Optional[str] = None
+    openai_tts_voice: Optional[str] = None
+    openai_tts_speed: Optional[float] = None
     openai_key_id: Optional[UUID] = None
     tts_split_sentences: Optional[bool] = None
     tts_chunk_min_chars: Optional[int] = None
@@ -328,6 +372,23 @@ def create_app() -> FastAPI:
         "whisper_devices": ["auto", "cpu", "mps", "cuda"],
         "languages": ["auto", "en", "hi", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl"],
         "xtts_models": ["tts_models/multilingual/multi-dataset/xtts_v2"],
+        "openai_tts_models": ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
+        "openai_tts_voices": [
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "fable",
+            "nova",
+            "onyx",
+            "sage",
+            "shimmer",
+            "verse",
+            # Extra voices observed in some SDK/model versions.
+            "marin",
+            "cedar",
+        ],
     }
 
     static_dir = Path(__file__).parent / "static"
@@ -431,6 +492,60 @@ def create_app() -> FastAPI:
         tts, lock = tts_handle
         with lock:
             return tts.synthesize(text)
+
+    @lru_cache(maxsize=16)
+    def _get_openai_tts_handle(
+        api_key: str,
+        model: str,
+        voice: str,
+        speed: float,
+    ) -> tuple[OpenAITTS, threading.Lock]:
+        return (
+            OpenAITTS(api_key=api_key, model=model, voice=voice, speed=speed),
+            threading.Lock(),
+        )
+
+    def _get_tts_synth_fn(bot: Bot, api_key: Optional[str]) -> Callable[[str], tuple[bytes, int]]:
+        """
+        Returns a thread-safe (per-handle lock) wav synthesizer for the bot's configured TTS vendor.
+        """
+        vendor = (getattr(bot, "tts_vendor", None) or "xtts_local").strip().lower()
+
+        if vendor == "openai_tts":
+            if not api_key:
+                raise RuntimeError("No OpenAI API key configured for OpenAI TTS.")
+            model = (getattr(bot, "openai_tts_model", None) or "gpt-4o-mini-tts").strip()
+            voice = (getattr(bot, "openai_tts_voice", None) or "alloy").strip()
+            speed_raw = getattr(bot, "openai_tts_speed", None)
+            try:
+                speed = float(speed_raw) if speed_raw is not None else 1.0
+            except Exception:
+                speed = 1.0
+
+            tts, lock = _get_openai_tts_handle(api_key, model, voice, speed)
+
+            def synth(text: str) -> tuple[bytes, int]:
+                with lock:
+                    wav = tts.synthesize_wav_bytes(text)
+                return wav, OpenAITTS.DEFAULT_SAMPLE_RATE
+
+            return synth
+
+        # Default: local XTTS
+        tts_handle = _get_tts_handle(
+            bot.xtts_model,
+            bot.speaker_wav,
+            bot.speaker_id,
+            True,
+            bot.tts_split_sentences,
+            bot.tts_language,
+        )
+
+        def synth(text: str) -> tuple[bytes, int]:
+            a = _tts_synthesize(tts_handle, text)
+            return _wav_bytes(a.audio, a.sample_rate), a.sample_rate
+
+        return synth
 
     def _build_history(session: Session, bot: Bot, conversation_id: Optional[UUID]) -> list[Message]:
         messages: list[Message] = [Message(role="system", content=bot.system_prompt)]
@@ -565,11 +680,12 @@ def create_app() -> FastAPI:
             output_tokens_est: Optional[int] = None
             cost_usd_est: Optional[float] = None
             sent_greeting_delta = False
+            api_key: Optional[str] = None
 
-            if bot.start_message_mode == "static" and greeting_text:
-                # Static greeting (no LLM).
-                pass
-            else:
+            needs_openai_key = not (bot.start_message_mode == "static" and greeting_text) or (
+                speak and (bot.tts_vendor or "xtts_local").strip().lower() == "openai_tts"
+            )
+            if needs_openai_key:
                 if bot.openai_key_id:
                     crypto = require_crypto()
                     api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
@@ -577,6 +693,11 @@ def create_app() -> FastAPI:
                     api_key = os.environ.get("OPENAI_API_KEY")
                 if not api_key:
                     raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+
+            if bot.start_message_mode == "static" and greeting_text:
+                # Static greeting (no LLM).
+                pass
+            else:
                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                 msgs = [
                     Message(role="system", content=render_template(bot.system_prompt, ctx={"meta": {}})),
@@ -639,23 +760,16 @@ def create_app() -> FastAPI:
                 )
 
             if speak:
-                tts_handle = _get_tts_handle(
-                    bot.xtts_model,
-                    bot.speaker_wav,
-                    bot.speaker_id,
-                    True,
-                    bot.tts_split_sentences,
-                    bot.tts_language,
-                )
+                tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
                 # Synthesize whole greeting as one chunk for now.
-                a = await asyncio.to_thread(_tts_synthesize, tts_handle, greeting_text)
+                wav, sr = await asyncio.to_thread(tts_synth, greeting_text)
                 await _ws_send_json(
                     ws,
                     {
                         "type": "audio_wav",
                         "req_id": req_id,
-                        "wav_base64": base64.b64encode(_wav_bytes(a.audio, a.sample_rate)).decode(),
-                        "sr": a.sample_rate,
+                        "wav_base64": base64.b64encode(wav).decode(),
+                        "sr": sr,
                     },
                 )
 
@@ -769,6 +883,28 @@ def create_app() -> FastAPI:
 
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False))
+
+    async def _stream_llm_reply(
+        *,
+        ws: WebSocket,
+        req_id: str,
+        llm: OpenAILLM,
+        messages: list[Message],
+    ) -> tuple[str, Optional[int], int]:
+        t0 = time.time()
+        first: Optional[float] = None
+        parts: list[str] = []
+        for d in llm.stream_text(messages=messages):
+            if first is None:
+                first = time.time()
+            if d:
+                parts.append(d)
+                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+        t1 = time.time()
+        text = "".join(parts).strip()
+        ttfb_ms = int(round((first - t0) * 1000.0)) if first is not None else None
+        total_ms = int(round((t1 - t0) * 1000.0))
+        return text, ttfb_ms, total_ms
 
     @app.websocket("/ws/bots/{bot_id}/talk")
     async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:
@@ -958,15 +1094,7 @@ def create_app() -> FastAPI:
                                 history = _build_history(session, bot, conv_id)
                                 tools_defs = _build_tools_for_bot(session, bot.id)
                                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                                tts_handle = await asyncio.to_thread(
-                                    _get_tts_handle,
-                                    bot.xtts_model,
-                                    bot.speaker_wav,
-                                    bot.speaker_id,
-                                    True,
-                                    bot.tts_split_sentences,
-                                    bot.tts_language,
-                                )
+                                tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
                         except Exception as exc:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
                             await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
@@ -1024,21 +1152,21 @@ def create_app() -> FastAPI:
                                         with metrics_lock:
                                             if tts_start_ts is None:
                                                 tts_start_ts = time.time()
-                                        a = _tts_synthesize(tts_handle, chunk)
                                         if not did_send_any:
                                             status(req_id, "tts")
                                             did_send_any = True
-                                        audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                                        wav, sr = tts_synth(chunk)
+                                        audio_q.put((wav, sr))
                                 tail = local_chunker.flush()
                                 if tail:
                                     with metrics_lock:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
-                                    a = _tts_synthesize(tts_handle, tail)
                                     if not did_send_any:
                                         status(req_id, "tts")
                                         did_send_any = True
-                                    audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                                    wav, sr = tts_synth(tail)
+                                    audio_q.put((wav, sr))
                             except Exception as exc:
                                 error_q.put(f"TTS failed: {exc}")
                             finally:
@@ -1121,6 +1249,9 @@ def create_app() -> FastAPI:
                         if tool_calls and conv_id is not None:
                             rendered_reply = ""
                             tool_error: Optional[str] = None
+                            needs_followup_llm = False
+                            followup_streamed = False
+                            followup_persisted = False
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
@@ -1185,12 +1316,7 @@ def create_app() -> FastAPI:
                                                 if sc == 401
                                                 else f"{tool_name}: HTTP {sc or 'error'}"
                                             )
-                                            rendered_reply = (
-                                                f"The integration '{tool_name}' failed with HTTP {sc} "
-                                                f"({err.get('message') or 'error'}). "
-                                                "Please update the integration Authorization token and try again. "
-                                                "What would you like to do next?"
-                                            )
+                                            rendered_reply = _integration_error_user_message(tool_name=tool_name, err=err)
                                         else:
                                             mapped = _apply_response_mapper(
                                                 mapper_json=tool_cfg.response_mapper_json,
@@ -1218,38 +1344,63 @@ def create_app() -> FastAPI:
                                         break
 
                                     candidate = ""
-                                    if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
-                                        candidate = _render_static_reply(
-                                            template_text=tool_cfg.static_reply_template,
-                                            meta=meta_current,
-                                            response_json=response_json,
-                                            tool_args=patch,
-                                        ).strip()
-                                    if not candidate:
+                                    if tool_name != "set_metadata" and tool_cfg:
+                                        static_text = ""
+                                        if (tool_cfg.static_reply_template or "").strip():
+                                            static_text = _render_static_reply(
+                                                template_text=tool_cfg.static_reply_template,
+                                                meta=meta_current,
+                                                response_json=response_json,
+                                                tool_args=patch,
+                                            ).strip()
+                                        if static_text:
+                                            needs_followup_llm = False
+                                            rendered_reply = static_text
+                                        else:
+                                            needs_followup_llm = _should_followup_llm_for_tool(
+                                                tool=tool_cfg, static_rendered=static_text
+                                            )
+                                            rendered_reply = ""
+                                    else:
                                         candidate = _render_with_meta(next_reply, meta_current).strip()
-                                    rendered_reply = candidate or rendered_reply
+                                        rendered_reply = candidate or rendered_reply
 
-                            if tool_error:
-                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": tool_error})
-
-                            if rendered_reply:
-                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
-                                try:
-                                    in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                        bot=bot, history=history, assistant_text=rendered_reply
+                            # If static reply is missing/empty for an integration tool, ask the LLM again
+                            # with tool call + tool result already persisted in history.
+                            if needs_followup_llm and not tool_error and conv_id is not None:
+                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                                with Session(engine) as session:
+                                    bot = get_bot(session, bot_id)
+                                    followup_history = _build_history(session, bot, conv_id)
+                                    followup_history.append(
+                                        Message(
+                                            role="system",
+                                            content="Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
+                                        )
                                     )
+                                follow_llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                                text2, ttfb2, total2 = await _stream_llm_reply(
+                                    ws=ws, req_id=req_id, llm=follow_llm, messages=followup_history
+                                )
+                                rendered_reply = text2.strip()
+                                if rendered_reply:
+                                    followup_streamed = True
+                                    in_tok = int(estimate_messages_tokens(followup_history, bot.openai_model) or 0)
+                                    out_tok = int(estimate_text_tokens(rendered_reply, bot.openai_model) or 0)
+                                    price = _get_openai_pricing().get(bot.openai_model)
+                                    cost = float(estimate_cost_usd(model_price=price, input_tokens=in_tok, output_tokens=out_tok) or 0.0)
                                     with Session(engine) as session:
                                         add_message_with_metrics(
                                             session,
                                             conversation_id=conv_id,
                                             role="assistant",
                                             content=rendered_reply,
-                                            input_tokens_est=in_tok,
-                                            output_tokens_est=out_tok,
-                                            cost_usd_est=cost,
-                                            llm_ttfb_ms=timings.get("llm_ttfb"),
-                                            llm_total_ms=timings.get("llm_total"),
-                                            total_ms=timings.get("total"),
+                                            input_tokens_est=in_tok or None,
+                                            output_tokens_est=out_tok or None,
+                                            cost_usd_est=cost or None,
+                                            llm_ttfb_ms=ttfb2,
+                                            llm_total_ms=total2,
+                                            total_ms=total2,
                                         )
                                         update_conversation_metrics(
                                             session,
@@ -1258,11 +1409,53 @@ def create_app() -> FastAPI:
                                             add_output_tokens_est=out_tok,
                                             add_cost_usd_est=cost,
                                             last_asr_ms=None,
-                                            last_llm_ttfb_ms=timings.get("llm_ttfb"),
-                                            last_llm_total_ms=timings.get("llm_total"),
+                                            last_llm_ttfb_ms=ttfb2,
+                                            last_llm_total_ms=total2,
                                             last_tts_first_audio_ms=None,
-                                            last_total_ms=timings.get("total"),
+                                            last_total_ms=total2,
                                         )
+                                    followup_persisted = True
+                                    await _ws_send_json(
+                                        ws,
+                                        {"type": "metrics", "req_id": req_id, "timings_ms": {"llm_ttfb": ttfb2, "llm_total": total2, "total": total2}},
+                                    )
+
+                            if tool_error:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": tool_error})
+
+                            if rendered_reply:
+                                if not followup_streamed:
+                                    await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
+                                try:
+                                    if not followup_persisted:
+                                        in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                            bot=bot, history=history, assistant_text=rendered_reply
+                                        )
+                                        with Session(engine) as session:
+                                            add_message_with_metrics(
+                                                session,
+                                                conversation_id=conv_id,
+                                                role="assistant",
+                                                content=rendered_reply,
+                                                input_tokens_est=in_tok,
+                                                output_tokens_est=out_tok,
+                                                cost_usd_est=cost,
+                                                llm_ttfb_ms=timings.get("llm_ttfb"),
+                                                llm_total_ms=timings.get("llm_total"),
+                                                total_ms=timings.get("total"),
+                                            )
+                                            update_conversation_metrics(
+                                                session,
+                                                conversation_id=conv_id,
+                                                add_input_tokens_est=in_tok,
+                                                add_output_tokens_est=out_tok,
+                                                add_cost_usd_est=cost,
+                                                last_asr_ms=None,
+                                                last_llm_ttfb_ms=timings.get("llm_ttfb"),
+                                                last_llm_total_ms=timings.get("llm_total"),
+                                                last_tts_first_audio_ms=None,
+                                                last_total_ms=timings.get("total"),
+                                            )
                                 except Exception:
                                     pass
 
@@ -1411,15 +1604,7 @@ def create_app() -> FastAPI:
                             tools_defs = _build_tools_for_bot(session, bot.id)
 
                             llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                            tts_handle = await asyncio.to_thread(
-                                _get_tts_handle,
-                                bot.xtts_model,
-                                bot.speaker_wav,
-                                bot.speaker_id,
-                                True,
-                                bot.tts_split_sentences,
-                                bot.tts_language,
-                            )
+                            tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
                         except Exception as exc:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
                             await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
@@ -1478,21 +1663,21 @@ def create_app() -> FastAPI:
                                         with metrics_lock:
                                             if tts_start_ts is None:
                                                 tts_start_ts = time.time()
-                                        a = _tts_synthesize(tts_handle, chunk)
                                         if not did_send_any:
                                             status(req_id, "tts")
                                             did_send_any = True
-                                        audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                                        wav, sr = tts_synth(chunk)
+                                        audio_q.put((wav, sr))
                                 tail = local_chunker.flush()
                                 if tail:
                                     with metrics_lock:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
-                                    a = _tts_synthesize(tts_handle, tail)
                                     if not did_send_any:
                                         status(req_id, "tts")
                                         did_send_any = True
-                                    audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                                    wav, sr = tts_synth(tail)
+                                    audio_q.put((wav, sr))
                             except Exception as exc:
                                 error_q.put(f"TTS failed: {exc}")
                             finally:
@@ -1613,10 +1798,12 @@ def create_app() -> FastAPI:
                             pass
 
                         await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
-
                         if tool_calls and conv_id is not None:
                             rendered_reply = ""
                             tool_error: Optional[str] = None
+                            needs_followup_llm = False
+                            followup_streamed = False
+                            followup_persisted = False
 
                             with Session(engine) as session:
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
@@ -1681,12 +1868,7 @@ def create_app() -> FastAPI:
                                                 if sc == 401
                                                 else f"{tool_name}: HTTP {sc or 'error'}"
                                             )
-                                            rendered_reply = (
-                                                f"The integration '{tool_name}' failed with HTTP {sc} "
-                                                f"({err.get('message') or 'error'}). "
-                                                "Please update the integration Authorization token and try again. "
-                                                "What would you like to do next?"
-                                            )
+                                            rendered_reply = _integration_error_user_message(tool_name=tool_name, err=err)
                                         else:
                                             mapped = _apply_response_mapper(
                                                 mapper_json=tool_cfg.response_mapper_json,
@@ -1713,26 +1895,52 @@ def create_app() -> FastAPI:
                                     if tool_error:
                                         break
 
-                                    candidate = ""
-                                    if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
-                                        candidate = _render_static_reply(
-                                            template_text=tool_cfg.static_reply_template,
-                                            meta=meta_current,
-                                            response_json=response_json,
-                                            tool_args=patch,
-                                        ).strip()
-                                    if not candidate:
+                                    if tool_name != "set_metadata" and tool_cfg:
+                                        static_text = ""
+                                        if (tool_cfg.static_reply_template or "").strip():
+                                            static_text = _render_static_reply(
+                                                template_text=tool_cfg.static_reply_template,
+                                                meta=meta_current,
+                                                response_json=response_json,
+                                                tool_args=patch,
+                                            ).strip()
+                                        if static_text:
+                                            needs_followup_llm = False
+                                            rendered_reply = static_text
+                                        else:
+                                            needs_followup_llm = _should_followup_llm_for_tool(
+                                                tool=tool_cfg, static_rendered=static_text
+                                            )
+                                            rendered_reply = ""
+                                    else:
                                         candidate = _render_with_meta(next_reply, meta_current).strip()
-                                    rendered_reply = candidate or rendered_reply
+                                        rendered_reply = candidate or rendered_reply
 
-                            if tool_error:
-                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": tool_error})
-
-                            if rendered_reply:
-                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
-                                try:
-                                    in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                        bot=bot, history=history, assistant_text=rendered_reply
+                            # If static reply is missing/empty for an integration tool, ask the LLM again
+                            # with tool call + tool result already persisted in history.
+                            if needs_followup_llm and not tool_error and conv_id is not None:
+                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                                with Session(engine) as session:
+                                    bot2 = get_bot(session, bot_id)
+                                    followup_history = _build_history(session, bot2, conv_id)
+                                    followup_history.append(
+                                        Message(
+                                            role="system",
+                                            content="Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
+                                        )
+                                    )
+                                follow_llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                                text2, ttfb2, total2 = await _stream_llm_reply(
+                                    ws=ws, req_id=req_id, llm=follow_llm, messages=followup_history
+                                )
+                                rendered_reply = text2.strip()
+                                if rendered_reply:
+                                    followup_streamed = True
+                                    in_tok = int(estimate_messages_tokens(followup_history, bot.openai_model) or 0)
+                                    out_tok = int(estimate_text_tokens(rendered_reply, bot.openai_model) or 0)
+                                    price = _get_openai_pricing().get(bot.openai_model)
+                                    cost = float(
+                                        estimate_cost_usd(model_price=price, input_tokens=in_tok, output_tokens=out_tok) or 0.0
                                     )
                                     with Session(engine) as session:
                                         add_message_with_metrics(
@@ -1740,13 +1948,13 @@ def create_app() -> FastAPI:
                                             conversation_id=conv_id,
                                             role="assistant",
                                             content=rendered_reply,
-                                            input_tokens_est=in_tok,
-                                            output_tokens_est=out_tok,
-                                            cost_usd_est=cost,
+                                            input_tokens_est=in_tok or None,
+                                            output_tokens_est=out_tok or None,
+                                            cost_usd_est=cost or None,
                                             asr_ms=timings.get("asr"),
-                                            llm_ttfb_ms=timings.get("llm_ttfb"),
-                                            llm_total_ms=timings.get("llm_total"),
-                                            total_ms=timings.get("total"),
+                                            llm_ttfb_ms=ttfb2,
+                                            llm_total_ms=total2,
+                                            total_ms=total2,
                                         )
                                         update_conversation_metrics(
                                             session,
@@ -1755,11 +1963,58 @@ def create_app() -> FastAPI:
                                             add_output_tokens_est=out_tok,
                                             add_cost_usd_est=cost,
                                             last_asr_ms=timings.get("asr"),
-                                            last_llm_ttfb_ms=timings.get("llm_ttfb"),
-                                            last_llm_total_ms=timings.get("llm_total"),
+                                            last_llm_ttfb_ms=ttfb2,
+                                            last_llm_total_ms=total2,
                                             last_tts_first_audio_ms=None,
-                                            last_total_ms=timings.get("total"),
+                                            last_total_ms=total2,
                                         )
+                                    followup_persisted = True
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "metrics",
+                                            "req_id": req_id,
+                                            "timings_ms": {"llm_ttfb": ttfb2, "llm_total": total2, "total": total2},
+                                        },
+                                    )
+
+                            if tool_error:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": tool_error})
+
+                            if rendered_reply:
+                                if not followup_streamed:
+                                    await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
+                                try:
+                                    if not followup_persisted:
+                                        in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                            bot=bot, history=history, assistant_text=rendered_reply
+                                        )
+                                        with Session(engine) as session:
+                                            add_message_with_metrics(
+                                                session,
+                                                conversation_id=conv_id,
+                                                role="assistant",
+                                                content=rendered_reply,
+                                                input_tokens_est=in_tok,
+                                                output_tokens_est=out_tok,
+                                                cost_usd_est=cost,
+                                                asr_ms=timings.get("asr"),
+                                                llm_ttfb_ms=timings.get("llm_ttfb"),
+                                                llm_total_ms=timings.get("llm_total"),
+                                                total_ms=timings.get("total"),
+                                            )
+                                            update_conversation_metrics(
+                                                session,
+                                                conversation_id=conv_id,
+                                                add_input_tokens_est=in_tok,
+                                                add_output_tokens_est=out_tok,
+                                                add_cost_usd_est=cost,
+                                                last_asr_ms=timings.get("asr"),
+                                                last_llm_ttfb_ms=timings.get("llm_ttfb"),
+                                                last_llm_total_ms=timings.get("llm_total"),
+                                                last_tts_first_audio_ms=None,
+                                                last_total_ms=timings.get("total"),
+                                            )
                                 except Exception:
                                     pass
 
@@ -2067,19 +2322,25 @@ def create_app() -> FastAPI:
                         if tool_calls:
                             meta_current = _get_conversation_meta(session, conversation_id=conv_id)
                             final = ""
+                            needs_followup_llm = False
+                            followup_streamed = False
+
                             for tc in tool_calls:
                                 tool_name = tc.name
                                 if tool_name == "set_variable":
                                     tool_name = "set_metadata"
+
                                 tool_args = json.loads(tc.arguments_json or "{}")
                                 if not isinstance(tool_args, dict):
                                     tool_args = {}
+
                                 add_message_with_metrics(
                                     session,
                                     conversation_id=conv_id,
                                     role="tool",
                                     content=json.dumps({"tool": tool_name, "arguments": tool_args}, ensure_ascii=False),
                                 )
+
                                 next_reply = str(tool_args.get("next_reply") or "").strip()
                                 raw_args = tool_args.get("args")
                                 if isinstance(raw_args, dict):
@@ -2104,15 +2365,14 @@ def create_app() -> FastAPI:
                                     if isinstance(response_json, dict) and "__http_error__" in response_json:
                                         err = response_json["__http_error__"] or {}
                                         tool_result = {"ok": False, "error": err}
-                                        sc = err.get("status_code")
-                                        final = (
-                                            f"The integration '{tool_name}' failed with HTTP {sc} "
-                                            f"({err.get('message') or 'error'}). "
-                                            "Please update the integration Authorization token and try again."
-                                        )
+                                        final = _integration_error_user_message(tool_name=tool_name, err=err)
                                         await _ws_send_json(
                                             ws,
-                                            {"type": "error", "req_id": req_id, "error": f"{tool_name}: HTTP {sc}"},
+                                            {
+                                                "type": "error",
+                                                "req_id": req_id,
+                                                "error": f"{tool_name}: HTTP {err.get('status_code')}",
+                                            },
                                         )
                                     else:
                                         mapped = _apply_response_mapper(
@@ -2135,20 +2395,47 @@ def create_app() -> FastAPI:
                                 if not tool_result.get("ok", True):
                                     break
 
-                                candidate = ""
-                                if tool_name != "set_metadata" and tool_cfg and (tool_cfg.static_reply_template or "").strip():
-                                    candidate = _render_static_reply(
-                                        template_text=tool_cfg.static_reply_template,
-                                        meta=meta_current,
-                                        response_json=response_json,
-                                        tool_args=patch,
-                                    ).strip()
-                                if not candidate:
+                                if tool_name != "set_metadata" and tool_cfg:
+                                    static_text = ""
+                                    if (tool_cfg.static_reply_template or "").strip():
+                                        static_text = _render_static_reply(
+                                            template_text=tool_cfg.static_reply_template,
+                                            meta=meta_current,
+                                            response_json=response_json,
+                                            tool_args=patch,
+                                        ).strip()
+                                    if static_text:
+                                        needs_followup_llm = False
+                                        final = static_text
+                                    else:
+                                        needs_followup_llm = _should_followup_llm_for_tool(
+                                            tool=tool_cfg, static_rendered=static_text
+                                        )
+                                        final = ""
+                                else:
                                     candidate = _render_with_meta(next_reply, meta_current).strip()
-                                final = candidate or final
+                                    final = candidate or final
 
-                            rendered_reply = final
-                            if rendered_reply:
+                            if needs_followup_llm:
+                                followup_history = _build_history(session, bot, conv_id)
+                                followup_history.append(
+                                    Message(
+                                        role="system",
+                                        content="Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
+                                    )
+                                )
+                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                                text2, ttfb2, total2 = await _stream_llm_reply(
+                                    ws=ws, req_id=req_id, llm=llm, messages=followup_history
+                                )
+                                rendered_reply = text2.strip()
+                                followup_streamed = True
+                                llm_ttfb_ms = ttfb2
+                                llm_total_ms = total2
+                            else:
+                                rendered_reply = final
+
+                            if rendered_reply and not followup_streamed:
                                 await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
 
                         in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
@@ -2220,9 +2507,11 @@ def create_app() -> FastAPI:
             "whisper_devices": ui_options.get("whisper_devices", []),
             "languages": ui_options.get("languages", []),
             "xtts_models": ui_options.get("xtts_models", []),
+            "openai_tts_models": ui_options.get("openai_tts_models", []),
+            "openai_tts_voices": ui_options.get("openai_tts_voices", []),
             "start_message_modes": ["llm", "static"],
             "asr_vendors": ["whisper_local"],
-            "tts_vendors": ["xtts_local"],
+            "tts_vendors": ["xtts_local", "openai_tts"],
             "http_methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
         }
 
@@ -2235,11 +2524,15 @@ def create_app() -> FastAPI:
             "system_prompt": bot.system_prompt,
             "language": bot.language,
             "tts_language": bot.tts_language,
+            "tts_vendor": bot.tts_vendor,
             "whisper_model": bot.whisper_model,
             "whisper_device": bot.whisper_device,
             "xtts_model": bot.xtts_model,
             "speaker_id": bot.speaker_id,
             "speaker_wav": bot.speaker_wav,
+            "openai_tts_model": bot.openai_tts_model,
+            "openai_tts_voice": bot.openai_tts_voice,
+            "openai_tts_speed": float(bot.openai_tts_speed),
             "tts_split_sentences": bool(bot.tts_split_sentences),
             "tts_chunk_min_chars": int(bot.tts_chunk_min_chars),
             "tts_chunk_max_chars": int(bot.tts_chunk_max_chars),
@@ -2299,11 +2592,15 @@ def create_app() -> FastAPI:
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,
+            tts_vendor=(payload.tts_vendor or "xtts_local").strip() or "xtts_local",
             whisper_model=payload.whisper_model,
             whisper_device=payload.whisper_device,
             xtts_model=payload.xtts_model,
             speaker_id=(payload.speaker_id or "").strip() or None,
             speaker_wav=(payload.speaker_wav or "").strip() or None,
+            openai_tts_model=(payload.openai_tts_model or "gpt-4o-mini-tts").strip() or "gpt-4o-mini-tts",
+            openai_tts_voice=(payload.openai_tts_voice or "alloy").strip() or "alloy",
+            openai_tts_speed=float(payload.openai_tts_speed or 1.0),
             openai_key_id=payload.openai_key_id,
             tts_split_sentences=bool(payload.tts_split_sentences),
             tts_chunk_min_chars=int(payload.tts_chunk_min_chars),
@@ -2325,6 +2622,10 @@ def create_app() -> FastAPI:
         for k, v in payload.model_dump(exclude_unset=True).items():
             if k in ("speaker_id", "speaker_wav"):
                 patch[k] = (v or "").strip() or None
+            elif k in ("tts_vendor", "openai_tts_model", "openai_tts_voice"):
+                patch[k] = (v or "").strip()
+            elif k == "openai_tts_speed":
+                patch[k] = float(v) if v is not None else 1.0
             else:
                 patch[k] = v
         bot = update_bot(session, bot_id, patch)
@@ -2618,14 +2919,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
         llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-        tts_handle = _get_tts_handle(
-            bot.xtts_model,
-            bot.speaker_wav,
-            bot.speaker_id,
-            True,
-            bot.tts_split_sentences,
-            bot.tts_language,
-        )
+        tts_synth = _get_tts_synth_fn(bot, api_key)
         def gen() -> Generator[bytes, None, None]:
             text = (payload.text or "").strip()
             speak = bool(payload.speak)
@@ -2668,12 +2962,12 @@ def create_app() -> FastAPI:
                         if d is None:
                             break
                         for chunk in local_chunker.push(d):
-                            audio = _tts_synthesize(tts_handle, chunk)
-                            audio_q.put((_wav_bytes(audio.audio, audio.sample_rate), audio.sample_rate))
+                            wav, sr = tts_synth(chunk)
+                            audio_q.put((wav, sr))
                     tail = local_chunker.flush()
                     if tail:
-                        audio = _tts_synthesize(tts_handle, tail)
-                        audio_q.put((_wav_bytes(audio.audio, audio.sample_rate), audio.sample_rate))
+                        wav, sr = tts_synth(tail)
+                        audio_q.put((wav, sr))
                 finally:
                     audio_q.put(None)
 
@@ -2779,14 +3073,7 @@ def create_app() -> FastAPI:
         add_message(session, conversation_id=conv_id, role="user", content=user_text)
 
         llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-        tts_handle = _get_tts_handle(
-            bot.xtts_model,
-            bot.speaker_wav,
-            bot.speaker_id,
-            True,
-            bot.tts_split_sentences,
-            bot.tts_language,
-        )
+        tts_synth = _get_tts_synth_fn(bot, api_key)
 
         def gen() -> Generator[bytes, None, None]:
             yield _ndjson({"type": "conversation", "id": str(conv_id)})
@@ -2827,12 +3114,12 @@ def create_app() -> FastAPI:
                         if d is None:
                             break
                         for chunk in local_chunker.push(d):
-                            a = _tts_synthesize(tts_handle, chunk)
-                            audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                            wav, sr = tts_synth(chunk)
+                            audio_q.put((wav, sr))
                     tail = local_chunker.flush()
                     if tail:
-                        a = _tts_synthesize(tts_handle, tail)
-                        audio_q.put((_wav_bytes(a.audio, a.sample_rate), a.sample_rate))
+                        wav, sr = tts_synth(tail)
+                        audio_q.put((wav, sr))
                 finally:
                     audio_q.put(None)
 
@@ -2923,16 +3210,8 @@ def create_app() -> FastAPI:
         if not payload.speak:
             return {"text": out_text}
 
-        tts_handle = _get_tts_handle(
-            bot.xtts_model,
-            bot.speaker_wav,
-            bot.speaker_id,
-            True,
-            bot.tts_split_sentences,
-            bot.tts_language,
-        )
-        audio = _tts_synthesize(tts_handle, out_text)
-        wav = _wav_bytes(audio.audio, audio.sample_rate)
-        return {"text": out_text, "audio_wav_base64": base64.b64encode(wav).decode(), "sr": audio.sample_rate}
+        tts_synth = _get_tts_synth_fn(bot, api_key)
+        wav, sr = tts_synth(out_text)
+        return {"text": out_text, "audio_wav_base64": base64.b64encode(wav).decode(), "sr": sr}
 
     return app

@@ -8,11 +8,15 @@ export type Bot = {
   system_prompt: string
   language: string
   tts_language: string
+  tts_vendor: 'xtts_local' | 'openai_tts' | string
   whisper_model: string
   whisper_device: string
   xtts_model: string
   speaker_id: string | null
   speaker_wav: string | null
+  openai_tts_model: string
+  openai_tts_voice: string
+  openai_tts_speed: number
   tts_split_sentences: boolean
   tts_chunk_min_chars: number
   tts_chunk_max_chars: number
@@ -100,7 +104,11 @@ export type Options = {
   whisper_devices: string[]
   languages: string[]
   xtts_models: string[]
+  openai_tts_models?: string[]
+  openai_tts_voices?: string[]
   start_message_modes: string[]
+  asr_vendors?: string[]
+  tts_vendors?: string[]
   openai_pricing: Record<string, { input_per_1m: number; output_per_1m: number }>
   http_methods?: string[]
 }

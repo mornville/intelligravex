@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -14,6 +15,7 @@ from voicebot.audio.playback import AudioPlayer
 from voicebot.audio.vad import VadSegmenter
 from voicebot.config import Settings
 from voicebot.llm.openai_llm import Message, OpenAILLM
+from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.tts.xtts import XTTSv2
 from voicebot.utils.text import SentenceChunker
 
@@ -37,14 +39,23 @@ class VoiceBotSession:
             language=settings.language,
         )
         self._llm = OpenAILLM(model=settings.openai_model, api_key=settings.openai_api_key)
-        self._tts = XTTSv2(
-            model_name=settings.xtts_model,
-            speaker_wav=settings.speaker_wav,
-            speaker_id=settings.speaker_id,
-            use_gpu=settings.tts_use_gpu,
-            split_sentences=settings.tts_split_sentences,
-            language=settings.tts_language,
-        )
+        tts_vendor = (settings.tts_vendor or "xtts_local").strip().lower()
+        if tts_vendor == "openai_tts":
+            self._tts = OpenAITTS(
+                api_key=settings.openai_api_key or os.environ.get("OPENAI_API_KEY"),
+                model=settings.openai_tts_model,
+                voice=settings.openai_tts_voice,
+                speed=settings.openai_tts_speed,
+            )
+        else:
+            self._tts = XTTSv2(
+                model_name=settings.xtts_model,
+                speaker_wav=settings.speaker_wav,
+                speaker_id=settings.speaker_id,
+                use_gpu=settings.tts_use_gpu,
+                split_sentences=settings.tts_split_sentences,
+                language=settings.tts_language,
+            )
         self._player = AudioPlayer(device=parse_device(settings.output_device))
         self._vad = VadSegmenter(
             aggressiveness=settings.vad_aggressiveness,

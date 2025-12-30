@@ -23,11 +23,15 @@ export default function BotsPage() {
     system_prompt: defaultPrompt,
     language: 'en',
     tts_language: 'en',
+    tts_vendor: 'xtts_local',
     whisper_model: 'small',
     whisper_device: 'auto',
     xtts_model: 'tts_models/multilingual/multi-dataset/xtts_v2',
     speaker_id: '',
     speaker_wav: '',
+    openai_tts_model: 'gpt-4o-mini-tts',
+    openai_tts_voice: 'alloy',
+    openai_tts_speed: 1.0,
     openai_key_id: '',
     tts_split_sentences: false,
     tts_chunk_min_chars: 20,
@@ -146,6 +150,19 @@ export default function BotsPage() {
               </select>
             </div>
             <div className="formRow">
+              <label>TTS vendor</label>
+              <select value={newBot.tts_vendor} onChange={(e) => setNewBot((p) => ({ ...p, tts_vendor: e.target.value }))}>
+                {(options?.tts_vendors?.length ? options.tts_vendors : ['xtts_local']).map((v) => (
+                  <option value={v} key={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {newBot.tts_vendor === 'xtts_local' ? (
+            <div className="formRow">
               <label>TTS language</label>
               <select
                 value={newBot.tts_language}
@@ -158,7 +175,51 @@ export default function BotsPage() {
                 ))}
               </select>
             </div>
-          </div>
+          ) : null}
+
+          {newBot.tts_vendor === 'openai_tts' ? (
+            <>
+              <div className="formRowGrid2">
+                <div className="formRow">
+                  <label>OpenAI TTS model</label>
+                  <select
+                    value={newBot.openai_tts_model}
+                    onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_model: e.target.value }))}
+                  >
+                    {(options?.openai_tts_models?.length ? options.openai_tts_models : ['gpt-4o-mini-tts']).map((m) => (
+                      <option value={m} key={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="formRow">
+                  <label>OpenAI voice</label>
+                  <select
+                    value={newBot.openai_tts_voice}
+                    onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_voice: e.target.value }))}
+                  >
+                    {(options?.openai_tts_voices?.length ? options.openai_tts_voices : ['alloy']).map((v) => (
+                      <option value={v} key={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="formRow">
+                <label>OpenAI speed</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0.25"
+                  max="4"
+                  value={newBot.openai_tts_speed}
+                  onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_speed: Number(e.target.value) }))}
+                />
+              </div>
+            </>
+          ) : null}
           <div className="formRowGrid2">
             <div className="formRow">
               <label>Whisper model</label>
@@ -187,34 +248,38 @@ export default function BotsPage() {
               </select>
             </div>
           </div>
-          <div className="formRow">
-            <label>XTTS v2 model</label>
-            <select value={newBot.xtts_model} onChange={(e) => setNewBot((p) => ({ ...p, xtts_model: e.target.value }))}>
-              {(options?.xtts_models || ['tts_models/multilingual/multi-dataset/xtts_v2']).map((m) => (
-                <option value={m} key={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="formRowGrid2">
-            <div className="formRow">
-              <label>Speaker ID (optional)</label>
-              <input
-                value={newBot.speaker_id}
-                onChange={(e) => setNewBot((p) => ({ ...p, speaker_id: e.target.value }))}
-                placeholder="(auto)"
-              />
-            </div>
-            <div className="formRow">
-              <label>Speaker WAV path (optional)</label>
-              <input
-                value={newBot.speaker_wav}
-                onChange={(e) => setNewBot((p) => ({ ...p, speaker_wav: e.target.value }))}
-                placeholder="/path/to/voice.wav"
-              />
-            </div>
-          </div>
+          {newBot.tts_vendor === 'xtts_local' ? (
+            <>
+              <div className="formRow">
+                <label>XTTS v2 model</label>
+                <select value={newBot.xtts_model} onChange={(e) => setNewBot((p) => ({ ...p, xtts_model: e.target.value }))}>
+                  {(options?.xtts_models || ['tts_models/multilingual/multi-dataset/xtts_v2']).map((m) => (
+                    <option value={m} key={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="formRowGrid2">
+                <div className="formRow">
+                  <label>Speaker ID (optional)</label>
+                  <input
+                    value={newBot.speaker_id}
+                    onChange={(e) => setNewBot((p) => ({ ...p, speaker_id: e.target.value }))}
+                    placeholder="(auto)"
+                  />
+                </div>
+                <div className="formRow">
+                  <label>Speaker WAV path (optional)</label>
+                  <input
+                    value={newBot.speaker_wav}
+                    onChange={(e) => setNewBot((p) => ({ ...p, speaker_wav: e.target.value }))}
+                    placeholder="/path/to/voice.wav"
+                  />
+                </div>
+              </div>
+            </>
+          ) : null}
           <div className="row">
             <button className="btn primary" onClick={onCreate} disabled={creating || !newBot.name.trim()}>
               {creating ? 'Creating…' : 'Create bot'}

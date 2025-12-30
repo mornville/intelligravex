@@ -70,7 +70,10 @@ export default function BotDetailPage() {
   }, [botId])
 
   useEffect(() => {
-    if (!bot?.xtts_model) return
+    if (!bot || !bot.xtts_model || bot.tts_vendor !== 'xtts_local') {
+      setTtsMeta(null)
+      return
+    }
     void (async () => {
       try {
         const meta = await apiGet<TtsMeta>(`/api/tts/meta?model_name=${encodeURIComponent(bot.xtts_model)}`)
@@ -79,7 +82,7 @@ export default function BotDetailPage() {
         setTtsMeta({ speakers: [], languages: [] })
       }
     })()
-  }, [bot?.xtts_model])
+  }, [bot?.xtts_model, bot?.tts_vendor])
 
   async function save(patch: Record<string, unknown>) {
     if (!botId) return
@@ -321,6 +324,19 @@ export default function BotDetailPage() {
                   </select>
                 </div>
                 <div className="formRow">
+                  <label>TTS vendor</label>
+                  <select value={bot.tts_vendor} onChange={(e) => void save({ tts_vendor: e.target.value })}>
+                    {(options?.tts_vendors?.length ? options.tts_vendors : [bot.tts_vendor]).map((v) => (
+                      <option value={v} key={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {bot.tts_vendor === 'xtts_local' ? (
+                <div className="formRow">
                   <label>TTS language</label>
                   <select value={bot.tts_language} onChange={(e) => void save({ tts_language: e.target.value })}>
                     {(ttsMeta?.languages?.length ? ttsMeta.languages : options?.languages || [bot.tts_language]).map((l) => (
@@ -330,7 +346,45 @@ export default function BotDetailPage() {
                     ))}
                   </select>
                 </div>
-              </div>
+              ) : null}
+
+              {bot.tts_vendor === 'openai_tts' ? (
+                <>
+                  <div className="formRowGrid2">
+                    <div className="formRow">
+                      <label>OpenAI TTS model</label>
+                      <select value={bot.openai_tts_model} onChange={(e) => void save({ openai_tts_model: e.target.value })}>
+                        {(options?.openai_tts_models?.length ? options.openai_tts_models : [bot.openai_tts_model]).map((m) => (
+                          <option value={m} key={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="formRow">
+                      <label>OpenAI voice</label>
+                      <select value={bot.openai_tts_voice} onChange={(e) => void save({ openai_tts_voice: e.target.value })}>
+                        {(options?.openai_tts_voices?.length ? options.openai_tts_voices : [bot.openai_tts_voice]).map((v) => (
+                          <option value={v} key={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="formRow">
+                    <label>OpenAI speed</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.25"
+                      max="4"
+                      value={bot.openai_tts_speed}
+                      onChange={(e) => void save({ openai_tts_speed: Number(e.target.value) })}
+                    />
+                  </div>
+                </>
+              ) : null}
 
               <div className="formRowGrid2">
                 <div className="formRow">
@@ -355,45 +409,49 @@ export default function BotDetailPage() {
                 </div>
               </div>
 
-              <div className="formRow">
-                <label>XTTS v2 model</label>
-                <select value={bot.xtts_model} onChange={(e) => void save({ xtts_model: e.target.value })}>
-                  {(options?.xtts_models || [bot.xtts_model]).map((m) => (
-                    <option value={m} key={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="formRowGrid2">
-                <div className="formRow">
-                  <label>Speaker ID (optional)</label>
-                  <select
-                    value={bot.speaker_id || '(auto)'}
-                    onChange={(e) => void save({ speaker_id: e.target.value === '(auto)' ? null : e.target.value })}
-                  >
-                    {speakerChoices.map((s) => (
-                      <option value={s} key={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="formRow">
-                  <label>Speaker WAV path (optional)</label>
-                  <input
-                    value={bot.speaker_wav || ''}
-                    placeholder="/path/to/voice.wav"
-                    onChange={(e) => setBot((p) => (p ? { ...p, speaker_wav: e.target.value } : p))}
-                  />
-                  <div className="row">
-                    <button className="btn" onClick={() => void save({ speaker_wav: bot.speaker_wav || null })}>
-                      Save WAV path
-                    </button>
+              {bot.tts_vendor === 'xtts_local' ? (
+                <>
+                  <div className="formRow">
+                    <label>XTTS v2 model</label>
+                    <select value={bot.xtts_model} onChange={(e) => void save({ xtts_model: e.target.value })}>
+                      {(options?.xtts_models || [bot.xtts_model]).map((m) => (
+                        <option value={m} key={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                </div>
-              </div>
+
+                  <div className="formRowGrid2">
+                    <div className="formRow">
+                      <label>Speaker ID (optional)</label>
+                      <select
+                        value={bot.speaker_id || '(auto)'}
+                        onChange={(e) => void save({ speaker_id: e.target.value === '(auto)' ? null : e.target.value })}
+                      >
+                        {speakerChoices.map((s) => (
+                          <option value={s} key={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="formRow">
+                      <label>Speaker WAV path (optional)</label>
+                      <input
+                        value={bot.speaker_wav || ''}
+                        placeholder="/path/to/voice.wav"
+                        onChange={(e) => setBot((p) => (p ? { ...p, speaker_wav: e.target.value } : p))}
+                      />
+                      <div className="row">
+                        <button className="btn" onClick={() => void save({ speaker_wav: bot.speaker_wav || null })}>
+                          Save WAV path
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : null}
 
               <div className="formRowGrid2">
                 <div className="formRow">
