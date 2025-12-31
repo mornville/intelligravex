@@ -35,6 +35,7 @@ export default function BotDetailPage() {
     headers_template_json_masked: '',
     headers_configured: false,
     request_body_template: '{}',
+    parameters_schema_json: '',
     response_mapper_json: '{}',
     static_reply_template: '',
   })
@@ -126,6 +127,7 @@ export default function BotDetailPage() {
       headers_template_json_masked: '',
       headers_configured: false,
       request_body_template: '{}',
+      parameters_schema_json: '',
       response_mapper_json: '{}',
       static_reply_template: '',
     })
@@ -145,6 +147,7 @@ export default function BotDetailPage() {
       headers_template_json_masked: t.headers_template_json_masked || '',
       headers_configured: Boolean(t.headers_configured),
       request_body_template: t.request_body_template || '{}',
+      parameters_schema_json: t.parameters_schema_json || '',
       response_mapper_json: t.response_mapper_json || '{}',
       static_reply_template: t.static_reply_template || '',
     })
@@ -173,6 +176,7 @@ export default function BotDetailPage() {
           method: toolForm.method,
           args_required,
           request_body_template: toolForm.request_body_template || '{}',
+          parameters_schema_json: toolForm.parameters_schema_json || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
         }
@@ -189,6 +193,7 @@ export default function BotDetailPage() {
           args_required,
           headers_template_json: toolForm.headers_template_json || '{}',
           request_body_template: toolForm.request_body_template || '{}',
+          parameters_schema_json: toolForm.parameters_schema_json || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
         })
@@ -606,6 +611,24 @@ export default function BotDetailPage() {
                 The LLM must call this tool with <span className="mono">{'{ "args": { ... }, "next_reply": "..." }'}</span>. These keys will be required
                 inside <span className="mono">args</span>.
               </div>
+            </div>
+            <div className="formRow">
+              <label>
+                Args schema (JSON Schema, optional){' '}
+                <HelpTip>
+                  <div className="tipTitle">Notes</div>
+                  <div className="tipText">
+                    If set, this schema is used to guide the LLM to produce structured <span className="mono">args</span> (nested objects/arrays, enums,
+                    etc). If empty, <span className="mono">Required args</span> will be used as simple string fields.
+                  </div>
+                </HelpTip>
+              </label>
+              <textarea
+                value={toolForm.parameters_schema_json}
+                onChange={(e) => setToolForm((p) => ({ ...p, parameters_schema_json: e.target.value }))}
+                rows={6}
+                placeholder='{"type":"object","properties":{}}'
+              />
             </div>
             <div className="formRow">
               <label>

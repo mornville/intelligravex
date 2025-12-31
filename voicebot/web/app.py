@@ -189,6 +189,26 @@ def _parse_required_args_json(raw: str) -> list[str]:
     return uniq
 
 
+def _parse_parameters_schema_json(raw: str) -> dict[str, Any] | None:
+    """
+    Parses a JSON-schema object for IntegrationTool.args.
+
+    Expected: an object schema (dict) usable as the schema for the tool-call `args` field.
+    """
+    if not (raw or "").strip():
+        return None
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    # Best-effort validation; keep permissive to support forward-compatible schemas.
+    if obj.get("type") not in (None, "object"):
+        return None
+    return obj
+
+
 def _missing_required_args(required: list[str], args: dict) -> list[str]:
     missing: list[str] = []
     for k in required:
@@ -314,6 +334,7 @@ class IntegrationToolCreateRequest(BaseModel):
     args_required: list[str] = []
     headers_template_json: str = "{}"
     request_body_template: str = "{}"
+    parameters_schema_json: str = ""
     response_mapper_json: str = "{}"
     static_reply_template: str = ""
 
@@ -326,6 +347,7 @@ class IntegrationToolUpdateRequest(BaseModel):
     args_required: Optional[list[str]] = None
     headers_template_json: Optional[str] = None
     request_body_template: Optional[str] = None
+    parameters_schema_json: Optional[str] = None
     response_mapper_json: Optional[str] = None
     static_reply_template: Optional[str] = None
 
@@ -581,12 +603,16 @@ def create_app() -> FastAPI:
 
     def _integration_tool_def(t: IntegrationTool) -> dict[str, Any]:
         required_args = _parse_required_args_json(getattr(t, "args_required_json", "[]"))
-        args_schema = {
-            "type": "object",
-            "properties": {k: {"type": "string"} for k in required_args},
-            "required": required_args,
-            "additionalProperties": True,
-        }
+        explicit_schema = _parse_parameters_schema_json(getattr(t, "parameters_schema_json", ""))
+        if explicit_schema:
+            args_schema = explicit_schema
+        else:
+            args_schema = {
+                "type": "object",
+                "properties": {k: {"type": "string"} for k in required_args},
+                "required": required_args,
+                "additionalProperties": True,
+            }
         schema = {
             "type": "object",
             "properties": {
@@ -2557,6 +2583,7 @@ def create_app() -> FastAPI:
             "headers_template_json_masked": _mask_headers_json(t.headers_template_json),
             "headers_configured": _headers_configured(t.headers_template_json),
             "request_body_template": t.request_body_template,
+            "parameters_schema_json": t.parameters_schema_json,
             "response_mapper_json": t.response_mapper_json,
             "static_reply_template": t.static_reply_template,
             "created_at": t.created_at.isoformat(),
@@ -2660,6 +2687,7 @@ def create_app() -> FastAPI:
             args_required_json=json.dumps(payload.args_required or [], ensure_ascii=False),
             headers_template_json=payload.headers_template_json or "{}",
             request_body_template=payload.request_body_template or "{}",
+            parameters_schema_json=payload.parameters_schema_json or "",
             response_mapper_json=payload.response_mapper_json or "{}",
             static_reply_template=payload.static_reply_template or "",
         )
@@ -2689,6 +2717,8 @@ def create_app() -> FastAPI:
             patch["args_required_json"] = json.dumps(patch.pop("args_required") or [], ensure_ascii=False)
         if "headers_template_json" in patch:
             patch["headers_template_json"] = patch["headers_template_json"] or "{}"
+        if "parameters_schema_json" in patch:
+            patch["parameters_schema_json"] = patch["parameters_schema_json"] or ""
         tool = update_integration_tool(session, tool_id, patch)
         return _tool_to_dict(tool)
 

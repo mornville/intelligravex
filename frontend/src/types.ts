@@ -125,6 +125,7 @@ export type IntegrationTool = {
   headers_template_json_masked?: string
   headers_configured?: boolean
   request_body_template: string
+  parameters_schema_json?: string
   response_mapper_json: string
   static_reply_template: string
   created_at: string
