@@ -864,7 +864,8 @@ def create_app() -> FastAPI:
                     if isinstance(body_obj, (dict, list)):
                         resp = client.request(method, url, json=body_obj, headers=headers_obj or None)
                     elif body_obj is None:
-                        resp = client.request(method, url, json=tool_args or None, headers=headers_obj or None)
+                        # Most APIs expect an object for JSON bodies. Send {} instead of null when args are empty.
+                        resp = client.request(method, url, json=(tool_args or {}), headers=headers_obj or None)
                     else:
                         resp = client.request(method, url, content=str(body_obj), headers=headers_obj or None)
             if resp.status_code >= 400:
