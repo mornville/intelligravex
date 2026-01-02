@@ -233,6 +233,7 @@ def _scrape_via_scrapingbee(
     url: str,
     timeout_s: float,
     user_agent: str,
+    extra_params: Optional[dict[str, str]] = None,
 ) -> tuple[Optional[str], dict[str, Any]]:
     with httpx.Client(
         timeout=httpx.Timeout(timeout_s, connect=min(10.0, timeout_s)),
@@ -245,13 +246,14 @@ def _scrape_via_scrapingbee(
                 "api_key": scrapingbee_api_key,
                 "url": url,
                 "render_js": "false",
-                "country_code": "us",
+                **(extra_params or {}),
             },
         )
     if resp.status_code >= 400:
         return None, {
             "message": f"ScrapingBee returned HTTP {resp.status_code}",
             "status_code": resp.status_code,
+            "body": (resp.text or "")[:2000],
         }
     return (resp.text or ""), {}
 
@@ -293,6 +295,67 @@ def _parse_google_results(html: str, *, max_results: int) -> list[dict[str, str]
         if len(out) >= max_results:
             break
     return out
+
+
+def _google_search_via_scrapingbee(
+    *,
+    scrapingbee_api_key: str,
+    search_term: str,
+    timeout_s: float,
+    user_agent: str,
+    max_results: int,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """
+    Uses ScrapingBee's Google Search API, which returns structured JSON results and
+    avoids scraping the Google HTML SERP directly (more reliable).
+    """
+    with httpx.Client(
+        timeout=httpx.Timeout(timeout_s, connect=min(10.0, timeout_s)),
+        follow_redirects=True,
+        headers={"User-Agent": user_agent},
+    ) as client:
+        resp = client.get(
+            "https://app.scrapingbee.com/api/v1/store/google",
+            params={
+                "api_key": scrapingbee_api_key,
+                "search": search_term,
+                "language": "en",
+                "page": "1",
+            },
+        )
+    if resp.status_code >= 400:
+        return [], {
+            "message": f"ScrapingBee Google API returned HTTP {resp.status_code}",
+            "status_code": resp.status_code,
+            "body": (resp.text or "")[:2000],
+        }
+    try:
+        obj = resp.json()
+    except Exception:
+        return [], {
+            "message": "ScrapingBee Google API returned non-JSON response",
+            "status_code": resp.status_code,
+            "body": (resp.text or "")[:2000],
+        }
+    if not isinstance(obj, dict):
+        return [], {"message": "Unexpected Google API response shape"}
+
+    organic = obj.get("organic_results")
+    if not isinstance(organic, list):
+        organic = []
+    out: list[dict[str, str]] = []
+    for it in organic:
+        if not isinstance(it, dict):
+            continue
+        url = str(it.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        title = str(it.get("title") or "").strip()
+        snippet = str(it.get("description") or it.get("snippet") or "").strip()
+        out.append({"url": url, "title": title, "snippet": snippet})
+        if len(out) >= max_results:
+            break
+    return out, {}
 
 
 def web_search(
@@ -337,17 +400,28 @@ def web_search(
     if not chosen_model:
         return {"ok": False, "error": {"message": "Missing model for filtering/summarization"}}
 
-    # 1) Google search via ScrapingBee.
-    google_url = _google_search_url(st, num=max_r)
-    google_html, google_err = _scrape_via_scrapingbee(
+    # 1) Google search via ScrapingBee (structured API).
+    candidates, google_err = _google_search_via_scrapingbee(
         scrapingbee_api_key=scrapingbee_api_key,
-        url=google_url,
+        search_term=st,
         timeout_s=cfg.timeout_s,
         user_agent=cfg.user_agent,
+        max_results=max_r,
     )
-    if not google_html:
-        return {"ok": False, "error": {"message": "Google search failed", **google_err}}
-    candidates = _parse_google_results(google_html, max_results=max_r)
+    google_url = ""
+    if google_err:
+        # Fallback: scrape Google HTML (less reliable; may be blocked without special flags).
+        google_url = _google_search_url(st, num=max_r)
+        google_html, html_err = _scrape_via_scrapingbee(
+            scrapingbee_api_key=scrapingbee_api_key,
+            url=google_url,
+            timeout_s=cfg.timeout_s,
+            user_agent=cfg.user_agent,
+            extra_params={"custom_google": "true"},
+        )
+        if not google_html:
+            return {"ok": False, "error": {"message": "Google search failed", **google_err, "fallback": html_err}}
+        candidates = _parse_google_results(google_html, max_results=max_r)
     if not candidates:
         return {"ok": False, "error": {"message": "No Google results parsed"}}
 
