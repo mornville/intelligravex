@@ -427,7 +427,9 @@ function normalizeToolEventForDisplay(msg: any): any {
     const s = out.arguments_json.trim()
     if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
       try {
-        out.arguments_json = JSON.parse(s)
+        out.arguments = JSON.parse(s)
+        out.arguments_json_raw = out.arguments_json
+        delete out.arguments_json
       } catch {
         // ignore
       }
