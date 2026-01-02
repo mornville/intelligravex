@@ -125,6 +125,31 @@ class OpenAILLM:
         self._client = OpenAI(api_key=key)
         self._model = model
 
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def build_request_payload(
+        self,
+        *,
+        messages: Sequence[Message],
+        tools: Optional[list[dict[str, Any]]] = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Returns the exact payload shape we send to the Responses API via the SDK.
+        Useful for debugging / tracing.
+        """
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "input": _to_responses_input(messages),
+        }
+        if tools:
+            payload["tools"] = tools
+        if stream:
+            payload["stream"] = True
+        return payload
+
     def stream_text(self, *, messages: Sequence[Message]) -> Generator[str, None, None]:
         stream = self._client.responses.create(
             model=self._model,

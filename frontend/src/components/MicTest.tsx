@@ -41,6 +41,7 @@ export default function MicTest({ botId }: { botId: string }) {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [speak, setSpeak] = useState(true)
   const [testFlag, setTestFlag] = useState(true)
+  const [debug, setDebug] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [items, setItems] = useState<ChatItem[]>([])
   const [recording, setRecording] = useState(false)
@@ -248,7 +249,7 @@ export default function MicTest({ botId }: { botId: string }) {
     draftAssistantIdRef.current = null
     const reqId = crypto.randomUUID()
     activeReqIdRef.current = reqId
-    wsRef.current.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag }))
+    wsRef.current.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag, debug }))
   }
 
   async function sendChat() {
@@ -276,6 +277,7 @@ export default function MicTest({ botId }: { botId: string }) {
         conversation_id: conversationId,
         speak,
         test_flag: testFlag,
+        debug,
         text,
       }),
     )
@@ -296,7 +298,7 @@ export default function MicTest({ botId }: { botId: string }) {
     const reqId = crypto.randomUUID()
     activeReqIdRef.current = reqId
     wsRef.current.send(
-      JSON.stringify({ type: 'start', req_id: reqId, conversation_id: conversationId, speak, test_flag: testFlag }),
+      JSON.stringify({ type: 'start', req_id: reqId, conversation_id: conversationId, speak, test_flag: testFlag, debug }),
     )
     recordingRef.current = true
     const rec = await createRecorder((pcm16) => {
@@ -354,6 +356,9 @@ export default function MicTest({ botId }: { botId: string }) {
         </label>
         <label className="check">
           <input type="checkbox" checked={testFlag} onChange={(e) => setTestFlag(e.target.checked)} /> test
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} /> debug
         </label>
         <button className="btn" onClick={() => void initConversation()} disabled={!canInit}>
           {conversationId ? 'New conversation' : 'Start conversation'}

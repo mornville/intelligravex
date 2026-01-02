@@ -587,6 +587,12 @@ def create_app() -> FastAPI:
                 messages.append(Message(role=m.role, content=render_template(m.content, ctx=ctx)))
             elif m.role == "tool":
                 # Store tool calls/results as system breadcrumbs to prevent repeated calls.
+                try:
+                    obj = json.loads(m.content or "")
+                    if isinstance(obj, dict) and obj.get("tool") == "debug_llm_request":
+                        continue
+                except Exception:
+                    pass
                 messages.append(Message(role="system", content=render_template(f"Tool event: {m.content}", ctx=ctx)))
         return messages
 
@@ -691,6 +697,7 @@ def create_app() -> FastAPI:
         test_flag: bool,
         ws: WebSocket,
         req_id: str,
+        debug: bool,
     ) -> UUID:
         init_start = time.time()
         # Create conversation + store first assistant message.
@@ -729,6 +736,14 @@ def create_app() -> FastAPI:
                     Message(role="system", content=render_template(bot.system_prompt, ctx={"meta": {}})),
                     Message(role="user", content=_make_start_message_instruction(bot)),
                 ]
+                if debug:
+                    await _emit_llm_debug_payload(
+                        ws=ws,
+                        req_id=req_id,
+                        conversation_id=conv_id,
+                        phase="greeting_llm",
+                        payload=llm.build_request_payload(messages=msgs, stream=True),
+                    )
                 t0 = time.time()
                 first = None
                 parts: list[str] = []
@@ -933,6 +948,50 @@ def create_app() -> FastAPI:
         total_ms = int(round((t1 - t0) * 1000.0))
         return text, ttfb_ms, total_ms
 
+    def _record_llm_debug_payload(
+        *,
+        conversation_id: UUID,
+        payload: dict[str, Any],
+        phase: str,
+    ) -> None:
+        try:
+            with Session(engine) as session:
+                add_message_with_metrics(
+                    session,
+                    conversation_id=conversation_id,
+                    role="tool",
+                    content=json.dumps(
+                        {"tool": "debug_llm_request", "arguments": {"phase": phase, "payload": payload}},
+                        ensure_ascii=False,
+                    ),
+                )
+        except Exception:
+            # Debugging must never break the conversation.
+            return
+
+    async def _emit_llm_debug_payload(
+        *,
+        ws: WebSocket,
+        req_id: str,
+        conversation_id: UUID,
+        payload: dict[str, Any],
+        phase: str,
+    ) -> None:
+        # Best-effort: send to UI and persist to DB.
+        try:
+            await _ws_send_json(
+                ws,
+                {
+                    "type": "tool_call",
+                    "req_id": req_id,
+                    "name": "debug_llm_request",
+                    "arguments_json": json.dumps({"phase": phase, "payload": payload}, ensure_ascii=False),
+                },
+            )
+        except Exception:
+            pass
+        _record_llm_debug_payload(conversation_id=conversation_id, payload=payload, phase=phase)
+
     @app.websocket("/ws/bots/{bot_id}/talk")
     async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:
         await ws.accept()
@@ -948,6 +1007,7 @@ def create_app() -> FastAPI:
         conv_id: Optional[UUID] = None
         speak = True
         test_flag = True
+        debug_mode = False
         stop_ts: Optional[float] = None
         accepting_audio = False
 
@@ -980,11 +1040,17 @@ def create_app() -> FastAPI:
                         active_req_id = req_id
                         speak = bool(payload.get("speak", True))
                         test_flag = bool(payload.get("test_flag", True))
+                        debug_mode = bool(payload.get("debug", False))
                         accepting_audio = False
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "init"})
                         try:
                             conv_id = await _init_conversation_and_greet(
-                                bot_id=bot_id, speak=speak, test_flag=test_flag, ws=ws, req_id=req_id
+                                bot_id=bot_id,
+                                speak=speak,
+                                test_flag=test_flag,
+                                ws=ws,
+                                req_id=req_id,
+                                debug=debug_mode,
                             )
                         except Exception as exc:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
@@ -1019,6 +1085,7 @@ def create_app() -> FastAPI:
 
                         active_req_id = req_id
                         audio_buf = bytearray()
+                        debug_mode = bool(payload.get("debug", False))
                         speak = bool(payload.get("speak", True))
                         test_flag = bool(payload.get("test_flag", True))
                         accepting_audio = True
@@ -1069,6 +1136,7 @@ def create_app() -> FastAPI:
                         active_req_id = req_id
                         speak = bool(payload.get("speak", True))
                         test_flag = bool(payload.get("test_flag", True))
+                        debug_mode = bool(payload.get("debug", False))
                         user_text = str(payload.get("text") or "").strip()
                         conversation_id_str = str(payload.get("conversation_id") or "").strip()
                         accepting_audio = False
@@ -1122,6 +1190,16 @@ def create_app() -> FastAPI:
                                 tools_defs = _build_tools_for_bot(session, bot.id)
                                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                                 tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
+                                if debug_mode:
+                                    await _emit_llm_debug_payload(
+                                        ws=ws,
+                                        req_id=req_id,
+                                        conversation_id=conv_id,
+                                        phase="chat_llm",
+                                        payload=llm.build_request_payload(
+                                            messages=history, tools=tools_defs, stream=True
+                                        ),
+                                    )
                         except Exception as exc:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
                             await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
@@ -1273,13 +1351,14 @@ def create_app() -> FastAPI:
 
                         await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
 
-                        if tool_calls and conv_id is not None:
-                            rendered_reply = ""
-                            tool_error: Optional[str] = None
-                            needs_followup_llm = False
-                            followup_streamed = False
-                            followup_persisted = False
-                            with Session(engine) as session:
+	                        if tool_calls and conv_id is not None:
+	                            rendered_reply = ""
+	                            tool_error: Optional[str] = None
+	                            needs_followup_llm = False
+	                            tool_failed = False
+	                            followup_streamed = False
+	                            followup_persisted = False
+	                            with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
 
@@ -1331,23 +1410,19 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        response_json = _execute_integration_http(
-                                            tool=tool_cfg, meta=meta_current, tool_args=patch
-                                        )
-                                        if isinstance(response_json, dict) and "__http_error__" in response_json:
-                                            err = response_json["__http_error__"] or {}
-                                            tool_result = {"ok": False, "error": err}
-                                            sc = err.get("status_code")
-                                            tool_error = (
-                                                f"{tool_name}: HTTP {sc} Unauthorized"
-                                                if sc == 401
-                                                else f"{tool_name}: HTTP {sc or 'error'}"
-                                            )
-                                            rendered_reply = _integration_error_user_message(tool_name=tool_name, err=err)
-                                        else:
-                                            mapped = _apply_response_mapper(
-                                                mapper_json=tool_cfg.response_mapper_json,
-                                                response_json=response_json,
+	                                        response_json = _execute_integration_http(
+	                                            tool=tool_cfg, meta=meta_current, tool_args=patch
+	                                        )
+	                                        if isinstance(response_json, dict) and "__http_error__" in response_json:
+	                                            err = response_json["__http_error__"] or {}
+	                                            tool_result = {"ok": False, "error": err}
+	                                            tool_failed = True
+	                                            needs_followup_llm = True
+	                                            rendered_reply = ""
+	                                        else:
+	                                            mapped = _apply_response_mapper(
+	                                                mapper_json=tool_cfg.response_mapper_json,
+	                                                response_json=response_json,
                                                 meta=meta_current,
                                                 tool_args=patch,
                                             )
@@ -1362,13 +1437,15 @@ def create_app() -> FastAPI:
                                     )
                                     meta_current = tool_result.get("metadata") or meta_current
 
-                                    await _ws_send_json(
-                                        ws,
-                                        {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
-                                    )
+	                                    await _ws_send_json(
+	                                        ws,
+	                                        {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
+	                                    )
 
-                                    if tool_error:
-                                        break
+	                                    if tool_error:
+	                                        break
+	                                    if tool_failed:
+	                                        break
 
                                     candidate = ""
                                     if tool_name != "set_metadata" and tool_cfg:
@@ -1394,21 +1471,36 @@ def create_app() -> FastAPI:
 
                             # If static reply is missing/empty for an integration tool, ask the LLM again
                             # with tool call + tool result already persisted in history.
-                            if needs_followup_llm and not tool_error and conv_id is not None:
-                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
-                                with Session(engine) as session:
-                                    bot = get_bot(session, bot_id)
-                                    followup_history = _build_history(session, bot, conv_id)
-                                    followup_history.append(
-                                        Message(
-                                            role="system",
-                                            content="Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
-                                        )
-                                    )
-                                follow_llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                                text2, ttfb2, total2 = await _stream_llm_reply(
-                                    ws=ws, req_id=req_id, llm=follow_llm, messages=followup_history
-                                )
+	                            if needs_followup_llm and not tool_error and conv_id is not None:
+	                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+	                                with Session(engine) as session:
+	                                    bot = get_bot(session, bot_id)
+	                                    followup_history = _build_history(session, bot, conv_id)
+	                                    followup_history.append(
+	                                        Message(
+	                                            role="system",
+	                                            content=(
+	                                                "The previous tool call failed. "
+	                                                if tool_failed
+	                                                else ""
+	                                            )
+	                                            + "Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
+	                                        )
+	                                    )
+	                                follow_llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+	                                if debug_mode:
+	                                    await _emit_llm_debug_payload(
+	                                        ws=ws,
+	                                        req_id=req_id,
+	                                        conversation_id=conv_id,
+	                                        phase="tool_followup_llm",
+	                                        payload=follow_llm.build_request_payload(
+	                                            messages=followup_history, stream=True
+	                                        ),
+	                                    )
+	                                text2, ttfb2, total2 = await _stream_llm_reply(
+	                                    ws=ws, req_id=req_id, llm=follow_llm, messages=followup_history
+	                                )
                                 rendered_reply = text2.strip()
                                 if rendered_reply:
                                     followup_streamed = True
@@ -1630,8 +1722,16 @@ def create_app() -> FastAPI:
                             history = _build_history(session, bot, conv_id)
                             tools_defs = _build_tools_for_bot(session, bot.id)
 
-                            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                            tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
+	                            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+	                            tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
+	                            if debug_mode:
+	                                await _emit_llm_debug_payload(
+	                                    ws=ws,
+	                                    req_id=req_id,
+	                                    conversation_id=conv_id,
+	                                    phase="asr_turn_llm",
+	                                    payload=llm.build_request_payload(messages=history, tools=tools_defs, stream=True),
+	                                )
                         except Exception as exc:
                             await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
                             await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
@@ -1825,12 +1925,13 @@ def create_app() -> FastAPI:
                             pass
 
                         await _ws_send_json(ws, {"type": "metrics", "req_id": req_id, "timings_ms": timings})
-                        if tool_calls and conv_id is not None:
-                            rendered_reply = ""
-                            tool_error: Optional[str] = None
-                            needs_followup_llm = False
-                            followup_streamed = False
-                            followup_persisted = False
+	                        if tool_calls and conv_id is not None:
+	                            rendered_reply = ""
+	                            tool_error: Optional[str] = None
+	                            needs_followup_llm = False
+	                            tool_failed = False
+	                            followup_streamed = False
+	                            followup_persisted = False
 
                             with Session(engine) as session:
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
@@ -1883,23 +1984,19 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        response_json = _execute_integration_http(
-                                            tool=tool_cfg, meta=meta_current, tool_args=patch
-                                        )
-                                        if isinstance(response_json, dict) and "__http_error__" in response_json:
-                                            err = response_json["__http_error__"] or {}
-                                            tool_result = {"ok": False, "error": err}
-                                            sc = err.get("status_code")
-                                            tool_error = (
-                                                f"{tool_name}: HTTP {sc} Unauthorized"
-                                                if sc == 401
-                                                else f"{tool_name}: HTTP {sc or 'error'}"
-                                            )
-                                            rendered_reply = _integration_error_user_message(tool_name=tool_name, err=err)
-                                        else:
-                                            mapped = _apply_response_mapper(
-                                                mapper_json=tool_cfg.response_mapper_json,
-                                                response_json=response_json,
+	                                        response_json = _execute_integration_http(
+	                                            tool=tool_cfg, meta=meta_current, tool_args=patch
+	                                        )
+	                                        if isinstance(response_json, dict) and "__http_error__" in response_json:
+	                                            err = response_json["__http_error__"] or {}
+	                                            tool_result = {"ok": False, "error": err}
+	                                            tool_failed = True
+	                                            needs_followup_llm = True
+	                                            rendered_reply = ""
+	                                        else:
+	                                            mapped = _apply_response_mapper(
+	                                                mapper_json=tool_cfg.response_mapper_json,
+	                                                response_json=response_json,
                                                 meta=meta_current,
                                                 tool_args=patch,
                                             )
@@ -1914,13 +2011,15 @@ def create_app() -> FastAPI:
                                     )
                                     meta_current = tool_result.get("metadata") or meta_current
 
-                                    await _ws_send_json(
-                                        ws,
-                                        {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
-                                    )
+	                                    await _ws_send_json(
+	                                        ws,
+	                                        {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
+	                                    )
 
-                                    if tool_error:
-                                        break
+	                                    if tool_error:
+	                                        break
+	                                    if tool_failed:
+	                                        break
 
                                     if tool_name != "set_metadata" and tool_cfg:
                                         static_text = ""
@@ -1945,18 +2044,33 @@ def create_app() -> FastAPI:
 
                             # If static reply is missing/empty for an integration tool, ask the LLM again
                             # with tool call + tool result already persisted in history.
-                            if needs_followup_llm and not tool_error and conv_id is not None:
-                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
-                                with Session(engine) as session:
-                                    bot2 = get_bot(session, bot_id)
-                                    followup_history = _build_history(session, bot2, conv_id)
-                                    followup_history.append(
-                                        Message(
-                                            role="system",
-                                            content="Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
-                                        )
-                                    )
+	                            if needs_followup_llm and not tool_error and conv_id is not None:
+	                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+	                                with Session(engine) as session:
+	                                    bot2 = get_bot(session, bot_id)
+	                                    followup_history = _build_history(session, bot2, conv_id)
+	                                    followup_history.append(
+	                                        Message(
+	                                            role="system",
+	                                            content=(
+	                                                "The previous tool call failed. "
+	                                                if tool_failed
+	                                                else ""
+	                                            )
+	                                            + "Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
+	                                        )
+	                                    )
                                 follow_llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                                if debug_mode:
+                                    await _emit_llm_debug_payload(
+                                        ws=ws,
+                                        req_id=req_id,
+                                        conversation_id=conv_id,
+                                        phase="tool_followup_llm",
+                                        payload=follow_llm.build_request_payload(
+                                            messages=followup_history, stream=True
+                                        ),
+                                    )
                                 text2, ttfb2, total2 = await _stream_llm_reply(
                                     ws=ws, req_id=req_id, llm=follow_llm, messages=followup_history
                                 )
@@ -2346,11 +2460,12 @@ def create_app() -> FastAPI:
                             llm_ttfb_ms = int(round((tool_calls[0].first_event_ts - t0) * 1000.0))
                         llm_total_ms = int(round((llm_end_ts - t0) * 1000.0))
 
-                        if tool_calls:
-                            meta_current = _get_conversation_meta(session, conversation_id=conv_id)
-                            final = ""
-                            needs_followup_llm = False
-                            followup_streamed = False
+	                        if tool_calls:
+	                            meta_current = _get_conversation_meta(session, conversation_id=conv_id)
+	                            final = ""
+	                            needs_followup_llm = False
+	                            tool_failed = False
+	                            followup_streamed = False
 
                             for tc in tool_calls:
                                 tool_name = tc.name
@@ -2386,22 +2501,16 @@ def create_app() -> FastAPI:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:
                                         raise RuntimeError(f"Unknown tool: {tool_name}")
-                                    response_json = _execute_integration_http(
-                                        tool=tool_cfg, meta=meta_current, tool_args=patch
-                                    )
-                                    if isinstance(response_json, dict) and "__http_error__" in response_json:
-                                        err = response_json["__http_error__"] or {}
-                                        tool_result = {"ok": False, "error": err}
-                                        final = _integration_error_user_message(tool_name=tool_name, err=err)
-                                        await _ws_send_json(
-                                            ws,
-                                            {
-                                                "type": "error",
-                                                "req_id": req_id,
-                                                "error": f"{tool_name}: HTTP {err.get('status_code')}",
-                                            },
-                                        )
-                                    else:
+	                                    response_json = _execute_integration_http(
+	                                        tool=tool_cfg, meta=meta_current, tool_args=patch
+	                                    )
+	                                    if isinstance(response_json, dict) and "__http_error__" in response_json:
+	                                        err = response_json["__http_error__"] or {}
+	                                        tool_result = {"ok": False, "error": err}
+	                                        tool_failed = True
+	                                        needs_followup_llm = True
+	                                        final = ""
+	                                    else:
                                         mapped = _apply_response_mapper(
                                             mapper_json=tool_cfg.response_mapper_json,
                                             response_json=response_json,
@@ -2443,14 +2552,19 @@ def create_app() -> FastAPI:
                                     candidate = _render_with_meta(next_reply, meta_current).strip()
                                     final = candidate or final
 
-                            if needs_followup_llm:
-                                followup_history = _build_history(session, bot, conv_id)
-                                followup_history.append(
-                                    Message(
-                                        role="system",
-                                        content="Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
-                                    )
-                                )
+	                            if needs_followup_llm:
+	                                followup_history = _build_history(session, bot, conv_id)
+	                                followup_history.append(
+	                                    Message(
+	                                        role="system",
+	                                        content=(
+	                                            "The previous tool call failed. "
+	                                            if tool_failed
+	                                            else ""
+	                                        )
+	                                        + "Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
+	                                    )
+	                                )
                                 await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                                 text2, ttfb2, total2 = await _stream_llm_reply(
                                     ws=ws, req_id=req_id, llm=llm, messages=followup_history
