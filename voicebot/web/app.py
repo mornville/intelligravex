@@ -657,6 +657,10 @@ def create_app() -> FastAPI:
         schema = {
             "type": "object",
             "properties": {
+                "wait_reply": {
+                    "type": "string",
+                    "description": "Short filler message to say while the tool runs (not used for set_metadata).",
+                },
                 "args": {
                     "description": "Arguments used to call the integration (required).",
                     **args_schema,
@@ -985,6 +989,38 @@ def create_app() -> FastAPI:
         ttfb_ms = int(round((first - t0) * 1000.0)) if first is not None else None
         total_ms = int(round((t1 - t0) * 1000.0))
         return text, ttfb_ms, total_ms
+
+    def _estimate_wav_seconds(wav_bytes: bytes, sr: int) -> float:
+        # Best-effort WAV duration extraction to avoid interrupting ongoing speech.
+        # If parsing fails, fall back to a heuristic based on byte size.
+        try:
+            if len(wav_bytes) < 44 or sr <= 0:
+                raise ValueError("bad wav")
+            if wav_bytes[0:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
+                raise ValueError("not wav")
+            # Parse chunks.
+            i = 12
+            channels = 1
+            bits_per_sample = 16
+            data_size = None
+            while i + 8 <= len(wav_bytes):
+                cid = wav_bytes[i : i + 4]
+                size = int.from_bytes(wav_bytes[i + 4 : i + 8], "little", signed=False)
+                i += 8
+                if cid == b"fmt " and i + 16 <= len(wav_bytes):
+                    channels = int.from_bytes(wav_bytes[i + 2 : i + 4], "little", signed=False) or 1
+                    bits_per_sample = int.from_bytes(wav_bytes[i + 14 : i + 16], "little", signed=False) or 16
+                if cid == b"data":
+                    data_size = size
+                    break
+                i += size + (size % 2)
+            if data_size is None:
+                data_size = max(0, len(wav_bytes) - 44)
+            bytes_per_frame = max(1, int(channels) * max(1, int(bits_per_sample) // 8))
+            frames = float(data_size) / float(bytes_per_frame)
+            return max(0.0, frames / float(sr))
+        except Exception:
+            return max(0.5, min(12.0, float(len(wav_bytes)) / float(max(1, sr * 2))))
 
     def _record_llm_debug_payload(
         *,
@@ -1396,6 +1432,68 @@ def create_app() -> FastAPI:
                             tool_failed = False
                             followup_streamed = False
                             followup_persisted = False
+                            tts_busy_until: float = 0.0
+
+                            async def _send_interim(text: str, *, kind: str) -> None:
+                                nonlocal tts_busy_until
+                                t = (text or "").strip()
+                                if not t:
+                                    return
+                                await _ws_send_json(
+                                    ws,
+                                    {"type": "interim", "req_id": req_id, "kind": kind, "text": t},
+                                )
+                                if not speak:
+                                    return
+                                now = time.time()
+                                if now < tts_busy_until:
+                                    await asyncio.sleep(tts_busy_until - now)
+                                status(req_id, "tts")
+                                try:
+                                    wav, sr = await asyncio.to_thread(tts_synth, t)
+                                    tts_busy_until = time.time() + _estimate_wav_seconds(wav, sr) + 0.15
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "audio_wav",
+                                            "req_id": req_id,
+                                            "wav_base64": base64.b64encode(wav).decode(),
+                                            "sr": sr,
+                                        },
+                                    )
+                                except Exception:
+                                    return
+                            tts_busy_until: float = 0.0
+
+                            async def _send_interim(text: str, *, kind: str) -> None:
+                                nonlocal tts_busy_until
+                                t = (text or "").strip()
+                                if not t:
+                                    return
+                                await _ws_send_json(
+                                    ws,
+                                    {"type": "interim", "req_id": req_id, "kind": kind, "text": t},
+                                )
+                                if not speak:
+                                    return
+                                now = time.time()
+                                if now < tts_busy_until:
+                                    await asyncio.sleep(tts_busy_until - now)
+                                status(req_id, "tts")
+                                try:
+                                    wav, sr = await asyncio.to_thread(tts_synth, t)
+                                    tts_busy_until = time.time() + _estimate_wav_seconds(wav, sr) + 0.15
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "audio_wav",
+                                            "req_id": req_id,
+                                            "wav_base64": base64.b64encode(wav).decode(),
+                                            "sr": sr,
+                                        },
+                                    )
+                                except Exception:
+                                    return
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
@@ -1430,12 +1528,14 @@ def create_app() -> FastAPI:
                                     )
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
+                                    wait_reply = str(tool_args.get("wait_reply") or "").strip()
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
                                     else:
                                         patch = dict(tool_args)
                                         patch.pop("next_reply", None)
+                                        patch.pop("wait_reply", None)
                                         patch.pop("args", None)
 
                                     tool_cfg: IntegrationTool | None = None
@@ -1461,23 +1561,55 @@ def create_app() -> FastAPI:
                                             max_results_val = int(max_results_arg) if max_results_arg is not None else None
                                         except Exception:
                                             max_results_val = None
+                                        progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                        def _progress(s: str) -> None:
+                                            try:
+                                                progress_q.put_nowait(str(s))
+                                            except Exception:
+                                                return
                                         try:
                                             ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                            summary_text = await asyncio.to_thread(
-                                                run_web_search,
-                                                search_term=search_term,
-                                                vector_search_queries=vector_queries,
-                                                why=why,
-                                                openai_api_key=api_key or "",
-                                                scrapingbee_api_key=scrapingbee_key,
-                                                model=ws_model,
-                                                top_k=top_k_val,
-                                                max_results=max_results_val,
+                                            task = asyncio.create_task(
+                                                asyncio.to_thread(
+                                                    run_web_search,
+                                                    search_term=search_term,
+                                                    vector_search_queries=vector_queries,
+                                                    why=why,
+                                                    openai_api_key=api_key or "",
+                                                    scrapingbee_api_key=scrapingbee_key,
+                                                    model=ws_model,
+                                                    progress_fn=_progress,
+                                                    top_k=top_k_val,
+                                                    max_results=max_results_val,
+                                                )
                                             )
+                                            if wait_reply:
+                                                await _send_interim(wait_reply, kind="wait")
+                                            last_wait = time.time()
+                                            while not task.done():
+                                                # Drain progress updates (best-effort).
+                                                try:
+                                                    while True:
+                                                        p = progress_q.get_nowait()
+                                                        if p:
+                                                            await _send_interim(p, kind="progress")
+                                                except queue.Empty:
+                                                    pass
+                                                if wait_reply and (time.time() - last_wait) >= 7.0:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                    last_wait = time.time()
+                                                await asyncio.sleep(0.2)
+                                            summary_text = await task
                                             tool_result = str(summary_text or "").strip()
                                         except Exception as exc:
                                             tool_result = f"WEB_SEARCH_ERROR: {exc}"
                                             tool_failed = True
+                                        # If the tool finishes while the bot is still speaking, wait before continuing.
+                                        if speak:
+                                            now = time.time()
+                                            if now < tts_busy_until:
+                                                await asyncio.sleep(tts_busy_until - now)
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
@@ -1485,9 +1617,25 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        response_json = _execute_integration_http(
-                                            tool=tool_cfg, meta=meta_current, tool_args=patch
+                                        task = asyncio.create_task(
+                                            asyncio.to_thread(
+                                                _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                            )
                                         )
+                                        if wait_reply:
+                                            await _send_interim(wait_reply, kind="wait")
+                                        while True:
+                                            try:
+                                                response_json = await asyncio.wait_for(task, timeout=7.0)
+                                                break
+                                            except asyncio.TimeoutError:
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                continue
+                                        if speak:
+                                            now = time.time()
+                                            if now < tts_busy_until:
+                                                await asyncio.sleep(tts_busy_until - now)
                                         if isinstance(response_json, dict) and "__http_error__" in response_json:
                                             err = response_json["__http_error__"] or {}
                                             tool_result = {"ok": False, "error": err}
@@ -1656,14 +1804,14 @@ def create_app() -> FastAPI:
 
                                 if speak:
                                     status(req_id, "tts")
-                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, rendered_reply)
+                                    wav, sr = await asyncio.to_thread(tts_synth, rendered_reply)
                                     await _ws_send_json(
                                         ws,
                                         {
                                             "type": "audio_wav",
                                             "req_id": req_id,
-                                            "wav_base64": base64.b64encode(_wav_bytes(a.audio, a.sample_rate)).decode(),
-                                            "sr": a.sample_rate,
+                                            "wav_base64": base64.b64encode(wav).decode(),
+                                            "sr": sr,
                                         },
                                     )
 
@@ -2042,12 +2190,14 @@ def create_app() -> FastAPI:
                                     )
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
+                                    wait_reply = str(tool_args.get("wait_reply") or "").strip()
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
                                     else:
                                         patch = dict(tool_args)
                                         patch.pop("next_reply", None)
+                                        patch.pop("wait_reply", None)
                                         patch.pop("args", None)
 
                                     tool_cfg: IntegrationTool | None = None
@@ -2073,23 +2223,53 @@ def create_app() -> FastAPI:
                                             max_results_val = int(max_results_arg) if max_results_arg is not None else None
                                         except Exception:
                                             max_results_val = None
+                                        progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                        def _progress(s: str) -> None:
+                                            try:
+                                                progress_q.put_nowait(str(s))
+                                            except Exception:
+                                                return
                                         try:
                                             ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                            summary_text = await asyncio.to_thread(
-                                                run_web_search,
-                                                search_term=search_term,
-                                                vector_search_queries=vector_queries,
-                                                why=why,
-                                                openai_api_key=api_key or "",
-                                                scrapingbee_api_key=scrapingbee_key,
-                                                model=ws_model,
-                                                top_k=top_k_val,
-                                                max_results=max_results_val,
+                                            task = asyncio.create_task(
+                                                asyncio.to_thread(
+                                                    run_web_search,
+                                                    search_term=search_term,
+                                                    vector_search_queries=vector_queries,
+                                                    why=why,
+                                                    openai_api_key=api_key or "",
+                                                    scrapingbee_api_key=scrapingbee_key,
+                                                    model=ws_model,
+                                                    progress_fn=_progress,
+                                                    top_k=top_k_val,
+                                                    max_results=max_results_val,
+                                                )
                                             )
+                                            if wait_reply:
+                                                await _send_interim(wait_reply, kind="wait")
+                                            last_wait = time.time()
+                                            while not task.done():
+                                                try:
+                                                    while True:
+                                                        p = progress_q.get_nowait()
+                                                        if p:
+                                                            await _send_interim(p, kind="progress")
+                                                except queue.Empty:
+                                                    pass
+                                                if wait_reply and (time.time() - last_wait) >= 7.0:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                    last_wait = time.time()
+                                                await asyncio.sleep(0.2)
+                                            summary_text = await task
                                             tool_result = str(summary_text or "").strip()
                                         except Exception as exc:
                                             tool_result = f"WEB_SEARCH_ERROR: {exc}"
                                             tool_failed = True
+                                        if speak:
+                                            now = time.time()
+                                            if now < tts_busy_until:
+                                                await asyncio.sleep(tts_busy_until - now)
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
@@ -2097,9 +2277,25 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        response_json = _execute_integration_http(
-                                            tool=tool_cfg, meta=meta_current, tool_args=patch
+                                        task = asyncio.create_task(
+                                            asyncio.to_thread(
+                                                _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                            )
                                         )
+                                        if wait_reply:
+                                            await _send_interim(wait_reply, kind="wait")
+                                        while True:
+                                            try:
+                                                response_json = await asyncio.wait_for(task, timeout=7.0)
+                                                break
+                                            except asyncio.TimeoutError:
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                continue
+                                        if speak:
+                                            now = time.time()
+                                            if now < tts_busy_until:
+                                                await asyncio.sleep(tts_busy_until - now)
                                         if isinstance(response_json, dict) and "__http_error__" in response_json:
                                             err = response_json["__http_error__"] or {}
                                             tool_result = {"ok": False, "error": err}
@@ -2275,14 +2471,14 @@ def create_app() -> FastAPI:
 
                                 if speak:
                                     status(req_id, "tts")
-                                    a = await asyncio.to_thread(_tts_synthesize, tts_handle, rendered_reply)
+                                    wav, sr = await asyncio.to_thread(tts_synth, rendered_reply)
                                     await _ws_send_json(
                                         ws,
                                         {
                                             "type": "audio_wav",
                                             "req_id": req_id,
-                                            "wav_base64": base64.b64encode(_wav_bytes(a.audio, a.sample_rate)).decode(),
-                                            "sr": a.sample_rate,
+                                            "wav_base64": base64.b64encode(wav).decode(),
+                                            "sr": sr,
                                         },
                                     )
 

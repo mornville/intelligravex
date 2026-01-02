@@ -171,6 +171,12 @@ export default function MicTest({ botId }: { botId: string }) {
         ])
         return
       }
+      if (msg.type === 'interim') {
+        const text = String(msg.text || '').trim()
+        if (!text) return
+        setItems((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', text }])
+        return
+      }
       if (msg.type === 'text_delta') {
         const delta = String(msg.delta || '')
         if (!delta) return

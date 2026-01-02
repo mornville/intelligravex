@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Iterable, Optional
+from typing import Callable
 
 import httpx
 import numpy as np
@@ -39,6 +40,10 @@ def web_search_tool_def() -> dict[str, Any]:
                     "description": "Comma-separated queries (prefer 9): q1,q2,q3,...",
                 },
                 "why": {"type": "string", "description": "Why you are searching (selection + summary guidance)."},
+                "wait_reply": {
+                    "type": "string",
+                    "description": "Short filler message to say while searching (e.g. 'Got it—looking that up now.').",
+                },
                 "top_k": {
                     "type": "integer",
                     "description": "Optional: number of top chunks to return per query per page.",
@@ -366,6 +371,7 @@ def web_search(
     openai_api_key: str,
     scrapingbee_api_key: str,
     model: str,
+    progress_fn: Optional[Callable[[str], None]] = None,
     top_k: Optional[int] = None,
     max_results: Optional[int] = None,
     config: Optional[WebSearchConfig] = None,
@@ -400,6 +406,12 @@ def web_search(
     if not chosen_model:
         raise RuntimeError("Missing model for filtering/summarization")
 
+    if progress_fn:
+        try:
+            progress_fn("Searching Google…")
+        except Exception:
+            pass
+
     # 1) Google search via ScrapingBee (structured API).
     candidates, google_err = _google_search_via_scrapingbee(
         scrapingbee_api_key=scrapingbee_api_key,
@@ -424,6 +436,12 @@ def web_search(
         candidates = _parse_google_results(google_html, max_results=max_r)
     if not candidates:
         raise RuntimeError("No Google results parsed")
+
+    if progress_fn:
+        try:
+            progress_fn("Selecting best sources…")
+        except Exception:
+            pass
 
     # 2) LLM selects 1-4 results based on `why`.
     filter_prompt = (
@@ -454,16 +472,27 @@ def web_search(
         picked = [candidates[0]["url"]]
     picked = picked[:4]
 
+    if progress_fn:
+        try:
+            progress_fn(f"Fetching {len(picked)} page(s)…")
+        except Exception:
+            pass
+
     # 3) Embeddings.
     try:
         from openai import OpenAI  # type: ignore
     except Exception as exc:  # pragma: no cover
-        return {"ok": False, "error": {"message": f"OpenAI SDK not installed: {exc}"}}
+        raise RuntimeError(f"OpenAI SDK not installed: {exc}") from exc
 
     oai = OpenAI(api_key=openai_api_key)
 
     per_page: list[dict[str, Any]] = []
-    for page_url in picked:
+    for i, page_url in enumerate(picked, start=1):
+        if progress_fn:
+            try:
+                progress_fn(f"Reading page {i}/{len(picked)}…")
+            except Exception:
+                pass
         html, err = _scrape_via_scrapingbee(
             scrapingbee_api_key=scrapingbee_api_key,
             url=page_url,
@@ -546,6 +575,11 @@ def web_search(
         )
 
     # 4) Summarize using the same model (guided by `why`).
+    if progress_fn:
+        try:
+            progress_fn("Summarizing…")
+        except Exception:
+            pass
     summarize_prompt = (
         "You are summarizing web research results.\n"
         "Write a concise answer that directly addresses WHY.\n"
