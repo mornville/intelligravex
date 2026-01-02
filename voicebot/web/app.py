@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime as dt
 import json
 import os
 import queue
@@ -573,7 +574,11 @@ def create_app() -> FastAPI:
         return synth
 
     def _build_history(session: Session, bot: Bot, conversation_id: Optional[UUID]) -> list[Message]:
-        messages: list[Message] = [Message(role="system", content=bot.system_prompt)]
+        def _system_prompt_with_runtime(*, prompt: str) -> str:
+            ts = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+            return f"Current Date Time(UTC): {ts}\n\n{prompt}"
+
+        messages: list[Message] = [Message(role="system", content=_system_prompt_with_runtime(prompt=bot.system_prompt))]
         if not conversation_id:
             return messages
         conv = get_conversation(session, conversation_id)
@@ -582,7 +587,12 @@ def create_app() -> FastAPI:
         meta = safe_json_loads(conv.metadata_json or "{}") or {}
         ctx = {"meta": meta}
         # Render system prompt with metadata variables (if any)
-        messages = [Message(role="system", content=render_template(bot.system_prompt, ctx=ctx))]
+        messages = [
+            Message(
+                role="system",
+                content=_system_prompt_with_runtime(prompt=render_template(bot.system_prompt, ctx=ctx)),
+            )
+        ]
         if meta:
             messages.append(Message(role="system", content=f"Conversation metadata (JSON): {json.dumps(meta, ensure_ascii=False)}"))
         for m in list_messages(session, conversation_id=conversation_id):
@@ -758,8 +768,10 @@ def create_app() -> FastAPI:
                 pass
             else:
                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                ts = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+                sys_prompt = f"Current Date Time(UTC): {ts}\n\n{render_template(bot.system_prompt, ctx={'meta': {}})}"
                 msgs = [
-                    Message(role="system", content=render_template(bot.system_prompt, ctx={"meta": {}})),
+                    Message(role="system", content=sys_prompt),
                     Message(role="user", content=_make_start_message_instruction(bot)),
                 ]
                 if debug:
