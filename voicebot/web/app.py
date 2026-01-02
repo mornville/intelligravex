@@ -394,6 +394,16 @@ def create_app() -> FastAPI:
             "gpt-4.1",
             "gpt-4.1-mini",
             "gpt-4.1-nano",
+            # GPT-5 family (see OpenAI docs for naming; used by Responses API)
+            "gpt-5.2",
+            "gpt-5.2-chat-latest",
+            "gpt-5.2-pro",
+            "gpt-5.1",
+            "gpt-5.1-chat-latest",
+            "gpt-5.1-mini",
+            "gpt-5.1-nano",
+            "gpt-5.1-codex-max",
+            "gpt-5.1-codex-mini",
             "o4-mini",
             "gpt-5",
             "gpt-5-chat-latest",
@@ -428,6 +438,10 @@ def create_app() -> FastAPI:
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # Best-effort: keep the model dropdown up-to-date by periodically fetching available models
+    # from the OpenAI API, if a key is configured in the environment.
+    openai_models_cache: dict[str, Any] = {"ts": 0.0, "models": []}
 
     def get_session() -> Generator[Session, None, None]:
         with Session(engine) as s:
@@ -3050,7 +3064,42 @@ def create_app() -> FastAPI:
     @app.get("/api/options")
     def api_options() -> dict:
         pricing = _get_openai_pricing()
-        openai_models = sorted(set(ui_options.get("openai_models", []) + list(pricing.keys())))
+        dynamic_models: list[str] = []
+        try:
+            # Only fetch occasionally to avoid slow UI loads.
+            now = time.time()
+            if (now - float(openai_models_cache.get("ts") or 0.0)) > 3600.0:
+                openai_models_cache["ts"] = now
+                openai_models_cache["models"] = []
+                api_key = (os.environ.get("OPENAI_API_KEY") or settings.openai_api_key or "").strip()
+                if api_key:
+                    try:
+                        from openai import OpenAI  # type: ignore
+
+                        client = OpenAI(api_key=api_key)
+                        resp = client.models.list()
+                        data = getattr(resp, "data", None) or []
+                        ids: list[str] = []
+                        for m in data:
+                            mid = getattr(m, "id", None)
+                            if not isinstance(mid, str) or not mid.strip():
+                                continue
+                            mid = mid.strip()
+                            # Keep LLM-ish models; drop embeddings/audio/moderation/image models.
+                            if not (mid.startswith("gpt-") or mid.startswith("o")):
+                                continue
+                            if mid.startswith(("tts-", "whisper-", "text-embedding-", "omni-moderation", "gpt-4o-mini-tts")):
+                                continue
+                            ids.append(mid)
+                        openai_models_cache["models"] = sorted(set(ids))
+                    except Exception:
+                        # Ignore fetch failures; fall back to the curated list.
+                        openai_models_cache["models"] = []
+            dynamic_models = list(openai_models_cache.get("models") or [])
+        except Exception:
+            dynamic_models = []
+
+        openai_models = sorted(set(ui_options.get("openai_models", []) + list(pricing.keys()) + dynamic_models))
         return {
             "openai_models": openai_models,
             "openai_pricing": {k: {"input_per_1m": v.input_per_1m, "output_per_1m": v.output_per_1m} for k, v in pricing.items()},

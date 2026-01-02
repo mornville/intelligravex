@@ -19,7 +19,7 @@ export default function BotsPage() {
 
   const [newBot, setNewBot] = useState({
     name: '',
-    openai_model: 'gpt-4o',
+    openai_model: 'o4-mini',
     web_search_model: 'gpt-4o-mini',
     system_prompt: defaultPrompt,
     language: 'en',
