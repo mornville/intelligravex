@@ -180,6 +180,13 @@
           showError(String(msg.error || 'Unknown error'))
           return
         }
+        if (msg.type === 'interim') {
+          var t = String(msg.text || '').trim()
+          if (!t) return
+          draft = null
+          addMsg('assistant', t)
+          return
+        }
         if (msg.type === 'text_delta') {
           var d = String(msg.delta || '')
           if (!d) return
@@ -273,4 +280,3 @@
     window.IntelligravexVoiceBot.autoInit()
   } catch {}
 })()
-

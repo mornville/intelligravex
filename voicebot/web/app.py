@@ -2540,6 +2540,12 @@ def create_app() -> FastAPI:
     async def _public_send_done(ws: WebSocket, *, req_id: str, text: str, metrics: dict) -> None:
         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": text, "metrics": metrics})
 
+    async def _public_send_interim(ws: WebSocket, *, req_id: str, kind: str, text: str) -> None:
+        t = (text or "").strip()
+        if not t:
+            return
+        await _ws_send_json(ws, {"type": "interim", "req_id": req_id, "kind": kind, "text": t})
+
     async def _public_send_greeting(
         *,
         ws: WebSocket,
@@ -2794,12 +2800,14 @@ def create_app() -> FastAPI:
                                 )
 
                                 next_reply = str(tool_args.get("next_reply") or "").strip()
+                                wait_reply = str(tool_args.get("wait_reply") or "").strip()
                                 raw_args = tool_args.get("args")
                                 if isinstance(raw_args, dict):
                                     patch = dict(raw_args)
                                 else:
                                     patch = dict(tool_args)
                                     patch.pop("next_reply", None)
+                                    patch.pop("wait_reply", None)
                                     patch.pop("args", None)
 
                                 tool_cfg: IntegrationTool | None = None
@@ -2808,7 +2816,9 @@ def create_app() -> FastAPI:
                                     new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                     tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                 elif tool_name == "web_search":
-                                    scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
+                                    scrapingbee_key = (
+                                        settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or ""
+                                    ).strip()
                                     search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
                                     vector_queries = str(
                                         patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
@@ -2824,19 +2834,49 @@ def create_app() -> FastAPI:
                                         max_results_val = int(max_results_arg) if max_results_arg is not None else None
                                     except Exception:
                                         max_results_val = None
+
+                                    progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                    def _progress(s: str) -> None:
+                                        try:
+                                            progress_q.put_nowait(str(s))
+                                        except Exception:
+                                            return
+
                                     try:
                                         ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                        summary_text = await asyncio.to_thread(
-                                            run_web_search,
-                                            search_term=search_term,
-                                            vector_search_queries=vector_queries,
-                                            why=why,
-                                            openai_api_key=api_key or "",
-                                            scrapingbee_api_key=scrapingbee_key,
-                                            model=ws_model,
-                                            top_k=top_k_val,
-                                            max_results=max_results_val,
+                                        task = asyncio.create_task(
+                                            asyncio.to_thread(
+                                                run_web_search,
+                                                search_term=search_term,
+                                                vector_search_queries=vector_queries,
+                                                why=why,
+                                                openai_api_key=api_key or "",
+                                                scrapingbee_api_key=scrapingbee_key,
+                                                model=ws_model,
+                                                progress_fn=_progress,
+                                                top_k=top_k_val,
+                                                max_results=max_results_val,
+                                            )
                                         )
+                                        if wait_reply:
+                                            await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                        last_wait = time.time()
+                                        while not task.done():
+                                            try:
+                                                while True:
+                                                    p = progress_q.get_nowait()
+                                                    if p:
+                                                        await _public_send_interim(
+                                                            ws, req_id=req_id, kind="progress", text=p
+                                                        )
+                                            except queue.Empty:
+                                                pass
+                                            if wait_reply and (time.time() - last_wait) >= 7.0:
+                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                                last_wait = time.time()
+                                            await asyncio.sleep(0.2)
+                                        summary_text = await task
                                         tool_result = str(summary_text or "").strip()
                                     except Exception as exc:
                                         tool_result = f"WEB_SEARCH_ERROR: {exc}"
@@ -2848,9 +2888,21 @@ def create_app() -> FastAPI:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:
                                         raise RuntimeError(f"Unknown tool: {tool_name}")
-                                    response_json = _execute_integration_http(
-                                        tool=tool_cfg, meta=meta_current, tool_args=patch
+                                    task = asyncio.create_task(
+                                        asyncio.to_thread(
+                                            _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                        )
                                     )
+                                    if wait_reply:
+                                        await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                    while True:
+                                        try:
+                                            response_json = await asyncio.wait_for(task, timeout=7.0)
+                                            break
+                                        except asyncio.TimeoutError:
+                                            if wait_reply:
+                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                            continue
                                     if isinstance(response_json, dict) and "__http_error__" in response_json:
                                         err = response_json["__http_error__"] or {}
                                         tool_result = {"ok": False, "error": err}
@@ -2925,7 +2977,9 @@ def create_app() -> FastAPI:
                                 rendered_reply = final
 
                             if rendered_reply and not followup_streamed:
-                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
+                                await _ws_send_json(
+                                    ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply}
+                                )
 
                         in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
                             bot=bot, history=history, assistant_text=rendered_reply
