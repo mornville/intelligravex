@@ -268,6 +268,20 @@ export default function BotDetailPage() {
                 </select>
               </div>
               <div className="formRow">
+                <label>Web search model</label>
+                <select
+                  value={bot.web_search_model || bot.openai_model}
+                  onChange={(e) => void save({ web_search_model: e.target.value })}
+                >
+                  {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
+                    <option value={m} key={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <div className="muted">Used for web_search filtering + summarization.</div>
+              </div>
+              <div className="formRow">
                 <label>OpenAI key</label>
                 <select
                   value={bot.openai_key_id || ''}

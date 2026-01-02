@@ -284,6 +284,7 @@ class ClientKeyCreateRequest(BaseModel):
 class BotCreateRequest(BaseModel):
     name: str
     openai_model: str = "gpt-4o"
+    web_search_model: Optional[str] = None
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
@@ -307,6 +308,7 @@ class BotCreateRequest(BaseModel):
 class BotUpdateRequest(BaseModel):
     name: Optional[str] = None
     openai_model: Optional[str] = None
+    web_search_model: Optional[str] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     tts_language: Optional[str] = None
@@ -613,7 +615,10 @@ def create_app() -> FastAPI:
 
     def _system_tools_defs() -> list[dict[str, Any]]:
         # Tools that are always available for every bot.
-        return [_set_metadata_tool_def(), _set_variable_tool_def(), _web_search_tool_def()]
+        #
+        # Note: `set_variable` is kept as a runtime alias for backwards-compat, but we only expose
+        # `set_metadata` to the model to avoid duplicate tools that do the same thing.
+        return [_set_metadata_tool_def(), _web_search_tool_def()]
 
     def _system_tools_public_list() -> list[dict[str, Any]]:
         # UI-friendly list of built-in tools (do not include full JSON Schema).
@@ -1429,25 +1434,33 @@ def create_app() -> FastAPI:
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
                                         scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
-                                        complete_url = str(patch.get("complete_url") or patch.get("url") or "").strip()
+                                        search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
                                         vector_queries = str(
                                             patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
                                         ).strip()
-                                        what_to_search = str(patch.get("what_to_search") or "").strip()
+                                        why = str(patch.get("why") or patch.get("reason") or "").strip()
                                         top_k_arg = patch.get("top_k")
+                                        max_results_arg = patch.get("max_results")
                                         try:
                                             top_k_val = int(top_k_arg) if top_k_arg is not None else None
                                         except Exception:
                                             top_k_val = None
                                         try:
+                                            max_results_val = int(max_results_arg) if max_results_arg is not None else None
+                                        except Exception:
+                                            max_results_val = None
+                                        try:
+                                            ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
                                             tool_result = await asyncio.to_thread(
                                                 run_web_search,
-                                                complete_url=complete_url,
+                                                search_term=search_term,
                                                 vector_search_queries=vector_queries,
+                                                why=why,
                                                 openai_api_key=api_key or "",
                                                 scrapingbee_api_key=scrapingbee_key,
-                                                what_to_search=what_to_search,
+                                                model=ws_model,
                                                 top_k=top_k_val,
+                                                max_results=max_results_val,
                                             )
                                         except Exception as exc:
                                             tool_result = {"ok": False, "error": {"message": str(exc)}}
@@ -2032,25 +2045,33 @@ def create_app() -> FastAPI:
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
                                         scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
-                                        complete_url = str(patch.get("complete_url") or patch.get("url") or "").strip()
+                                        search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
                                         vector_queries = str(
                                             patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
                                         ).strip()
-                                        what_to_search = str(patch.get("what_to_search") or "").strip()
+                                        why = str(patch.get("why") or patch.get("reason") or "").strip()
                                         top_k_arg = patch.get("top_k")
+                                        max_results_arg = patch.get("max_results")
                                         try:
                                             top_k_val = int(top_k_arg) if top_k_arg is not None else None
                                         except Exception:
                                             top_k_val = None
                                         try:
+                                            max_results_val = int(max_results_arg) if max_results_arg is not None else None
+                                        except Exception:
+                                            max_results_val = None
+                                        try:
+                                            ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
                                             tool_result = await asyncio.to_thread(
                                                 run_web_search,
-                                                complete_url=complete_url,
+                                                search_term=search_term,
                                                 vector_search_queries=vector_queries,
+                                                why=why,
                                                 openai_api_key=api_key or "",
                                                 scrapingbee_api_key=scrapingbee_key,
-                                                what_to_search=what_to_search,
+                                                model=ws_model,
                                                 top_k=top_k_val,
+                                                max_results=max_results_val,
                                             )
                                         except Exception as exc:
                                             tool_result = {"ok": False, "error": {"message": str(exc)}}
@@ -2578,25 +2599,33 @@ def create_app() -> FastAPI:
                                     tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                 elif tool_name == "web_search":
                                     scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
-                                    complete_url = str(patch.get("complete_url") or patch.get("url") or "").strip()
+                                    search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
                                     vector_queries = str(
                                         patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
                                     ).strip()
-                                    what_to_search = str(patch.get("what_to_search") or "").strip()
+                                    why = str(patch.get("why") or patch.get("reason") or "").strip()
                                     top_k_arg = patch.get("top_k")
+                                    max_results_arg = patch.get("max_results")
                                     try:
                                         top_k_val = int(top_k_arg) if top_k_arg is not None else None
                                     except Exception:
                                         top_k_val = None
                                     try:
+                                        max_results_val = int(max_results_arg) if max_results_arg is not None else None
+                                    except Exception:
+                                        max_results_val = None
+                                    try:
+                                        ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
                                         tool_result = await asyncio.to_thread(
                                             run_web_search,
-                                            complete_url=complete_url,
+                                            search_term=search_term,
                                             vector_search_queries=vector_queries,
+                                            why=why,
                                             openai_api_key=api_key or "",
                                             scrapingbee_api_key=scrapingbee_key,
-                                            what_to_search=what_to_search,
+                                            model=ws_model,
                                             top_k=top_k_val,
+                                            max_results=max_results_val,
                                         )
                                     except Exception as exc:
                                         tool_result = {"ok": False, "error": {"message": str(exc)}}
@@ -2769,6 +2798,7 @@ def create_app() -> FastAPI:
             "id": str(bot.id),
             "name": bot.name,
             "openai_model": bot.openai_model,
+            "web_search_model": getattr(bot, "web_search_model", bot.openai_model),
             "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
             "language": bot.language,
@@ -2839,6 +2869,7 @@ def create_app() -> FastAPI:
         bot = Bot(
             name=payload.name,
             openai_model=payload.openai_model,
+            web_search_model=(payload.web_search_model or payload.openai_model).strip() or payload.openai_model,
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,
@@ -2872,7 +2903,7 @@ def create_app() -> FastAPI:
         for k, v in payload.model_dump(exclude_unset=True).items():
             if k in ("speaker_id", "speaker_wav"):
                 patch[k] = (v or "").strip() or None
-            elif k in ("tts_vendor", "openai_tts_model", "openai_tts_voice"):
+            elif k in ("tts_vendor", "openai_tts_model", "openai_tts_voice", "web_search_model"):
                 patch[k] = (v or "").strip()
             elif k == "openai_tts_speed":
                 patch[k] = float(v) if v is not None else 1.0

@@ -12,8 +12,8 @@ def set_metadata_tool_def() -> dict:
         "type": "function",
         "name": "set_metadata",
         "description": (
-            "Set or update conversation metadata as key/value pairs. "
-            "Include a 'next_reply' string to say to the user after updating metadata."
+            "Set or update conversation variables/metadata as key/value pairs. "
+            "Include a 'next_reply' string to say to the user after updating variables."
         ),
         "parameters": {
             "type": "object",

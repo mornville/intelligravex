@@ -20,6 +20,7 @@ export default function BotsPage() {
   const [newBot, setNewBot] = useState({
     name: '',
     openai_model: 'gpt-4o',
+    web_search_model: 'gpt-4o-mini',
     system_prompt: defaultPrompt,
     language: 'en',
     tts_language: 'en',
@@ -53,6 +54,9 @@ export default function BotsPage() {
       setNewBot((p) => ({
         ...p,
         openai_model: o.openai_models.includes(p.openai_model) ? p.openai_model : o.openai_models[0] || p.openai_model,
+        web_search_model: o.openai_models.includes(p.web_search_model)
+          ? p.web_search_model
+          : o.openai_models[0] || p.web_search_model,
       }))
     } catch (e: any) {
       setErr(String(e?.message || e))
@@ -129,6 +133,20 @@ export default function BotsPage() {
                 </option>
               ))}
             </select>
+          </div>
+          <div className="formRow">
+            <label>Web search model</label>
+            <select
+              value={newBot.web_search_model}
+              onChange={(e) => setNewBot((p) => ({ ...p, web_search_model: e.target.value }))}
+            >
+              {(options?.openai_models || ['gpt-4o-mini']).map((m) => (
+                <option value={m} key={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            <div className="muted">Used for web_search filtering + summarization.</div>
           </div>
           <div className="formRow">
             <label>System prompt</label>

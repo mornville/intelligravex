@@ -4,6 +4,7 @@ export type Bot = {
   id: UUID
   name: string
   openai_model: string
+  web_search_model: string
   openai_key_id: UUID | null
   system_prompt: string
   language: string
