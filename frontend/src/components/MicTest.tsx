@@ -156,16 +156,18 @@ export default function MicTest({ botId }: { botId: string }) {
         return
       }
       if (msg.type === 'tool_call') {
+        const details = normalizeToolEventForDisplay(msg)
         setItems((prev) => [
           ...prev,
-          { id: crypto.randomUUID(), role: 'tool', text: `[tool_call] ${msg.name}`, details: msg },
+          { id: crypto.randomUUID(), role: 'tool', text: `[tool_call] ${msg.name}`, details },
         ])
         return
       }
       if (msg.type === 'tool_result') {
+        const details = normalizeToolEventForDisplay(msg)
         setItems((prev) => [
           ...prev,
-          { id: crypto.randomUUID(), role: 'tool', text: `[tool_result] ${msg.name}`, details: msg },
+          { id: crypto.randomUUID(), role: 'tool', text: `[tool_result] ${msg.name}`, details },
         ])
         return
       }
@@ -414,4 +416,22 @@ export default function MicTest({ botId }: { botId: string }) {
       </div>
     </section>
   )
+}
+
+function normalizeToolEventForDisplay(msg: any): any {
+  if (!msg || typeof msg !== 'object') return msg
+  const out: any = { ...msg }
+  // The server sends `arguments_json` as a JSON string. Parse it for readability so the
+  // UI renders nested JSON instead of an escaped string.
+  if (typeof out.arguments_json === 'string') {
+    const s = out.arguments_json.trim()
+    if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+      try {
+        out.arguments_json = JSON.parse(s)
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return out
 }
