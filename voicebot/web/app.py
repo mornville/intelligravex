@@ -1510,6 +1510,11 @@ def create_app() -> FastAPI:
                                     if tool_failed:
                                         break
 
+                                    if tool_name == "web_search":
+                                        rendered_reply = str(tool_result.get("text") or "").strip()
+                                        needs_followup_llm = False
+                                        break
+
                                     candidate = ""
                                     if tool_name != "set_metadata" and tool_cfg:
                                         static_text = ""
@@ -2121,6 +2126,11 @@ def create_app() -> FastAPI:
                                     if tool_failed:
                                         break
 
+                                    if tool_name == "web_search":
+                                        rendered_reply = str(tool_result.get("text") or "").strip()
+                                        needs_followup_llm = False
+                                        break
+
                                     if tool_name != "set_metadata" and tool_cfg:
                                         static_text = ""
                                         if (tool_cfg.static_reply_template or "").strip():
@@ -2666,6 +2676,11 @@ def create_app() -> FastAPI:
                                 meta_current = tool_result.get("metadata") or meta_current
 
                                 if not tool_result.get("ok", True):
+                                    break
+
+                                if tool_name == "web_search":
+                                    final = str(tool_result.get("text") or "").strip()
+                                    needs_followup_llm = False
                                     break
 
                                 if tool_name != "set_metadata" and tool_cfg:

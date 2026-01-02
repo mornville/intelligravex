@@ -564,12 +564,8 @@ def web_search(
 
     return {
         "ok": True,
-        "search_term": st,
-        "why": why_text,
-        "model": chosen_model,
-        "queries": queries,
-        "top_k": k,
-        "google": {"url": google_url, "candidates": candidates, "selected_urls": picked},
-        "pages": per_page,
-        "summary": summary,
+        # Only return the final synthesized answer so the main chat LLM does not ingest
+        # intermediate search/vector details from tool history.
+        "text": summary,
+        "sources": picked,
     }
