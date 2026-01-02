@@ -67,6 +67,7 @@ from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.text import SentenceChunker
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
+from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
 from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
 
@@ -607,6 +608,9 @@ def create_app() -> FastAPI:
     def _set_variable_tool_def() -> dict:
         return set_variable_tool_def()
 
+    def _web_search_tool_def() -> dict:
+        return web_search_tool_def()
+
     def _integration_tool_def(t: IntegrationTool) -> dict[str, Any]:
         required_args = _parse_required_args_json(getattr(t, "args_required_json", "[]"))
         explicit_schema = _parse_parameters_schema_json(getattr(t, "parameters_schema_json", ""))
@@ -645,7 +649,11 @@ def create_app() -> FastAPI:
         }
 
     def _build_tools_for_bot(session: Session, bot_id: UUID) -> list[dict[str, Any]]:
-        tools: list[dict[str, Any]] = [_set_metadata_tool_def(), _set_variable_tool_def()]
+        tools: list[dict[str, Any]] = [
+            _set_metadata_tool_def(),
+            _set_variable_tool_def(),
+            _web_search_tool_def(),
+        ]
         for t in list_integration_tools(session, bot_id=bot_id):
             try:
                 tools.append(_integration_tool_def(t))
@@ -1407,6 +1415,35 @@ def create_app() -> FastAPI:
                                     if tool_name == "set_metadata":
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+                                    elif tool_name == "web_search":
+                                        scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
+                                        complete_url = str(patch.get("complete_url") or patch.get("url") or "").strip()
+                                        vector_queries = str(
+                                            patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
+                                        ).strip()
+                                        what_to_search = str(patch.get("what_to_search") or "").strip()
+                                        top_k_arg = patch.get("top_k")
+                                        try:
+                                            top_k_val = int(top_k_arg) if top_k_arg is not None else None
+                                        except Exception:
+                                            top_k_val = None
+                                        try:
+                                            tool_result = await asyncio.to_thread(
+                                                run_web_search,
+                                                complete_url=complete_url,
+                                                vector_search_queries=vector_queries,
+                                                openai_api_key=api_key or "",
+                                                scrapingbee_api_key=scrapingbee_key,
+                                                what_to_search=what_to_search,
+                                                top_k=top_k_val,
+                                            )
+                                        except Exception as exc:
+                                            tool_result = {"ok": False, "error": {"message": str(exc)}}
+                                        if not bool(tool_result.get("ok", True)):
+                                            tool_failed = True
+                                        if tool_failed or not next_reply:
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
                                     else:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
@@ -1981,6 +2018,35 @@ def create_app() -> FastAPI:
                                     if tool_name == "set_metadata":
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+                                    elif tool_name == "web_search":
+                                        scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
+                                        complete_url = str(patch.get("complete_url") or patch.get("url") or "").strip()
+                                        vector_queries = str(
+                                            patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
+                                        ).strip()
+                                        what_to_search = str(patch.get("what_to_search") or "").strip()
+                                        top_k_arg = patch.get("top_k")
+                                        try:
+                                            top_k_val = int(top_k_arg) if top_k_arg is not None else None
+                                        except Exception:
+                                            top_k_val = None
+                                        try:
+                                            tool_result = await asyncio.to_thread(
+                                                run_web_search,
+                                                complete_url=complete_url,
+                                                vector_search_queries=vector_queries,
+                                                openai_api_key=api_key or "",
+                                                scrapingbee_api_key=scrapingbee_key,
+                                                what_to_search=what_to_search,
+                                                top_k=top_k_val,
+                                            )
+                                        except Exception as exc:
+                                            tool_result = {"ok": False, "error": {"message": str(exc)}}
+                                        if not bool(tool_result.get("ok", True)):
+                                            tool_failed = True
+                                        if tool_failed or not next_reply:
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
                                     else:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
@@ -2498,6 +2564,35 @@ def create_app() -> FastAPI:
                                 if tool_name == "set_metadata":
                                     new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                     tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+                                elif tool_name == "web_search":
+                                    scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
+                                    complete_url = str(patch.get("complete_url") or patch.get("url") or "").strip()
+                                    vector_queries = str(
+                                        patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
+                                    ).strip()
+                                    what_to_search = str(patch.get("what_to_search") or "").strip()
+                                    top_k_arg = patch.get("top_k")
+                                    try:
+                                        top_k_val = int(top_k_arg) if top_k_arg is not None else None
+                                    except Exception:
+                                        top_k_val = None
+                                    try:
+                                        tool_result = await asyncio.to_thread(
+                                            run_web_search,
+                                            complete_url=complete_url,
+                                            vector_search_queries=vector_queries,
+                                            openai_api_key=api_key or "",
+                                            scrapingbee_api_key=scrapingbee_key,
+                                            what_to_search=what_to_search,
+                                            top_k=top_k_val,
+                                        )
+                                    except Exception as exc:
+                                        tool_result = {"ok": False, "error": {"message": str(exc)}}
+                                    if not bool(tool_result.get("ok", True)):
+                                        tool_failed = True
+                                    if tool_failed or not next_reply:
+                                        needs_followup_llm = True
+                                        final = ""
                                 else:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:

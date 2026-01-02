@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     openai_tts_voice: str = "alloy"
     openai_tts_speed: float = 1.0
 
+    # Web scraping (for system tool: web_search)
+    scrapingbee_api_key: Optional[str] = Field(default=None, alias="SCRAPINGBEE_API_KEY")
+
     @field_validator("input_device", "output_device", "speaker_wav", "speaker_id", mode="before")
     @classmethod
     def _empty_str_to_none(cls, v):
