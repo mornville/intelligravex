@@ -284,7 +284,7 @@ class ClientKeyCreateRequest(BaseModel):
 
 class BotCreateRequest(BaseModel):
     name: str
-    openai_model: str = "gpt-4o"
+    openai_model: str = "o4-mini"
     web_search_model: Optional[str] = None
     system_prompt: str
     language: str = "en"

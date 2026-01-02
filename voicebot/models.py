@@ -21,7 +21,7 @@ class Bot(SQLModel, table=True):
     name: str = Field(index=True)
 
     # LLM
-    openai_model: str = "gpt-4o"
+    openai_model: str = "o4-mini"
     web_search_model: str = "gpt-4o-mini"
     system_prompt: str = "You are a fast, helpful voice assistant. Keep answers concise unless asked."
     openai_key_id: Optional[UUID] = Field(default=None, foreign_key="apikey.id")

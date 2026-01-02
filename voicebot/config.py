@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VOICEBOT_", env_file=".env", extra="ignore")
 
     # OpenAI
-    openai_model: str = Field(default="gpt-4o", alias="OPENAI_MODEL")
+    openai_model: str = Field(default="o4-mini", alias="OPENAI_MODEL")
     openai_api_key: Optional[str] = None  # optional override (otherwise uses env OPENAI_API_KEY)
     system_prompt: str = Field(
         default="You are a fast, helpful voice assistant. Keep answers concise unless asked."
