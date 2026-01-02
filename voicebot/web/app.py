@@ -364,16 +364,24 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Intelligravex VoiceBot Studio")
     cors_raw = (os.environ.get("VOICEBOT_CORS_ORIGINS") or "").strip()
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()] if cors_raw else []
+    cors_origin_regex: str | None = None
     if not cors_origins:
+        # Dev-friendly defaults; override via VOICEBOT_CORS_ORIGINS for production.
         cors_origins = [
             "http://localhost:5173",
             "http://127.0.0.1:5173",
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+            "http://ashutosh-jha-macbook-pro:3001",
         ]
+        # Also allow other dev ports on common local hostnames.
+        cors_origin_regex = r"^https?://(localhost|127\.0\.0\.1|ashutosh-jha-macbook-pro)(:\d+)?$"
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
+        allow_origin_regex=cors_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

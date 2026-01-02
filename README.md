@@ -118,8 +118,9 @@ Notes:
   - `GET /api/conversations` (paginated), `GET /api/conversations/<uuid>`
   - `GET/POST/PUT/DELETE /api/bots/<uuid>/tools` (integration tools)
   - `WS /ws/bots/<uuid>/talk` (mic audio + streamed status/audio)
-- Dev CORS is enabled for `localhost:5173` by default. Override with:
-  - `VOICEBOT_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`
+- Dev CORS is enabled for local hosts/ports by default (including `localhost:5173`).
+  - Override with `VOICEBOT_CORS_ORIGINS` (comma-separated), e.g.:
+  - `VOICEBOT_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://ashutosh-jha-macbook-pro:3001`
   - React can also be pointed at a different backend using `VITE_BACKEND_URL` in `frontend/.env`.
 
 ## Variables (Metadata Templating)

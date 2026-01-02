@@ -1,4 +1,12 @@
-const DEFAULT_BACKEND = 'http://127.0.0.1:8000'
+const DEFAULT_BACKEND = (() => {
+  try {
+    const proto = window.location.protocol || 'http:'
+    const host = window.location.hostname || '127.0.0.1'
+    return `${proto}//${host}:8000`
+  } catch {
+    return 'http://127.0.0.1:8000'
+  }
+})()
 
 export const BACKEND_URL: string = (import.meta as any).env?.VITE_BACKEND_URL || DEFAULT_BACKEND
 
@@ -49,4 +57,3 @@ async function safeErr(res: Response): Promise<string> {
   }
   return `HTTP ${res.status}`
 }
-
