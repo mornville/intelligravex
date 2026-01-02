@@ -668,10 +668,11 @@ def create_app() -> FastAPI:
                 if not isinstance(k, str) or not isinstance(v, dict):
                     continue
                 try:
-                    out[k] = ModelPrice(
-                        input_per_1m=float(v.get("input_per_1m")),
-                        output_per_1m=float(v.get("output_per_1m")),
-                    )
+                    input_per_1m = v.get("input_per_1m")
+                    output_per_1m = v.get("output_per_1m")
+                    if input_per_1m is None or output_per_1m is None:
+                        continue
+                    out[k] = ModelPrice(input_per_1m=float(input_per_1m), output_per_1m=float(output_per_1m))
                 except Exception:
                     continue
         return out
@@ -993,7 +994,7 @@ def create_app() -> FastAPI:
         _record_llm_debug_payload(conversation_id=conversation_id, payload=payload, phase=phase)
 
     @app.websocket("/ws/bots/{bot_id}/talk")
-    async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:
+    async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[reportGeneralTypeIssues]
         await ws.accept()
         loop = asyncio.get_running_loop()
 
