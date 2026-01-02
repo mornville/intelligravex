@@ -369,22 +369,22 @@ def web_search(
     top_k: Optional[int] = None,
     max_results: Optional[int] = None,
     config: Optional[WebSearchConfig] = None,
-) -> dict[str, Any]:
+) -> str:
     """
     Fetches a page via ScrapingBee, cleans it to text, embeds chunks, and runs vector search.
-    Returns a JSON-serializable dict suitable as a tool result.
+    Returns the final summary text.
     """
     cfg = config or WebSearchConfig()
     st = (search_term or "").strip()
     if not st:
-        return {"ok": False, "error": {"message": "search_term is required"}}
+        raise ValueError("search_term is required")
     why_text = (why or "").strip()
     if not why_text:
-        return {"ok": False, "error": {"message": "why is required"}}
+        raise ValueError("why is required")
 
     queries = _parse_queries(vector_search_queries)
     if not queries:
-        return {"ok": False, "error": {"message": "vector_search_queries must be a comma-separated non-empty list"}}
+        raise ValueError("vector_search_queries must be a comma-separated non-empty list")
     queries = queries[:9]
 
     k = int(top_k if top_k is not None else cfg.top_k)
@@ -393,12 +393,12 @@ def web_search(
     max_r = max(3, min(max_r, 20))
 
     if not scrapingbee_api_key.strip():
-        return {"ok": False, "error": {"message": "Missing ScrapingBee API key (set SCRAPINGBEE_API_KEY)"}}
+        raise RuntimeError("Missing ScrapingBee API key (set SCRAPINGBEE_API_KEY)")
     if not openai_api_key.strip():
-        return {"ok": False, "error": {"message": "Missing OpenAI API key"}}
+        raise RuntimeError("Missing OpenAI API key")
     chosen_model = (model or "").strip()
     if not chosen_model:
-        return {"ok": False, "error": {"message": "Missing model for filtering/summarization"}}
+        raise RuntimeError("Missing model for filtering/summarization")
 
     # 1) Google search via ScrapingBee (structured API).
     candidates, google_err = _google_search_via_scrapingbee(
@@ -420,10 +420,10 @@ def web_search(
             extra_params={"custom_google": "true"},
         )
         if not google_html:
-            return {"ok": False, "error": {"message": "Google search failed", **google_err, "fallback": html_err}}
+            raise RuntimeError(f"Google search failed: {google_err}; fallback: {html_err}")
         candidates = _parse_google_results(google_html, max_results=max_r)
     if not candidates:
-        return {"ok": False, "error": {"message": "No Google results parsed"}}
+        raise RuntimeError("No Google results parsed")
 
     # 2) LLM selects 1-4 results based on `why`.
     filter_prompt = (
@@ -562,10 +562,4 @@ def web_search(
         messages=[{"role": "system", "content": "Be concise and cite sources."}, {"role": "user", "content": summarize_prompt}],
     )
 
-    return {
-        "ok": True,
-        # Only return the final synthesized answer so the main chat LLM does not ingest
-        # intermediate search/vector details from tool history.
-        "text": summary,
-        "sources": picked,
-    }
+    return summary.strip()

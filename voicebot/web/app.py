@@ -1451,7 +1451,7 @@ def create_app() -> FastAPI:
                                             max_results_val = None
                                         try:
                                             ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                            tool_result = await asyncio.to_thread(
+                                            summary_text = await asyncio.to_thread(
                                                 run_web_search,
                                                 search_term=search_term,
                                                 vector_search_queries=vector_queries,
@@ -1462,9 +1462,9 @@ def create_app() -> FastAPI:
                                                 top_k=top_k_val,
                                                 max_results=max_results_val,
                                             )
+                                            tool_result = str(summary_text or "").strip()
                                         except Exception as exc:
-                                            tool_result = {"ok": False, "error": {"message": str(exc)}}
-                                        if not bool(tool_result.get("ok", True)):
+                                            tool_result = f"WEB_SEARCH_ERROR: {exc}"
                                             tool_failed = True
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
@@ -1498,7 +1498,8 @@ def create_app() -> FastAPI:
                                         role="tool",
                                         content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
                                     )
-                                    meta_current = tool_result.get("metadata") or meta_current
+                                    if isinstance(tool_result, dict):
+                                        meta_current = tool_result.get("metadata") or meta_current
 
                                     await _ws_send_json(
                                         ws,
@@ -1508,11 +1509,6 @@ def create_app() -> FastAPI:
                                     if tool_error:
                                         break
                                     if tool_failed:
-                                        break
-
-                                    if tool_name == "web_search":
-                                        rendered_reply = str(tool_result.get("text") or "").strip()
-                                        needs_followup_llm = False
                                         break
 
                                     candidate = ""
@@ -2067,7 +2063,7 @@ def create_app() -> FastAPI:
                                             max_results_val = None
                                         try:
                                             ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                            tool_result = await asyncio.to_thread(
+                                            summary_text = await asyncio.to_thread(
                                                 run_web_search,
                                                 search_term=search_term,
                                                 vector_search_queries=vector_queries,
@@ -2078,9 +2074,9 @@ def create_app() -> FastAPI:
                                                 top_k=top_k_val,
                                                 max_results=max_results_val,
                                             )
+                                            tool_result = str(summary_text or "").strip()
                                         except Exception as exc:
-                                            tool_result = {"ok": False, "error": {"message": str(exc)}}
-                                        if not bool(tool_result.get("ok", True)):
+                                            tool_result = f"WEB_SEARCH_ERROR: {exc}"
                                             tool_failed = True
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
@@ -2114,7 +2110,8 @@ def create_app() -> FastAPI:
                                         role="tool",
                                         content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
                                     )
-                                    meta_current = tool_result.get("metadata") or meta_current
+                                    if isinstance(tool_result, dict):
+                                        meta_current = tool_result.get("metadata") or meta_current
 
                                     await _ws_send_json(
                                         ws,
@@ -2124,11 +2121,6 @@ def create_app() -> FastAPI:
                                     if tool_error:
                                         break
                                     if tool_failed:
-                                        break
-
-                                    if tool_name == "web_search":
-                                        rendered_reply = str(tool_result.get("text") or "").strip()
-                                        needs_followup_llm = False
                                         break
 
                                     if tool_name != "set_metadata" and tool_cfg:
@@ -2626,7 +2618,7 @@ def create_app() -> FastAPI:
                                         max_results_val = None
                                     try:
                                         ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                        tool_result = await asyncio.to_thread(
+                                        summary_text = await asyncio.to_thread(
                                             run_web_search,
                                             search_term=search_term,
                                             vector_search_queries=vector_queries,
@@ -2637,9 +2629,9 @@ def create_app() -> FastAPI:
                                             top_k=top_k_val,
                                             max_results=max_results_val,
                                         )
+                                        tool_result = str(summary_text or "").strip()
                                     except Exception as exc:
-                                        tool_result = {"ok": False, "error": {"message": str(exc)}}
-                                    if not bool(tool_result.get("ok", True)):
+                                        tool_result = f"WEB_SEARCH_ERROR: {exc}"
                                         tool_failed = True
                                     if tool_failed or not next_reply:
                                         needs_followup_llm = True
@@ -2673,14 +2665,10 @@ def create_app() -> FastAPI:
                                     role="tool",
                                     content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
                                 )
-                                meta_current = tool_result.get("metadata") or meta_current
+                                if isinstance(tool_result, dict):
+                                    meta_current = tool_result.get("metadata") or meta_current
 
-                                if not tool_result.get("ok", True):
-                                    break
-
-                                if tool_name == "web_search":
-                                    final = str(tool_result.get("text") or "").strip()
-                                    needs_followup_llm = False
+                                if tool_failed:
                                     break
 
                                 if tool_name != "set_metadata" and tool_cfg:
