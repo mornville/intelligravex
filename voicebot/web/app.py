@@ -1463,37 +1463,6 @@ def create_app() -> FastAPI:
                                     )
                                 except Exception:
                                     return
-                            tts_busy_until: float = 0.0
-
-                            async def _send_interim(text: str, *, kind: str) -> None:
-                                nonlocal tts_busy_until
-                                t = (text or "").strip()
-                                if not t:
-                                    return
-                                await _ws_send_json(
-                                    ws,
-                                    {"type": "interim", "req_id": req_id, "kind": kind, "text": t},
-                                )
-                                if not speak:
-                                    return
-                                now = time.time()
-                                if now < tts_busy_until:
-                                    await asyncio.sleep(tts_busy_until - now)
-                                status(req_id, "tts")
-                                try:
-                                    wav, sr = await asyncio.to_thread(tts_synth, t)
-                                    tts_busy_until = time.time() + _estimate_wav_seconds(wav, sr) + 0.15
-                                    await _ws_send_json(
-                                        ws,
-                                        {
-                                            "type": "audio_wav",
-                                            "req_id": req_id,
-                                            "wav_base64": base64.b64encode(wav).decode(),
-                                            "sr": sr,
-                                        },
-                                    )
-                                except Exception:
-                                    return
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
@@ -2156,6 +2125,37 @@ def create_app() -> FastAPI:
                             tool_failed = False
                             followup_streamed = False
                             followup_persisted = False
+                            tts_busy_until: float = 0.0
+
+                            async def _send_interim(text: str, *, kind: str) -> None:
+                                nonlocal tts_busy_until
+                                t = (text or "").strip()
+                                if not t:
+                                    return
+                                await _ws_send_json(
+                                    ws,
+                                    {"type": "interim", "req_id": req_id, "kind": kind, "text": t},
+                                )
+                                if not speak:
+                                    return
+                                now = time.time()
+                                if now < tts_busy_until:
+                                    await asyncio.sleep(tts_busy_until - now)
+                                status(req_id, "tts")
+                                try:
+                                    wav, sr = await asyncio.to_thread(tts_synth, t)
+                                    tts_busy_until = time.time() + _estimate_wav_seconds(wav, sr) + 0.15
+                                    await _ws_send_json(
+                                        ws,
+                                        {
+                                            "type": "audio_wav",
+                                            "req_id": req_id,
+                                            "wav_base64": base64.b64encode(wav).decode(),
+                                            "sr": sr,
+                                        },
+                                    )
+                                except Exception:
+                                    return
 
                             with Session(engine) as session:
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
