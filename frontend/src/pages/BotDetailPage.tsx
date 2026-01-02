@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import MicTest from '../components/MicTest'
-import type { ApiKey, Bot, IntegrationTool, Options } from '../types'
+import type { ApiKey, Bot, IntegrationTool, Options, SystemTool } from '../types'
 
 type TtsMeta = { speakers: string[]; languages: string[] }
 
@@ -23,6 +23,7 @@ export default function BotDetailPage() {
   const [options, setOptions] = useState<Options | null>(null)
   const [ttsMeta, setTtsMeta] = useState<TtsMeta | null>(null)
   const [tools, setTools] = useState<IntegrationTool[]>([])
+  const [systemTools, setSystemTools] = useState<SystemTool[]>([])
   const [showToolModal, setShowToolModal] = useState(false)
   const [toolForm, setToolForm] = useState({
     id: '',
@@ -59,8 +60,9 @@ export default function BotDetailPage() {
       setBot(b)
       setKeys(k.items)
       setOptions(o)
-      const t = await apiGet<{ items: IntegrationTool[] }>(`/api/bots/${botId}/tools`)
+      const t = await apiGet<{ items: IntegrationTool[]; system_tools?: SystemTool[] }>(`/api/bots/${botId}/tools`)
       setTools(t.items)
+      setSystemTools(t.system_tools || [])
     } catch (e: any) {
       setErr(String(e?.message || e))
     }
@@ -476,6 +478,33 @@ export default function BotDetailPage() {
                   />
                 </div>
               </div>
+
+              {systemTools.length ? (
+                <>
+                  <div className="cardSubTitle">System tools (default)</div>
+                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div className="muted">Built-in tools available to every bot (not editable here).</div>
+                  </div>
+                  <table className="table" style={{ marginBottom: 16 }}>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {systemTools.map((t) => (
+                        <tr key={t.name}>
+                          <td className="mono">{t.name}</td>
+                          <td className="muted" style={{ maxWidth: 520 }}>
+                            {t.description}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : null}
 
               <div className="cardSubTitle">Integrations (HTTP tools)</div>
               <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>

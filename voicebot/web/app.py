@@ -611,6 +611,22 @@ def create_app() -> FastAPI:
     def _web_search_tool_def() -> dict:
         return web_search_tool_def()
 
+    def _system_tools_defs() -> list[dict[str, Any]]:
+        # Tools that are always available for every bot.
+        return [_set_metadata_tool_def(), _set_variable_tool_def(), _web_search_tool_def()]
+
+    def _system_tools_public_list() -> list[dict[str, Any]]:
+        # UI-friendly list of built-in tools (do not include full JSON Schema).
+        out: list[dict[str, Any]] = []
+        for d in _system_tools_defs():
+            out.append(
+                {
+                    "name": str(d.get("name") or ""),
+                    "description": str(d.get("description") or ""),
+                }
+            )
+        return [x for x in out if x.get("name")]
+
     def _integration_tool_def(t: IntegrationTool) -> dict[str, Any]:
         required_args = _parse_required_args_json(getattr(t, "args_required_json", "[]"))
         explicit_schema = _parse_parameters_schema_json(getattr(t, "parameters_schema_json", ""))
@@ -649,11 +665,7 @@ def create_app() -> FastAPI:
         }
 
     def _build_tools_for_bot(session: Session, bot_id: UUID) -> list[dict[str, Any]]:
-        tools: list[dict[str, Any]] = [
-            _set_metadata_tool_def(),
-            _set_variable_tool_def(),
-            _web_search_tool_def(),
-        ]
+        tools: list[dict[str, Any]] = list(_system_tools_defs())
         for t in list_integration_tools(session, bot_id=bot_id):
             try:
                 tools.append(_integration_tool_def(t))
@@ -2878,7 +2890,7 @@ def create_app() -> FastAPI:
     def api_list_tools(bot_id: UUID, session: Session = Depends(get_session)) -> dict:
         _ = get_bot(session, bot_id)
         tools = list_integration_tools(session, bot_id=bot_id)
-        return {"items": [_tool_to_dict(t) for t in tools]}
+        return {"items": [_tool_to_dict(t) for t in tools], "system_tools": _system_tools_public_list()}
 
     @app.post("/api/bots/{bot_id}/tools")
     def api_create_tool(bot_id: UUID, payload: IntegrationToolCreateRequest, session: Session = Depends(get_session)) -> dict:
