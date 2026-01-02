@@ -65,7 +65,6 @@ from voicebot.store import (
 )
 from voicebot.tts.xtts import XTTSv2
 from voicebot.tts.openai_tts import OpenAITTS
-from voicebot.utils.text import SentenceChunker
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
@@ -1341,32 +1340,20 @@ def create_app() -> FastAPI:
                                 audio_q.put(None)
                                 return
                             try:
-                                local_chunker = SentenceChunker(
-                                    min_chars=bot.tts_chunk_min_chars, max_chars=bot.tts_chunk_max_chars
-                                )
-                                did_send_any = False
+                                parts: list[str] = []
                                 while True:
                                     d = delta_q_tts.get()
                                     if d is None:
                                         break
-                                    for chunk in local_chunker.push(d):
-                                        with metrics_lock:
-                                            if tts_start_ts is None:
-                                                tts_start_ts = time.time()
-                                        if not did_send_any:
-                                            status(req_id, "tts")
-                                            did_send_any = True
-                                        wav, sr = tts_synth(chunk)
-                                        audio_q.put((wav, sr))
-                                tail = local_chunker.flush()
-                                if tail:
+                                    if d:
+                                        parts.append(d)
+                                text_to_speak = "".join(parts).strip()
+                                if text_to_speak:
                                     with metrics_lock:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
-                                    if not did_send_any:
-                                        status(req_id, "tts")
-                                        did_send_any = True
-                                    wav, sr = tts_synth(tail)
+                                    status(req_id, "tts")
+                                    wav, sr = tts_synth(text_to_speak)
                                     audio_q.put((wav, sr))
                             except Exception as exc:
                                 error_q.put(f"TTS failed: {exc}")
@@ -1993,32 +1980,20 @@ def create_app() -> FastAPI:
                                 audio_q.put(None)
                                 return
                             try:
-                                local_chunker = SentenceChunker(
-                                    min_chars=bot.tts_chunk_min_chars, max_chars=bot.tts_chunk_max_chars
-                                )
-                                did_send_any = False
+                                parts: list[str] = []
                                 while True:
                                     d = delta_q_tts.get()
                                     if d is None:
                                         break
-                                    for chunk in local_chunker.push(d):
-                                        with metrics_lock:
-                                            if tts_start_ts is None:
-                                                tts_start_ts = time.time()
-                                        if not did_send_any:
-                                            status(req_id, "tts")
-                                            did_send_any = True
-                                        wav, sr = tts_synth(chunk)
-                                        audio_q.put((wav, sr))
-                                tail = local_chunker.flush()
-                                if tail:
+                                    if d:
+                                        parts.append(d)
+                                text_to_speak = "".join(parts).strip()
+                                if text_to_speak:
                                     with metrics_lock:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
-                                    if not did_send_any:
-                                        status(req_id, "tts")
-                                        did_send_any = True
-                                    wav, sr = tts_synth(tail)
+                                    status(req_id, "tts")
+                                    wav, sr = tts_synth(text_to_speak)
                                     audio_q.put((wav, sr))
                             except Exception as exc:
                                 error_q.put(f"TTS failed: {exc}")
@@ -3560,19 +3535,16 @@ def create_app() -> FastAPI:
                     audio_q.put(None)
                     return
                 try:
-                    local_chunker = SentenceChunker(
-                        min_chars=bot.tts_chunk_min_chars, max_chars=bot.tts_chunk_max_chars
-                    )
+                    parts: list[str] = []
                     while True:
                         d = delta_q_tts.get()
                         if d is None:
                             break
-                        for chunk in local_chunker.push(d):
-                            wav, sr = tts_synth(chunk)
-                            audio_q.put((wav, sr))
-                    tail = local_chunker.flush()
-                    if tail:
-                        wav, sr = tts_synth(tail)
+                        if d:
+                            parts.append(d)
+                    text_to_speak = "".join(parts).strip()
+                    if text_to_speak:
+                        wav, sr = tts_synth(text_to_speak)
                         audio_q.put((wav, sr))
                 finally:
                     audio_q.put(None)
@@ -3712,19 +3684,16 @@ def create_app() -> FastAPI:
                     audio_q.put(None)
                     return
                 try:
-                    local_chunker = SentenceChunker(
-                        min_chars=bot.tts_chunk_min_chars, max_chars=bot.tts_chunk_max_chars
-                    )
+                    parts: list[str] = []
                     while True:
                         d = delta_q_tts.get()
                         if d is None:
                             break
-                        for chunk in local_chunker.push(d):
-                            wav, sr = tts_synth(chunk)
-                            audio_q.put((wav, sr))
-                    tail = local_chunker.flush()
-                    if tail:
-                        wav, sr = tts_synth(tail)
+                        if d:
+                            parts.append(d)
+                    text_to_speak = "".join(parts).strip()
+                    if text_to_speak:
+                        wav, sr = tts_synth(text_to_speak)
                         audio_q.put((wav, sr))
                 finally:
                     audio_q.put(None)

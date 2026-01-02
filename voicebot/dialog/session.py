@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
 import threading
 import time
-from dataclasses import dataclass
 from typing import List, Optional
 
 from voicebot.asr.whisper_asr import WhisperASR
@@ -17,14 +15,8 @@ from voicebot.config import Settings
 from voicebot.llm.openai_llm import Message, OpenAILLM
 from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.tts.xtts import XTTSv2
-from voicebot.utils.text import SentenceChunker
 
 log = logging.getLogger(__name__)
-
-
-@dataclass
-class _SpeakJob:
-    text: str
 
 
 class VoiceBotSession:
@@ -100,71 +92,29 @@ class VoiceBotSession:
             self._history.append(Message(role="assistant", content=assistant_text))
 
     def _speak_streaming_reply(self) -> str:
-        chunker = SentenceChunker(
-            min_chars=self.settings.tts_chunk_min_chars,
-            max_chars=self.settings.tts_chunk_max_chars,
-        )
         assistant_accum: List[str] = []
-
-        q_text: "queue.Queue[Optional[_SpeakJob]]" = queue.Queue()
-        from voicebot.tts.xtts import TtsAudio
-
-        q_audio: "queue.Queue[Optional[TtsAudio]]" = queue.Queue()
-
-        if self.settings.mic_mute_during_tts:
-            # Ensure we don't buffer TTS audio into the mic queue while generating/speaking.
-            self._drop_mic_audio.set()
-
-        def tts_worker() -> None:
-            while True:
-                job = q_text.get()
-                if job is None:
-                    q_audio.put(None)
-                    return
-                try:
-                    audio = self._tts.synthesize(job.text)
-                    q_audio.put(audio)
-                except Exception:
-                    log.exception("TTS synthesis failed")
-
-        def player_worker() -> None:
-            while True:
-                item = q_audio.get()
-                if item is None:
-                    return
-                try:
-                    self._player.play_blocking(item.audio, item.sample_rate)
-                except Exception:
-                    log.exception("Audio playback failed")
-
-        t_tts = threading.Thread(target=tts_worker, name="tts-synth", daemon=True)
-        t_play = threading.Thread(target=player_worker, name="tts-play", daemon=True)
-        t_tts.start()
-        t_play.start()
-
         try:
             for delta in self._llm.stream_text(messages=self._history):
                 assistant_accum.append(delta)
-                for chunk in chunker.push(delta):
-                    q_text.put(_SpeakJob(text=chunk))
         finally:
-            tail = chunker.flush()
-            if tail:
-                q_text.put(_SpeakJob(text=tail))
-            q_text.put(None)
-            t_tts.join()
-            t_play.join()
-
-            if self.settings.mic_mute_during_tts:
-                # Cooldown to let room echo die down a bit, then drop any queued frames.
-                time.sleep(max(0, self.settings.tts_mic_release_ms) / 1000.0)
-                self._drop_mic_audio.clear()
-                if self._mic is not None:
-                    dropped = self._mic.drain()
-                    if dropped:
-                        log.debug("Drained %d mic frames after TTS", dropped)
+            pass
 
         full = "".join(assistant_accum).strip()
         if full:
             log.info("Assistant: %s", full)
+            if self.settings.mic_mute_during_tts:
+                self._drop_mic_audio.set()
+            try:
+                audio = self._tts.synthesize(full)
+                self._player.play_blocking(audio.audio, audio.sample_rate)
+            except Exception:
+                log.exception("TTS synthesis/playback failed")
+            finally:
+                if self.settings.mic_mute_during_tts:
+                    time.sleep(max(0, self.settings.tts_mic_release_ms) / 1000.0)
+                    self._drop_mic_audio.clear()
+                    if self._mic is not None:
+                        dropped = self._mic.drain()
+                        if dropped:
+                            log.debug("Drained %d mic frames after TTS", dropped)
         return full
