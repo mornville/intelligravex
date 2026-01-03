@@ -5,6 +5,7 @@ export type Bot = {
   name: string
   openai_model: string
   web_search_model: string
+  codex_model: string
   openai_key_id: UUID | null
   system_prompt: string
   language: string
@@ -121,12 +122,14 @@ export type IntegrationTool = {
   description: string
   url: string
   method: string
+  use_codex_response?: boolean
   args_required: string[]
   headers_template_json: string
   headers_template_json_masked?: string
   headers_configured?: boolean
   request_body_template: string
   parameters_schema_json?: string
+  response_schema_json?: string
   response_mapper_json: string
   static_reply_template: string
   created_at: string

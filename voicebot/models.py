@@ -23,6 +23,7 @@ class Bot(SQLModel, table=True):
     # LLM
     openai_model: str = "o4-mini"
     web_search_model: str = "gpt-4o-mini"
+    codex_model: str = "gpt-5.1-codex-mini"
     system_prompt: str = "You are a fast, helpful voice assistant. Keep answers concise unless asked."
     openai_key_id: Optional[UUID] = Field(default=None, foreign_key="apikey.id")
 
@@ -114,11 +115,18 @@ class IntegrationTool(SQLModel, table=True):
     # JSON schema for tool call args (object schema). Stored as JSON string.
     parameters_schema_json: str = Field(default='{"type":"object","properties":{},"additionalProperties":true}')
 
+    # Optional JSON schema for the integration HTTP response (object schema). Stored as JSON string.
+    # Used by the Codex HTTP agent to generate extraction code without sending the full response payload to the model.
+    response_schema_json: str = Field(default="")
+
     # Maps conversation metadata keys to template values using {{response...}} or {{.meta...}}.
     response_mapper_json: str = Field(default="{}")
 
     # Optional: if set, ignore LLM-provided next_reply and render this template instead (Jinja2).
     static_reply_template: str = Field(default="")
+
+    # If true, backend uses the bot's codex_model to generate the post-tool reply (instead of trusting next_reply).
+    use_codex_response: bool = Field(default=False)
 
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)

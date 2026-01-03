@@ -21,6 +21,7 @@ export default function BotsPage() {
     name: '',
     openai_model: 'o4-mini',
     web_search_model: 'gpt-4o-mini',
+    codex_model: 'gpt-5.1-codex-mini',
     system_prompt: defaultPrompt,
     language: 'en',
     tts_language: 'en',
@@ -57,6 +58,7 @@ export default function BotsPage() {
         web_search_model: o.openai_models.includes(p.web_search_model)
           ? p.web_search_model
           : o.openai_models[0] || p.web_search_model,
+        codex_model: o.openai_models.includes(p.codex_model) ? p.codex_model : o.openai_models[0] || p.codex_model,
       }))
     } catch (e: any) {
       setErr(String(e?.message || e))
@@ -147,6 +149,17 @@ export default function BotsPage() {
               ))}
             </select>
             <div className="muted">Used for web_search filtering + summarization.</div>
+          </div>
+          <div className="formRow">
+            <label>Codex model</label>
+            <select value={newBot.codex_model} onChange={(e) => setNewBot((p) => ({ ...p, codex_model: e.target.value }))}>
+              {(options?.openai_models || ['gpt-5.1-codex-mini']).map((m) => (
+                <option value={m} key={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            <div className="muted">Used for “use Codex for response” HTTP integrations.</div>
           </div>
           <div className="formRow">
             <label>System prompt</label>

@@ -69,6 +69,25 @@ def _apply_light_migrations(engine) -> None:
         add_bot_col("openai_tts_voice", "TEXT NOT NULL DEFAULT 'alloy'")
         add_bot_col("openai_tts_speed", "REAL NOT NULL DEFAULT 1.0")
         add_bot_col("web_search_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini'")
+        add_bot_col("codex_model", "TEXT NOT NULL DEFAULT 'gpt-5.1-codex-mini'")
+        try:
+            conn.execute(
+                text(
+                    "UPDATE bot SET codex_model='gpt-5.1-codex-mini' "
+                    "WHERE codex_model IS NULL OR codex_model='' OR codex_model='gpt-5-codex-mini'"
+                )
+            )
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                text(
+                    "UPDATE bot SET openai_model='gpt-5.1-codex-mini' "
+                    "WHERE openai_model='gpt-5-codex-mini'"
+                )
+            )
+        except Exception:
+            pass
 
         # ConversationMessage
         rows = conn.execute(text("PRAGMA table_info(conversationmessage)")).fetchall()
@@ -107,6 +126,8 @@ def _apply_light_migrations(engine) -> None:
             "parameters_schema_json",
             "TEXT NOT NULL DEFAULT '{\"type\":\"object\",\"properties\":{},\"additionalProperties\":true}'",
         )
+        add_tool_col("response_schema_json", "TEXT NOT NULL DEFAULT ''")
+        add_tool_col("use_codex_response", "INTEGER NOT NULL DEFAULT 0")
 
         # ClientKey
         try:

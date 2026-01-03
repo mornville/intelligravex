@@ -31,12 +31,14 @@ export default function BotDetailPage() {
     description: '',
     url: '',
     method: 'GET',
+    use_codex_response: false,
     args_required_csv: '',
     headers_template_json: '{}',
     headers_template_json_masked: '',
     headers_configured: false,
     request_body_template: '{}',
     parameters_schema_json: '',
+    response_schema_json: '',
     response_mapper_json: '{}',
     static_reply_template: '',
   })
@@ -124,12 +126,14 @@ export default function BotDetailPage() {
       description: '',
       url: '',
       method: (options?.http_methods?.[0] || 'GET') as any,
+      use_codex_response: false,
       args_required_csv: '',
       headers_template_json: '{}',
       headers_template_json_masked: '',
       headers_configured: false,
       request_body_template: '{}',
       parameters_schema_json: '',
+      response_schema_json: '',
       response_mapper_json: '{}',
       static_reply_template: '',
     })
@@ -143,6 +147,7 @@ export default function BotDetailPage() {
       description: t.description || '',
       url: t.url,
       method: t.method || 'GET',
+      use_codex_response: Boolean(t.use_codex_response),
       args_required_csv: (t.args_required || []).join(', '),
       // Write-only: never hydrate secrets back into the UI.
       headers_template_json: '',
@@ -150,6 +155,7 @@ export default function BotDetailPage() {
       headers_configured: Boolean(t.headers_configured),
       request_body_template: t.request_body_template || '{}',
       parameters_schema_json: t.parameters_schema_json || '',
+      response_schema_json: t.response_schema_json || '',
       response_mapper_json: t.response_mapper_json || '{}',
       static_reply_template: t.static_reply_template || '',
     })
@@ -176,9 +182,11 @@ export default function BotDetailPage() {
           description: toolForm.description,
           url,
           method: toolForm.method,
+          use_codex_response: Boolean(toolForm.use_codex_response),
           args_required,
           request_body_template: toolForm.request_body_template || '{}',
           parameters_schema_json: toolForm.parameters_schema_json || '',
+          response_schema_json: toolForm.response_schema_json || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
         }
@@ -192,10 +200,12 @@ export default function BotDetailPage() {
           description: toolForm.description,
           url,
           method: toolForm.method,
+          use_codex_response: Boolean(toolForm.use_codex_response),
           args_required,
           headers_template_json: toolForm.headers_template_json || '{}',
           request_body_template: toolForm.request_body_template || '{}',
           parameters_schema_json: toolForm.parameters_schema_json || '',
+          response_schema_json: toolForm.response_schema_json || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
         })
@@ -280,6 +290,17 @@ export default function BotDetailPage() {
                   ))}
                 </select>
                 <div className="muted">Used for web_search filtering + summarization.</div>
+              </div>
+              <div className="formRow">
+                <label>Codex model</label>
+                <select value={bot.codex_model || 'gpt-5.1-codex-mini'} onChange={(e) => void save({ codex_model: e.target.value })}>
+                  {(options?.openai_models || [bot.codex_model || 'gpt-5.1-codex-mini']).map((m) => (
+                    <option value={m} key={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <div className="muted">Used for “use Codex for response” HTTP integrations.</div>
               </div>
               <div className="formRow">
                 <label>OpenAI key</label>
@@ -651,8 +672,8 @@ export default function BotDetailPage() {
                 placeholder=""
               />
               <div className="muted">
-                The LLM must call this tool with <span className="mono">{'{ "args": { ... }, "next_reply": "..." }'}</span>. These keys will be required
-                inside <span className="mono">args</span>.
+                The LLM calls this tool with <span className="mono">{'{ "args": { ... }, "next_reply": "..." }'}</span> (if “Use Codex for response” is
+                enabled, <span className="mono">next_reply</span> is optional). These keys will be required inside <span className="mono">args</span>.
               </div>
             </div>
             <div className="formRow">
@@ -672,6 +693,47 @@ export default function BotDetailPage() {
                 rows={6}
                 placeholder='{"type":"object","properties":{}}'
               />
+            </div>
+            {toolForm.use_codex_response ? (
+              <div className="formRow">
+                <label>
+                  Response schema (JSON Schema, optional){' '}
+                  <HelpTip>
+                    <div className="tipTitle">What this does</div>
+                    <div className="tipText">
+                      If set, the backend uses this as the HTTP response JSON schema for the Codex agent (instead of deriving a schema from the live
+                      response). The raw response payload is still saved to a temp file locally and is not sent to Codex. If this schema doesn’t match the
+                      response, the backend warns and falls back to derived schema.
+                    </div>
+                  </HelpTip>
+                </label>
+                <textarea
+                  value={toolForm.response_schema_json}
+                  onChange={(e) => setToolForm((p) => ({ ...p, response_schema_json: e.target.value }))}
+                  rows={6}
+                  placeholder='{"type":"object","properties":{}}'
+                />
+              </div>
+            ) : null}
+            <div className="formRow">
+              <label>
+                Use Codex for response{' '}
+                <HelpTip>
+                  <div className="tipTitle">What this does</div>
+	                  <div className="tipText">
+	                    If enabled, the backend runs a Codex agent to post-process the HTTP response and stores its output as tool result for the main chat
+	                    model to rephrase. <span className="mono">static_reply_template</span> (if set and non-empty) still takes priority.
+	                  </div>
+	                </HelpTip>
+              </label>
+              <label className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(toolForm.use_codex_response)}
+                  onChange={(e) => setToolForm((p) => ({ ...p, use_codex_response: e.target.checked }))}
+                />
+                <span className="muted">Use Codex to write the reply after this HTTP tool runs.</span>
+              </label>
             </div>
             <div className="formRow">
               <label>
