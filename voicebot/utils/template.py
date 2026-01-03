@@ -21,6 +21,19 @@ def render_template(text: str, *, ctx: dict[str, Any]) -> str:
     if not text or "{{" not in text:
         return text
 
+    def _stringify_value(v: Any) -> str:
+        # For JSON templates, it's common to interpolate objects/arrays/bools/numbers.
+        # Use JSON encoding for non-string scalars and containers so the rendered
+        # output can still be parsed as valid JSON.
+        if v is None:
+            return ""
+        if isinstance(v, (dict, list, bool, int, float)):
+            try:
+                return json.dumps(v, ensure_ascii=False)
+            except Exception:
+                return str(v)
+        return str(v)
+
     def repl(m: re.Match) -> str:
         expr = (m.group(1) or "").strip()
         if not expr:
@@ -29,7 +42,7 @@ def render_template(text: str, *, ctx: dict[str, Any]) -> str:
             v = resolve_expr(expr, ctx=ctx)
         except Exception:
             return ""
-        return "" if v is None else str(v)
+        return _stringify_value(v)
 
     return _VAR_RE.sub(repl, text)
 
