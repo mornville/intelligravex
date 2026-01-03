@@ -119,6 +119,9 @@ class IntegrationTool(SQLModel, table=True):
     # Used by the Codex HTTP agent to generate extraction code without sending the full response payload to the model.
     response_schema_json: str = Field(default="")
 
+    # Optional per-tool Codex prompt/instructions (applied when use_codex_response is enabled).
+    codex_prompt: str = Field(default="")
+
     # Maps conversation metadata keys to template values using {{response...}} or {{.meta...}}.
     response_mapper_json: str = Field(default="{}")
 

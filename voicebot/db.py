@@ -127,6 +127,7 @@ def _apply_light_migrations(engine) -> None:
             "TEXT NOT NULL DEFAULT '{\"type\":\"object\",\"properties\":{},\"additionalProperties\":true}'",
         )
         add_tool_col("response_schema_json", "TEXT NOT NULL DEFAULT ''")
+        add_tool_col("codex_prompt", "TEXT NOT NULL DEFAULT ''")
         add_tool_col("use_codex_response", "INTEGER NOT NULL DEFAULT 0")
 
         # ClientKey

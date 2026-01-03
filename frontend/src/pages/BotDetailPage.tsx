@@ -39,9 +39,21 @@ export default function BotDetailPage() {
     request_body_template: '{}',
     parameters_schema_json: '',
     response_schema_json: '',
+    codex_prompt: '',
     response_mapper_json: '{}',
     static_reply_template: '',
   })
+
+  const DEFAULT_CODEX_FILTER_PROMPT = `You are a data extraction agent.
+
+Goal: filter the HTTP response JSON to only what is needed to answer what_to_search_for.
+
+Rules:
+- Prefer minimal fields (don’t copy the whole payload).
+- Be deterministic and robust to missing fields.
+- If multiple matches exist, return a list of candidates and keep it short.
+- If no matches exist, return an empty result with a clear reason.
+`
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -134,6 +146,7 @@ export default function BotDetailPage() {
       request_body_template: '{}',
       parameters_schema_json: '',
       response_schema_json: '',
+      codex_prompt: '',
       response_mapper_json: '{}',
       static_reply_template: '',
     })
@@ -156,6 +169,7 @@ export default function BotDetailPage() {
       request_body_template: t.request_body_template || '{}',
       parameters_schema_json: t.parameters_schema_json || '',
       response_schema_json: t.response_schema_json || '',
+      codex_prompt: t.codex_prompt || '',
       response_mapper_json: t.response_mapper_json || '{}',
       static_reply_template: t.static_reply_template || '',
     })
@@ -187,6 +201,7 @@ export default function BotDetailPage() {
           request_body_template: toolForm.request_body_template || '{}',
           parameters_schema_json: toolForm.parameters_schema_json || '',
           response_schema_json: toolForm.response_schema_json || '',
+          codex_prompt: toolForm.codex_prompt || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
         }
@@ -206,6 +221,7 @@ export default function BotDetailPage() {
           request_body_template: toolForm.request_body_template || '{}',
           parameters_schema_json: toolForm.parameters_schema_json || '',
           response_schema_json: toolForm.response_schema_json || '',
+          codex_prompt: toolForm.codex_prompt || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
           static_reply_template: toolForm.static_reply_template || '',
         })
@@ -730,11 +746,39 @@ export default function BotDetailPage() {
                 <input
                   type="checkbox"
                   checked={Boolean(toolForm.use_codex_response)}
-                  onChange={(e) => setToolForm((p) => ({ ...p, use_codex_response: e.target.checked }))}
+                  onChange={(e) =>
+                    setToolForm((p) => ({
+                      ...p,
+                      use_codex_response: e.target.checked,
+                      codex_prompt:
+                        e.target.checked && !String(p.codex_prompt || '').trim()
+                          ? DEFAULT_CODEX_FILTER_PROMPT
+                          : p.codex_prompt,
+                    }))
+                  }
                 />
                 <span className="muted">Use Codex to write the reply after this HTTP tool runs.</span>
               </label>
             </div>
+            {toolForm.use_codex_response ? (
+              <div className="formRow">
+                <label>
+                  Codex filter prompt (per tool){' '}
+                  <HelpTip>
+                    <div className="tipTitle">What this does</div>
+                    <div className="tipText">
+                      Extra instructions added to the Codex agent when filtering/summarizing this tool’s HTTP response. If empty, a default prompt is used.
+                    </div>
+                  </HelpTip>
+                </label>
+                <textarea
+                  value={toolForm.codex_prompt}
+                  onChange={(e) => setToolForm((p) => ({ ...p, codex_prompt: e.target.value }))}
+                  rows={8}
+                  placeholder={DEFAULT_CODEX_FILTER_PROMPT}
+                />
+              </div>
+            ) : null}
             <div className="formRow">
               <label>
                 Headers template (JSON, optional){' '}

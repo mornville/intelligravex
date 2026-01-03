@@ -253,6 +253,9 @@ def run_codex_http_agent(
     what_to_search_for: str,
     why_to_search_for: str,
     response_schema_json: Any = None,
+    input_json_path: str | None = None,
+    conversation_artifacts_index_path: str | None = None,
+    tool_codex_prompt: str | None = None,
     progress_fn: Optional[ProgressFn] = None,
     max_cycles: int = 2,
     max_attempts_per_phase: int = 3,
@@ -275,7 +278,7 @@ def run_codex_http_agent(
 
     out_dir = tempfile.mkdtemp(prefix="igx_codex_http_")
     debug_path = os.path.join(out_dir, "debug.json")
-    input_path = os.path.join(out_dir, "input_response.json")
+    input_path = (input_json_path or "").strip() or os.path.join(out_dir, "input_response.json")
     schema_path = os.path.join(out_dir, "input_schema.json")
     filtered_path = os.path.join(out_dir, "filtered.json")
     validated_path = os.path.join(out_dir, "validated.json")
@@ -292,7 +295,8 @@ def run_codex_http_agent(
 
     if progress_fn:
         progress_fn("Codex agent: saving HTTP response…")
-    _write_text(input_path, json.dumps(response_json, ensure_ascii=False, indent=2))
+    if not (input_json_path or "").strip():
+        _write_text(input_path, json.dumps(response_json, ensure_ascii=False, indent=2))
     schema_obj: Any = None
     schema_source = "derived_tree"
     provided_schema = _coerce_json_schema(response_schema_json)
@@ -314,6 +318,7 @@ def run_codex_http_agent(
     last_next_step: NextStep = "CONTINUE"
     last_result_text = ""
     last_status: dict[str, Any] | None = None
+    tool_prompt = (tool_codex_prompt or "").strip()
 
     for cycle in range(1, max(1, int(max_cycles)) + 1):
         if progress_fn:
@@ -329,12 +334,19 @@ def run_codex_http_agent(
                     "Write a Python script that reads INPUT_JSON_PATH (a JSON file) and writes FILTERED_JSON_PATH (a JSON file).\n"
                     "At the end of the script, print exactly one line: __IGX_STATUS__=<JSON>.\n"
                     "The <JSON> must be an object with keys: phase, next_step, STOP_REASON, CONTINUE_REASON.\n"
+                    "You MAY read additional prior response files if needed, using CONVERSATION_ARTIFACTS_INDEX_PATH.\n"
+                    "If CONVERSATION_ARTIFACTS_INDEX_PATH is set, it points to index.json with shape:\n"
+                    "{ \"version\": 1, \"items\": [ {\"manifest_path\": \"manifests/<id>.json\", \"tool_name\": \"...\", \"called_at\": \"...\", \"what_to_search_for\": \"...\"} ] }\n"
+                    "Each manifest JSON contains at least: { \"response_path\": \"responses/<id>.json\", \"what_to_search_for\": \"...\", \"why_to_search_for\": \"...\" }.\n"
+                    "Resolve relative paths against os.path.dirname(CONVERSATION_ARTIFACTS_INDEX_PATH).\n"
+                    "Do NOT print raw file contents.\n"
                     "Constraints:\n"
                     "- Use ONLY Python standard library\n"
                     "- No network calls, no subprocess, no filesystem writes except FILTERED_JSON_PATH\n"
                     "- Deterministic output; exit with code 0 on success\n"
                     "- FILTERED_JSON_PATH must contain only data needed to answer WHAT_TO_SEARCH_FOR.\n"
                     "- Use WHY_TO_SEARCH_FOR to decide which fields to retain.\n"
+                    + (f"\nTOOL_CODEX_PROMPT:\n{tool_prompt}\n" if tool_prompt else "")
                 ),
             },
             {
@@ -346,6 +358,7 @@ def run_codex_http_agent(
                     f"FILTERED_JSON_PATH: {filtered_path}\n"
                     f"INPUT_SCHEMA_JSON_PATH: {schema_path}\n"
                     f"INPUT_SCHEMA_JSON: {schema_inline}\n"
+                    f"CONVERSATION_ARTIFACTS_INDEX_PATH: {(conversation_artifacts_index_path or '').strip()}\n"
                     f"PRIOR_CONTINUE_REASON: {last_continue_reason}\n"
                     f"PRIOR_RESULT_TEXT_PREVIEW: {last_result_text[:1200]}\n"
                     f"PRIOR_VALIDATED_JSON_PATH: {validated_path}\n"
@@ -465,11 +478,18 @@ def run_codex_http_agent(
                     "- RESULT_TEXT_PATH (a UTF-8 text file containing a concise summary string)\n"
                     "At the end of the script, print exactly one line: __IGX_STATUS__=<JSON>.\n"
                     "The <JSON> must be an object with keys: phase, next_step, STOP_REASON, CONTINUE_REASON.\n"
+                    "You MAY read additional prior response files if needed, using CONVERSATION_ARTIFACTS_INDEX_PATH.\n"
+                    "If CONVERSATION_ARTIFACTS_INDEX_PATH is set, it points to index.json with shape:\n"
+                    "{ \"version\": 1, \"items\": [ {\"manifest_path\": \"manifests/<id>.json\", \"tool_name\": \"...\", \"called_at\": \"...\", \"what_to_search_for\": \"...\"} ] }\n"
+                    "Each manifest JSON contains at least: { \"response_path\": \"responses/<id>.json\", \"what_to_search_for\": \"...\", \"why_to_search_for\": \"...\" }.\n"
+                    "Resolve relative paths against os.path.dirname(CONVERSATION_ARTIFACTS_INDEX_PATH).\n"
+                    "Do NOT print raw file contents.\n"
                     "Constraints:\n"
                     "- Use ONLY Python standard library\n"
                     "- No network calls, no subprocess, deterministic\n"
                     "- Validate that the filtered data answers WHAT_TO_SEARCH_FOR; if not, normalize the data and still write files.\n"
                     "- RESULT_TEXT_PATH must be user-facing and concise.\n"
+                    + (f"\nTOOL_CODEX_PROMPT:\n{tool_prompt}\n" if tool_prompt else "")
                 ),
             },
             {
@@ -481,6 +501,7 @@ def run_codex_http_agent(
                     f"VALIDATED_JSON_PATH: {validated_path}\n"
                     f"RESULT_TEXT_PATH: {result_text_path}\n"
                     f"FILTERED_SCHEMA_JSON: {json.dumps(_json_tree_schema(filtered_obj), ensure_ascii=False)[:12000]}\n"
+                    f"CONVERSATION_ARTIFACTS_INDEX_PATH: {(conversation_artifacts_index_path or '').strip()}\n"
                     f"PRIOR_STATUS_JSON: {json.dumps(last_status, ensure_ascii=False) if last_status else ''}\n"
                 ),
             },
@@ -632,6 +653,7 @@ def run_codex_http_agent(
                     f"FILTERED_JSON_PATH: {filtered_path}\n"
                     f"VALIDATED_JSON_PATH: {validated_path}\n"
                     f"RESULT_TEXT_PATH: {result_text_path}\n"
+                    f"CONVERSATION_ARTIFACTS_INDEX_PATH: {(conversation_artifacts_index_path or '').strip()}\n"
                     f"RESULT_TEXT_PREVIEW: {last_result_text[:2000]}\n"
                     f"CYCLE: {cycle}/{max_cycles}\n"
                 ),

@@ -29,6 +29,7 @@ from voicebot.crypto import CryptoError, get_crypto_box
 from voicebot.db import init_db, make_engine
 from voicebot.asr.whisper_asr import WhisperASR
 from voicebot.llm.codex_http_agent import run_codex_http_agent
+from voicebot.llm.conversation_artifacts import record_http_response_artifact
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
 from voicebot.models import Bot
 from voicebot.store import (
@@ -364,6 +365,7 @@ class IntegrationToolCreateRequest(BaseModel):
     request_body_template: str = "{}"
     parameters_schema_json: str = ""
     response_schema_json: str = ""
+    codex_prompt: str = ""
     response_mapper_json: str = "{}"
     static_reply_template: str = ""
 
@@ -379,6 +381,7 @@ class IntegrationToolUpdateRequest(BaseModel):
     request_body_template: Optional[str] = None
     parameters_schema_json: Optional[str] = None
     response_schema_json: Optional[str] = None
+    codex_prompt: Optional[str] = None
     response_mapper_json: Optional[str] = None
     static_reply_template: Optional[str] = None
 
@@ -1754,17 +1757,21 @@ def create_app() -> FastAPI:
                                             needs_followup_llm = True
                                             rendered_reply = ""
                                         else:
-                                            mapped = _apply_response_mapper(
-                                                mapper_json=tool_cfg.response_mapper_json,
-                                                response_json=response_json,
-                                                meta=meta_current,
-                                                tool_args=patch,
-                                            )
-                                            new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
-                                            meta_current = new_meta
                                             if bool(getattr(tool_cfg, "use_codex_response", False)):
+                                                # Avoid bloating LLM-visible conversation metadata in Codex mode.
                                                 tool_result = {"ok": True}
+                                                new_meta = meta_current
                                             else:
+                                                mapped = _apply_response_mapper(
+                                                    mapper_json=tool_cfg.response_mapper_json,
+                                                    response_json=response_json,
+                                                    meta=meta_current,
+                                                    tool_args=patch,
+                                                )
+                                                new_meta = merge_conversation_metadata(
+                                                    session, conversation_id=conv_id, patch=mapped
+                                                )
+                                                meta_current = new_meta
                                                 tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
 
                                             # Optional Codex HTTP agent (post-process the raw response JSON).
@@ -1799,6 +1806,24 @@ def create_app() -> FastAPI:
                                                         except Exception:
                                                             return
 
+                                                    artifact_input_path = ""
+                                                    artifact_index_path = ""
+                                                    try:
+                                                        if conv_id is not None:
+                                                            rec = record_http_response_artifact(
+                                                                conversation_id=conv_id,
+                                                                tool_name=tool_name,
+                                                                method=getattr(tool_cfg, "method", None),
+                                                                url=getattr(tool_cfg, "url", None),
+                                                                what_to_search_for=what_to_search_for,
+                                                                why_to_search_for=why_to_search_for,
+                                                                response_json=response_json,
+                                                            )
+                                                            artifact_input_path = rec.get("response_path", "") or ""
+                                                            artifact_index_path = rec.get("index_path", "") or ""
+                                                    except Exception as exc:
+                                                        _progress(f"Codex agent: warning: failed to record artifact ({exc})")
+
                                                     agent_task = asyncio.create_task(
                                                         asyncio.to_thread(
                                                             run_codex_http_agent,
@@ -1808,6 +1833,9 @@ def create_app() -> FastAPI:
                                                             what_to_search_for=what_to_search_for,
                                                             why_to_search_for=why_to_search_for,
                                                             response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
+                                                            input_json_path=artifact_input_path or None,
+                                                            conversation_artifacts_index_path=artifact_index_path or None,
+                                                            tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
                                                             progress_fn=_progress,
                                                             max_cycles=2,
                                                         )
@@ -2551,17 +2579,21 @@ def create_app() -> FastAPI:
                                             needs_followup_llm = True
                                             rendered_reply = ""
                                         else:
-                                            mapped = _apply_response_mapper(
-                                                mapper_json=tool_cfg.response_mapper_json,
-                                                response_json=response_json,
-                                                meta=meta_current,
-                                                tool_args=patch,
-                                            )
-                                            new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
-                                            meta_current = new_meta
                                             if bool(getattr(tool_cfg, "use_codex_response", False)):
+                                                # Avoid bloating LLM-visible conversation metadata in Codex mode.
                                                 tool_result = {"ok": True}
+                                                new_meta = meta_current
                                             else:
+                                                mapped = _apply_response_mapper(
+                                                    mapper_json=tool_cfg.response_mapper_json,
+                                                    response_json=response_json,
+                                                    meta=meta_current,
+                                                    tool_args=patch,
+                                                )
+                                                new_meta = merge_conversation_metadata(
+                                                    session, conversation_id=conv_id, patch=mapped
+                                                )
+                                                meta_current = new_meta
                                                 tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
 
                                             # Optional Codex HTTP agent (post-process the raw response JSON).
@@ -2596,6 +2628,24 @@ def create_app() -> FastAPI:
                                                         except Exception:
                                                             return
 
+                                                    artifact_input_path = ""
+                                                    artifact_index_path = ""
+                                                    try:
+                                                        if conv_id is not None:
+                                                            rec = record_http_response_artifact(
+                                                                conversation_id=conv_id,
+                                                                tool_name=tool_name,
+                                                                method=getattr(tool_cfg, "method", None),
+                                                                url=getattr(tool_cfg, "url", None),
+                                                                what_to_search_for=what_to_search_for,
+                                                                why_to_search_for=why_to_search_for,
+                                                                response_json=response_json,
+                                                            )
+                                                            artifact_input_path = rec.get("response_path", "") or ""
+                                                            artifact_index_path = rec.get("index_path", "") or ""
+                                                    except Exception as exc:
+                                                        _progress(f"Codex agent: warning: failed to record artifact ({exc})")
+
                                                     agent_task = asyncio.create_task(
                                                         asyncio.to_thread(
                                                             run_codex_http_agent,
@@ -2605,6 +2655,9 @@ def create_app() -> FastAPI:
                                                             what_to_search_for=what_to_search_for,
                                                             why_to_search_for=why_to_search_for,
                                                             response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
+                                                            input_json_path=artifact_input_path or None,
+                                                            conversation_artifacts_index_path=artifact_index_path or None,
+                                                            tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
                                                             progress_fn=_progress,
                                                             max_cycles=2,
                                                         )
@@ -3263,17 +3316,21 @@ def create_app() -> FastAPI:
                                         needs_followup_llm = True
                                         final = ""
                                     else:
-                                        mapped = _apply_response_mapper(
-                                            mapper_json=tool_cfg.response_mapper_json,
-                                            response_json=response_json,
-                                            meta=meta_current,
-                                            tool_args=patch,
-                                        )
-                                        new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=mapped)
-                                        meta_current = new_meta
                                         if bool(getattr(tool_cfg, "use_codex_response", False)):
+                                            # Avoid bloating LLM-visible conversation metadata in Codex mode.
                                             tool_result = {"ok": True}
+                                            new_meta = meta_current
                                         else:
+                                            mapped = _apply_response_mapper(
+                                                mapper_json=tool_cfg.response_mapper_json,
+                                                response_json=response_json,
+                                                meta=meta_current,
+                                                tool_args=patch,
+                                            )
+                                            new_meta = merge_conversation_metadata(
+                                                session, conversation_id=conv_id, patch=mapped
+                                            )
+                                            meta_current = new_meta
                                             tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
 
                                         # Optional Codex HTTP agent (post-process the raw response JSON).
@@ -3308,6 +3365,24 @@ def create_app() -> FastAPI:
                                                     except Exception:
                                                         return
 
+                                                artifact_input_path = ""
+                                                artifact_index_path = ""
+                                                try:
+                                                    if conv_id is not None:
+                                                        rec = record_http_response_artifact(
+                                                            conversation_id=conv_id,
+                                                            tool_name=tool_name,
+                                                            method=getattr(tool_cfg, "method", None),
+                                                            url=getattr(tool_cfg, "url", None),
+                                                            what_to_search_for=what_to_search_for,
+                                                            why_to_search_for=why_to_search_for,
+                                                            response_json=response_json,
+                                                        )
+                                                        artifact_input_path = rec.get("response_path", "") or ""
+                                                        artifact_index_path = rec.get("index_path", "") or ""
+                                                except Exception as exc:
+                                                    _progress(f"Codex agent: warning: failed to record artifact ({exc})")
+
                                                 agent_task = asyncio.create_task(
                                                     asyncio.to_thread(
                                                         run_codex_http_agent,
@@ -3317,6 +3392,9 @@ def create_app() -> FastAPI:
                                                         what_to_search_for=what_to_search_for,
                                                         why_to_search_for=why_to_search_for,
                                                         response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
+                                                        input_json_path=artifact_input_path or None,
+                                                        conversation_artifacts_index_path=artifact_index_path or None,
+                                                        tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
                                                         progress_fn=_progress,
                                                         max_cycles=2,
                                                     )
@@ -3594,6 +3672,7 @@ def create_app() -> FastAPI:
             "request_body_template": t.request_body_template,
             "parameters_schema_json": t.parameters_schema_json,
             "response_schema_json": getattr(t, "response_schema_json", "") or "",
+            "codex_prompt": getattr(t, "codex_prompt", "") or "",
             "response_mapper_json": t.response_mapper_json,
             "static_reply_template": t.static_reply_template,
             "use_codex_response": bool(getattr(t, "use_codex_response", False)),
@@ -3703,6 +3782,7 @@ def create_app() -> FastAPI:
             request_body_template=payload.request_body_template or "{}",
             parameters_schema_json=payload.parameters_schema_json or "",
             response_schema_json=payload.response_schema_json or "",
+            codex_prompt=(payload.codex_prompt or ""),
             response_mapper_json=payload.response_mapper_json or "{}",
             static_reply_template=payload.static_reply_template or "",
         )
@@ -3736,6 +3816,8 @@ def create_app() -> FastAPI:
             patch["parameters_schema_json"] = patch["parameters_schema_json"] or ""
         if "response_schema_json" in patch:
             patch["response_schema_json"] = patch["response_schema_json"] or ""
+        if "codex_prompt" in patch:
+            patch["codex_prompt"] = patch["codex_prompt"] or ""
         tool = update_integration_tool(session, tool_id, patch)
         return _tool_to_dict(tool)
 

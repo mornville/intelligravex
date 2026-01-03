@@ -130,6 +130,7 @@ export type IntegrationTool = {
   request_body_template: string
   parameters_schema_json?: string
   response_schema_json?: string
+  codex_prompt?: string
   response_mapper_json: string
   static_reply_template: string
   created_at: string
