@@ -19,7 +19,7 @@ import httpx
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlmodel import Session
@@ -29,7 +29,9 @@ from voicebot.crypto import CryptoError, get_crypto_box
 from voicebot.db import init_db, make_engine
 from voicebot.asr.whisper_asr import WhisperASR
 from voicebot.llm.codex_http_agent import run_codex_http_agent_one_shot, run_codex_http_agent_one_shot_from_paths
+from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
+from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
 from voicebot.models import Bot
 from voicebot.store import (
@@ -71,6 +73,7 @@ from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messag
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
 from voicebot.tools.recall_http_response import recall_http_response_tool_def
+from voicebot.tools.export_http_response import export_http_response_tool_def
 from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
 
@@ -681,12 +684,20 @@ def create_app() -> FastAPI:
     def _recall_http_response_tool_def() -> dict:
         return recall_http_response_tool_def()
 
+    def _export_http_response_tool_def() -> dict:
+        return export_http_response_tool_def()
+
     def _system_tools_defs() -> list[dict[str, Any]]:
         # Tools that are always available for every bot.
         #
         # Note: `set_variable` is kept as a runtime alias for backwards-compat, but we only expose
         # `set_metadata` to the model to avoid duplicate tools that do the same thing.
-        return [_set_metadata_tool_def(), _web_search_tool_def(), _recall_http_response_tool_def()]
+        return [
+            _set_metadata_tool_def(),
+            _web_search_tool_def(),
+            _recall_http_response_tool_def(),
+            _export_http_response_tool_def(),
+        ]
 
     def _system_tools_public_list() -> list[dict[str, Any]]:
         # UI-friendly list of built-in tools (do not include full JSON Schema).
@@ -1871,6 +1882,344 @@ def create_app() -> FastAPI:
                                                             "why_api_was_called": why_api_was_called,
                                                             "codex_output_dir": tool_result.get("codex_output_dir"),
                                                             "codex_ok": tool_result.get("codex_ok"),
+                                                        },
+                                                    )
+                                                except Exception:
+                                                    pass
+
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                    elif tool_name == "export_http_response":
+                                        source_tool_name = str(patch.get("source_tool_name") or "").strip()
+                                        source_req_id = str(patch.get("source_req_id") or "").strip()
+                                        export_request = str(patch.get("export_request") or "").strip()
+                                        output_format = str(patch.get("output_format") or "csv").strip().lower()
+                                        file_name_hint = str(patch.get("file_name_hint") or "").strip()
+
+                                        missing_keys = [
+                                            k
+                                            for k in ("source_tool_name", "export_request")
+                                            if not str(patch.get(k) or "").strip()
+                                        ]
+                                        if missing_keys:
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Missing required tool args.", "missing": missing_keys},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            ev = find_saved_run(
+                                                conversation_id=str(conv_id),
+                                                source_tool_name=source_tool_name,
+                                                source_req_id=(source_req_id or None),
+                                            )
+                                            if not ev:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {
+                                                        "message": f"No saved response found for tool '{source_tool_name}' in this conversation.",
+                                                        "tool_name": source_tool_name,
+                                                        "req_id": source_req_id or None,
+                                                    },
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                saved_input = str(ev.get("input_json_path") or "").strip()
+                                                saved_schema = str(ev.get("schema_json_path") or "").strip()
+                                                if not saved_input and str(ev.get("output_dir") or "").strip():
+                                                    saved_input = os.path.join(str(ev.get("output_dir") or ""), "input_response.json")
+                                                if not saved_schema and str(ev.get("output_dir") or "").strip():
+                                                    saved_schema = os.path.join(str(ev.get("output_dir") or ""), "input_schema.json")
+
+                                                codex_model = (
+                                                    (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                    or "gpt-5.1-codex-mini"
+                                                )
+                                                progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                                def _progress(s: str) -> None:
+                                                    try:
+                                                        progress_q.put_nowait(str(s))
+                                                    except Exception:
+                                                        return
+
+                                                agent_task = asyncio.create_task(
+                                                    asyncio.to_thread(
+                                                        run_codex_export_from_paths,
+                                                        api_key=api_key or "",
+                                                        model=codex_model,
+                                                        input_json_path=saved_input,
+                                                        input_schema_json_path=saved_schema or None,
+                                                        export_request=export_request,
+                                                        output_format=output_format,
+                                                        conversation_id=str(conv_id) if conv_id is not None else None,
+                                                        req_id=req_id,
+                                                        progress_fn=_progress,
+                                                    )
+                                                )
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                last_wait = time.time()
+                                                last_progress = last_wait
+                                                wait_interval_s = 15.0
+                                                while not agent_task.done():
+                                                    try:
+                                                        while True:
+                                                            p = progress_q.get_nowait()
+                                                            if p:
+                                                                await _send_interim(p, kind="progress")
+                                                                last_progress = time.time()
+                                                    except queue.Empty:
+                                                        pass
+                                                    now = time.time()
+                                                    if (
+                                                        wait_reply
+                                                        and (now - last_wait) >= wait_interval_s
+                                                        and (now - last_progress) >= wait_interval_s
+                                                    ):
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                        last_wait = now
+                                                    await asyncio.sleep(0.2)
+
+                                                tool_result = {
+                                                    "ok": True,
+                                                    "export_ok": False,
+                                                    "export_format": output_format,
+                                                    "export_source_tool": source_tool_name,
+                                                    "export_source_req_id": str(ev.get("req_id") or "") or None,
+                                                }
+                                                try:
+                                                    exp = await agent_task
+                                                    tool_result["export_ok"] = bool(getattr(exp, "ok", False))
+                                                    tool_result["export_output_dir"] = getattr(exp, "output_dir", "")
+                                                    tool_result["export_debug_file"] = getattr(exp, "debug_json_path", "")
+                                                    tool_result["export_file_path"] = getattr(exp, "export_file_path", "")
+                                                    tool_result["export_stop_reason"] = getattr(exp, "stop_reason", "")
+                                                    err = getattr(exp, "error", None)
+                                                    if err:
+                                                        tool_result["export_error"] = str(err)
+                                                except Exception as exc:
+                                                    tool_result["export_ok"] = False
+                                                    tool_result["export_error"] = str(exc)
+
+                                                export_path = str(tool_result.get("export_file_path") or "").strip()
+                                                if tool_result.get("export_ok") and export_path and os.path.exists(export_path):
+                                                    if not is_allowed_download_path(export_path):
+                                                        tool_result["export_ok"] = False
+                                                        tool_result["export_error"] = "Export file path not allowed for download."
+                                                    else:
+                                                        base_name = file_name_hint or os.path.basename(export_path)
+                                                        if not base_name:
+                                                            base_name = os.path.basename(export_path)
+                                                        mime = (
+                                                            "text/csv"
+                                                            if output_format == "csv"
+                                                            else "application/json"
+                                                        )
+                                                        token = create_download_token(
+                                                            file_path=export_path,
+                                                            filename=base_name,
+                                                            mime_type=mime,
+                                                            conversation_id=str(conv_id),
+                                                            metadata={
+                                                                "source_tool_name": source_tool_name,
+                                                                "source_req_id": str(ev.get("req_id") or "") or None,
+                                                            },
+                                                        )
+                                                        tool_result["download_token"] = token
+                                                        tool_result["download_url"] = f"/api/downloads/{token}"
+                                                        try:
+                                                            tool_result["size_bytes"] = int(os.path.getsize(export_path))
+                                                        except Exception:
+                                                            pass
+
+                                                try:
+                                                    append_saved_run_index(
+                                                        conversation_id=str(conv_id),
+                                                        event={
+                                                            "kind": "export",
+                                                            "tool_name": source_tool_name,
+                                                            "req_id": req_id,
+                                                            "source_req_id": str(ev.get("req_id") or "") or None,
+                                                            "input_json_path": saved_input,
+                                                            "schema_json_path": saved_schema,
+                                                            "export_format": output_format,
+                                                            "export_request": export_request[:2000],
+                                                            "export_file_path": tool_result.get("export_file_path"),
+                                                            "download_token": tool_result.get("download_token"),
+                                                        },
+                                                    )
+                                                except Exception:
+                                                    pass
+
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                    elif tool_name == "export_http_response":
+                                        source_tool_name = str(patch.get("source_tool_name") or "").strip()
+                                        source_req_id = str(patch.get("source_req_id") or "").strip()
+                                        export_request = str(patch.get("export_request") or "").strip()
+                                        output_format = str(patch.get("output_format") or "csv").strip().lower()
+                                        file_name_hint = str(patch.get("file_name_hint") or "").strip()
+
+                                        missing_keys = [
+                                            k
+                                            for k in ("source_tool_name", "export_request")
+                                            if not str(patch.get(k) or "").strip()
+                                        ]
+                                        if missing_keys:
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Missing required tool args.", "missing": missing_keys},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            ev = find_saved_run(
+                                                conversation_id=str(conv_id),
+                                                source_tool_name=source_tool_name,
+                                                source_req_id=(source_req_id or None),
+                                            )
+                                            if not ev:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {
+                                                        "message": f"No saved response found for tool '{source_tool_name}' in this conversation.",
+                                                        "tool_name": source_tool_name,
+                                                        "req_id": source_req_id or None,
+                                                    },
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                saved_input = str(ev.get("input_json_path") or "").strip()
+                                                saved_schema = str(ev.get("schema_json_path") or "").strip()
+                                                if not saved_input and str(ev.get("output_dir") or "").strip():
+                                                    saved_input = os.path.join(str(ev.get("output_dir") or ""), "input_response.json")
+                                                if not saved_schema and str(ev.get("output_dir") or "").strip():
+                                                    saved_schema = os.path.join(str(ev.get("output_dir") or ""), "input_schema.json")
+
+                                                codex_model = (
+                                                    (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                    or "gpt-5.1-codex-mini"
+                                                )
+                                                progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                                def _progress(s: str) -> None:
+                                                    try:
+                                                        progress_q.put_nowait(str(s))
+                                                    except Exception:
+                                                        return
+
+                                                agent_task = asyncio.create_task(
+                                                    asyncio.to_thread(
+                                                        run_codex_export_from_paths,
+                                                        api_key=api_key or "",
+                                                        model=codex_model,
+                                                        input_json_path=saved_input,
+                                                        input_schema_json_path=saved_schema or None,
+                                                        export_request=export_request,
+                                                        output_format=output_format,
+                                                        conversation_id=str(conv_id) if conv_id is not None else None,
+                                                        req_id=req_id,
+                                                        progress_fn=_progress,
+                                                    )
+                                                )
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                last_wait = time.time()
+                                                last_progress = last_wait
+                                                wait_interval_s = 15.0
+                                                while not agent_task.done():
+                                                    try:
+                                                        while True:
+                                                            p = progress_q.get_nowait()
+                                                            if p:
+                                                                await _send_interim(p, kind="progress")
+                                                                last_progress = time.time()
+                                                    except queue.Empty:
+                                                        pass
+                                                    now = time.time()
+                                                    if (
+                                                        wait_reply
+                                                        and (now - last_wait) >= wait_interval_s
+                                                        and (now - last_progress) >= wait_interval_s
+                                                    ):
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                        last_wait = now
+                                                    await asyncio.sleep(0.2)
+
+                                                tool_result = {
+                                                    "ok": True,
+                                                    "export_ok": False,
+                                                    "export_format": output_format,
+                                                    "export_source_tool": source_tool_name,
+                                                    "export_source_req_id": str(ev.get("req_id") or "") or None,
+                                                }
+                                                try:
+                                                    exp = await agent_task
+                                                    tool_result["export_ok"] = bool(getattr(exp, "ok", False))
+                                                    tool_result["export_output_dir"] = getattr(exp, "output_dir", "")
+                                                    tool_result["export_debug_file"] = getattr(exp, "debug_json_path", "")
+                                                    tool_result["export_file_path"] = getattr(exp, "export_file_path", "")
+                                                    tool_result["export_stop_reason"] = getattr(exp, "stop_reason", "")
+                                                    err = getattr(exp, "error", None)
+                                                    if err:
+                                                        tool_result["export_error"] = str(err)
+                                                except Exception as exc:
+                                                    tool_result["export_ok"] = False
+                                                    tool_result["export_error"] = str(exc)
+
+                                                export_path = str(tool_result.get("export_file_path") or "").strip()
+                                                if tool_result.get("export_ok") and export_path and os.path.exists(export_path):
+                                                    if not is_allowed_download_path(export_path):
+                                                        tool_result["export_ok"] = False
+                                                        tool_result["export_error"] = "Export file path not allowed for download."
+                                                    else:
+                                                        base_name = file_name_hint or os.path.basename(export_path)
+                                                        if not base_name:
+                                                            base_name = os.path.basename(export_path)
+                                                        mime = (
+                                                            "text/csv"
+                                                            if output_format == "csv"
+                                                            else "application/json"
+                                                        )
+                                                        token = create_download_token(
+                                                            file_path=export_path,
+                                                            filename=base_name,
+                                                            mime_type=mime,
+                                                            conversation_id=str(conv_id),
+                                                            metadata={
+                                                                "source_tool_name": source_tool_name,
+                                                                "source_req_id": str(ev.get("req_id") or "") or None,
+                                                            },
+                                                        )
+                                                        tool_result["download_token"] = token
+                                                        tool_result["download_url"] = f"/api/downloads/{token}"
+                                                        try:
+                                                            tool_result["size_bytes"] = int(os.path.getsize(export_path))
+                                                        except Exception:
+                                                            pass
+
+                                                try:
+                                                    append_saved_run_index(
+                                                        conversation_id=str(conv_id),
+                                                        event={
+                                                            "kind": "export",
+                                                            "tool_name": source_tool_name,
+                                                            "req_id": req_id,
+                                                            "source_req_id": str(ev.get("req_id") or "") or None,
+                                                            "input_json_path": saved_input,
+                                                            "schema_json_path": saved_schema,
+                                                            "export_format": output_format,
+                                                            "export_request": export_request[:2000],
+                                                            "export_file_path": tool_result.get("export_file_path"),
+                                                            "download_token": tool_result.get("download_token"),
                                                         },
                                                     )
                                                 except Exception:
@@ -3746,6 +4095,173 @@ def create_app() -> FastAPI:
 
                                             needs_followup_llm = True
                                             final = ""
+                                elif tool_name == "export_http_response":
+                                    source_tool_name = str(patch.get("source_tool_name") or "").strip()
+                                    source_req_id = str(patch.get("source_req_id") or "").strip()
+                                    export_request = str(patch.get("export_request") or "").strip()
+                                    output_format = str(patch.get("output_format") or "csv").strip().lower()
+                                    file_name_hint = str(patch.get("file_name_hint") or "").strip()
+
+                                    missing_keys = [
+                                        k for k in ("source_tool_name", "export_request") if not str(patch.get(k) or "").strip()
+                                    ]
+                                    if missing_keys:
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": "Missing required tool args.", "missing": missing_keys},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        final = ""
+                                    else:
+                                        ev = find_saved_run(
+                                            conversation_id=str(conv_id),
+                                            source_tool_name=source_tool_name,
+                                            source_req_id=(source_req_id or None),
+                                        )
+                                        if not ev:
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {
+                                                    "message": f"No saved response found for tool '{source_tool_name}' in this conversation.",
+                                                    "tool_name": source_tool_name,
+                                                    "req_id": source_req_id or None,
+                                                },
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            final = ""
+                                        else:
+                                            saved_input = str(ev.get("input_json_path") or "").strip()
+                                            saved_schema = str(ev.get("schema_json_path") or "").strip()
+                                            if not saved_input and str(ev.get("output_dir") or "").strip():
+                                                saved_input = os.path.join(str(ev.get("output_dir") or ""), "input_response.json")
+                                            if not saved_schema and str(ev.get("output_dir") or "").strip():
+                                                saved_schema = os.path.join(str(ev.get("output_dir") or ""), "input_schema.json")
+
+                                            codex_model = (
+                                                (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                or "gpt-5.1-codex-mini"
+                                            )
+                                            progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                            def _progress(s: str) -> None:
+                                                try:
+                                                    progress_q.put_nowait(str(s))
+                                                except Exception:
+                                                    return
+
+                                            agent_task = asyncio.create_task(
+                                                asyncio.to_thread(
+                                                    run_codex_export_from_paths,
+                                                    api_key=api_key or "",
+                                                    model=codex_model,
+                                                    input_json_path=saved_input,
+                                                    input_schema_json_path=saved_schema or None,
+                                                    export_request=export_request,
+                                                    output_format=output_format,
+                                                    conversation_id=str(conv_id) if conv_id is not None else None,
+                                                    req_id=req_id,
+                                                    progress_fn=_progress,
+                                                )
+                                            )
+                                            if wait_reply:
+                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                            last_wait = time.time()
+                                            last_progress = last_wait
+                                            wait_interval_s = 15.0
+                                            while not agent_task.done():
+                                                try:
+                                                    while True:
+                                                        p = progress_q.get_nowait()
+                                                        if p:
+                                                            await _public_send_interim(
+                                                                ws, req_id=req_id, kind="progress", text=p
+                                                            )
+                                                            last_progress = time.time()
+                                                except queue.Empty:
+                                                    pass
+                                                now = time.time()
+                                                if (
+                                                    wait_reply
+                                                    and (now - last_wait) >= wait_interval_s
+                                                    and (now - last_progress) >= wait_interval_s
+                                                ):
+                                                    await _public_send_interim(
+                                                        ws, req_id=req_id, kind="wait", text=wait_reply
+                                                    )
+                                                    last_wait = now
+                                                await asyncio.sleep(0.2)
+
+                                            tool_result = {
+                                                "ok": True,
+                                                "export_ok": False,
+                                                "export_format": output_format,
+                                                "export_source_tool": source_tool_name,
+                                                "export_source_req_id": str(ev.get("req_id") or "") or None,
+                                            }
+                                            try:
+                                                exp = await agent_task
+                                                tool_result["export_ok"] = bool(getattr(exp, "ok", False))
+                                                tool_result["export_output_dir"] = getattr(exp, "output_dir", "")
+                                                tool_result["export_debug_file"] = getattr(exp, "debug_json_path", "")
+                                                tool_result["export_file_path"] = getattr(exp, "export_file_path", "")
+                                                tool_result["export_stop_reason"] = getattr(exp, "stop_reason", "")
+                                                err = getattr(exp, "error", None)
+                                                if err:
+                                                    tool_result["export_error"] = str(err)
+                                            except Exception as exc:
+                                                tool_result["export_ok"] = False
+                                                tool_result["export_error"] = str(exc)
+
+                                            export_path = str(tool_result.get("export_file_path") or "").strip()
+                                            if tool_result.get("export_ok") and export_path and os.path.exists(export_path):
+                                                if not is_allowed_download_path(export_path):
+                                                    tool_result["export_ok"] = False
+                                                    tool_result["export_error"] = "Export file path not allowed for download."
+                                                else:
+                                                    base_name = file_name_hint or os.path.basename(export_path)
+                                                    if not base_name:
+                                                        base_name = os.path.basename(export_path)
+                                                    mime = "text/csv" if output_format == "csv" else "application/json"
+                                                    token = create_download_token(
+                                                        file_path=export_path,
+                                                        filename=base_name,
+                                                        mime_type=mime,
+                                                        conversation_id=str(conv_id),
+                                                        metadata={
+                                                            "source_tool_name": source_tool_name,
+                                                            "source_req_id": str(ev.get("req_id") or "") or None,
+                                                        },
+                                                    )
+                                                    tool_result["download_token"] = token
+                                                    tool_result["download_url"] = f"/api/downloads/{token}"
+                                                    try:
+                                                        tool_result["size_bytes"] = int(os.path.getsize(export_path))
+                                                    except Exception:
+                                                        pass
+
+                                            try:
+                                                append_saved_run_index(
+                                                    conversation_id=str(conv_id),
+                                                    event={
+                                                        "kind": "export",
+                                                        "tool_name": source_tool_name,
+                                                        "req_id": req_id,
+                                                        "source_req_id": str(ev.get("req_id") or "") or None,
+                                                        "input_json_path": saved_input,
+                                                        "schema_json_path": saved_schema,
+                                                        "export_format": output_format,
+                                                        "export_request": export_request[:2000],
+                                                        "export_file_path": tool_result.get("export_file_path"),
+                                                        "download_token": tool_result.get("download_token"),
+                                                    },
+                                                )
+                                            except Exception:
+                                                pass
+
+                                            needs_followup_llm = True
+                                            final = ""
                                 else:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:
@@ -4097,6 +4613,26 @@ def create_app() -> FastAPI:
             "tts_vendors": ["xtts_local", "openai_tts"],
             "http_methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
         }
+
+    @app.get("/api/downloads/{token}")
+    def download_file(token: str) -> FileResponse:
+        """
+        Download a previously exported file by token.
+
+        NOTE: This uses an unguessable token and a strict allowlist of temp roots.
+        TODO(cleanup): add TTL + authentication/authorization as needed for production.
+        """
+        obj = load_download_token(token=token)
+        if not obj:
+            raise HTTPException(status_code=404, detail="Download token not found")
+        file_path = str(obj.get("file_path") or "").strip()
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        if not is_allowed_download_path(file_path):
+            raise HTTPException(status_code=403, detail="File path not allowed")
+        filename = str(obj.get("filename") or os.path.basename(file_path) or "download").strip()
+        mime_type = str(obj.get("mime_type") or "application/octet-stream").strip()
+        return FileResponse(path=file_path, media_type=mime_type, filename=filename)
 
     def _bot_to_dict(bot: Bot) -> dict:
         return {
