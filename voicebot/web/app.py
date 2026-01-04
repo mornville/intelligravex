@@ -28,7 +28,8 @@ from voicebot.config import Settings
 from voicebot.crypto import CryptoError, get_crypto_box
 from voicebot.db import init_db, make_engine
 from voicebot.asr.whisper_asr import WhisperASR
-from voicebot.llm.codex_http_agent import run_codex_http_agent_one_shot
+from voicebot.llm.codex_http_agent import run_codex_http_agent_one_shot, run_codex_http_agent_one_shot_from_paths
+from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
 from voicebot.models import Bot
 from voicebot.store import (
@@ -69,6 +70,7 @@ from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
+from voicebot.tools.recall_http_response import recall_http_response_tool_def
 from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
 
@@ -676,12 +678,15 @@ def create_app() -> FastAPI:
     def _web_search_tool_def() -> dict:
         return web_search_tool_def()
 
+    def _recall_http_response_tool_def() -> dict:
+        return recall_http_response_tool_def()
+
     def _system_tools_defs() -> list[dict[str, Any]]:
         # Tools that are always available for every bot.
         #
         # Note: `set_variable` is kept as a runtime alias for backwards-compat, but we only expose
         # `set_metadata` to the model to avoid duplicate tools that do the same thing.
-        return [_set_metadata_tool_def(), _web_search_tool_def()]
+        return [_set_metadata_tool_def(), _web_search_tool_def(), _recall_http_response_tool_def()]
 
     def _system_tools_public_list() -> list[dict[str, Any]]:
         # UI-friendly list of built-in tools (do not include full JSON Schema).
@@ -1731,6 +1736,148 @@ def create_app() -> FastAPI:
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
+                                    elif tool_name == "recall_http_response":
+                                        source_tool_name = str(patch.get("source_tool_name") or "").strip()
+                                        source_req_id = str(patch.get("source_req_id") or "").strip()
+                                        fields_required = str(patch.get("fields_required") or "").strip()
+                                        why_api_was_called = str(patch.get("why_api_was_called") or "").strip()
+
+                                        missing_keys = [
+                                            k
+                                            for k in ("source_tool_name", "fields_required", "why_api_was_called")
+                                            if not str(patch.get(k) or "").strip()
+                                        ]
+                                        if missing_keys:
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Missing required tool args.", "missing": missing_keys},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            ev = find_saved_run(
+                                                conversation_id=str(conv_id),
+                                                source_tool_name=source_tool_name,
+                                                source_req_id=(source_req_id or None),
+                                            )
+                                            if not ev:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {
+                                                        "message": f"No saved response found for tool '{source_tool_name}' in this conversation.",
+                                                        "tool_name": source_tool_name,
+                                                        "req_id": source_req_id or None,
+                                                    },
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                saved_input = str(ev.get("input_json_path") or "").strip()
+                                                saved_schema = str(ev.get("schema_json_path") or "").strip()
+                                                if not saved_input and str(ev.get("output_dir") or "").strip():
+                                                    saved_input = os.path.join(str(ev.get("output_dir") or ""), "input_response.json")
+                                                if not saved_schema and str(ev.get("output_dir") or "").strip():
+                                                    saved_schema = os.path.join(str(ev.get("output_dir") or ""), "input_schema.json")
+
+                                                source_tool_cfg = get_integration_tool_by_name(
+                                                    session, bot_id=bot.id, name=source_tool_name
+                                                )
+                                                codex_model = (
+                                                    (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                    or "gpt-5.1-codex-mini"
+                                                )
+                                                progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                                def _progress(s: str) -> None:
+                                                    try:
+                                                        progress_q.put_nowait(str(s))
+                                                    except Exception:
+                                                        return
+
+                                                agent_task = asyncio.create_task(
+                                                    asyncio.to_thread(
+                                                        run_codex_http_agent_one_shot_from_paths,
+                                                        api_key=api_key or "",
+                                                        model=codex_model,
+                                                        input_json_path=saved_input,
+                                                        input_schema_json_path=saved_schema or None,
+                                                        fields_required=fields_required,
+                                                        why_api_was_called=why_api_was_called,
+                                                        conversation_id=str(conv_id) if conv_id is not None else None,
+                                                        req_id=req_id,
+                                                        tool_codex_prompt=getattr(source_tool_cfg, "codex_prompt", "") or "",
+                                                        progress_fn=_progress,
+                                                    )
+                                                )
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                last_wait = time.time()
+                                                last_progress = last_wait
+                                                wait_interval_s = 15.0
+                                                while not agent_task.done():
+                                                    try:
+                                                        while True:
+                                                            p = progress_q.get_nowait()
+                                                            if p:
+                                                                await _send_interim(p, kind="progress")
+                                                                last_progress = time.time()
+                                                    except queue.Empty:
+                                                        pass
+                                                    now = time.time()
+                                                    if (
+                                                        wait_reply
+                                                        and (now - last_wait) >= wait_interval_s
+                                                        and (now - last_progress) >= wait_interval_s
+                                                    ):
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                        last_wait = now
+                                                    await asyncio.sleep(0.2)
+
+                                                tool_result = {
+                                                    "ok": True,
+                                                    "recall_source_tool": source_tool_name,
+                                                    "recall_source_req_id": str(ev.get("req_id") or "") or None,
+                                                }
+                                                try:
+                                                    agent_res = await agent_task
+                                                    tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
+                                                    tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
+                                                    tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
+                                                    tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
+                                                    tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
+                                                    tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
+                                                    tool_result["codex_continue_reason"] = getattr(agent_res, "continue_reason", "")
+                                                    tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                    err = getattr(agent_res, "error", None)
+                                                    if err:
+                                                        tool_result["codex_error"] = str(err)
+                                                except Exception as exc:
+                                                    tool_result["codex_ok"] = False
+                                                    tool_result["codex_error"] = str(exc)
+
+                                                try:
+                                                    append_saved_run_index(
+                                                        conversation_id=str(conv_id),
+                                                        event={
+                                                            "kind": "recall",
+                                                            "tool_name": source_tool_name,
+                                                            "req_id": req_id,
+                                                            "source_req_id": str(ev.get("req_id") or "") or None,
+                                                            "input_json_path": saved_input,
+                                                            "schema_json_path": saved_schema,
+                                                            "fields_required": fields_required,
+                                                            "why_api_was_called": why_api_was_called,
+                                                            "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                            "codex_ok": tool_result.get("codex_ok"),
+                                                        },
+                                                    )
+                                                except Exception:
+                                                    pass
+
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
                                     else:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
@@ -1870,12 +2017,34 @@ def create_app() -> FastAPI:
                                                             agent_res, "continue_reason", ""
                                                         )
                                                         tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                        saved_input_json_path = getattr(agent_res, "input_json_path", "")
+                                                        saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
                                                         err = getattr(agent_res, "error", None)
                                                         if err:
                                                             tool_result["codex_error"] = str(err)
                                                     except Exception as exc:
                                                         tool_result["codex_ok"] = False
                                                         tool_result["codex_error"] = str(exc)
+                                                        saved_input_json_path = ""
+                                                        saved_schema_json_path = ""
+
+                                                    try:
+                                                        append_saved_run_index(
+                                                            conversation_id=str(conv_id),
+                                                            event={
+                                                                "kind": "integration_http",
+                                                                "tool_name": tool_name,
+                                                                "req_id": req_id,
+                                                                "input_json_path": saved_input_json_path,
+                                                                "schema_json_path": saved_schema_json_path,
+                                                                "fields_required": fields_required,
+                                                                "why_api_was_called": why_api_was_called,
+                                                                "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                                "codex_ok": tool_result.get("codex_ok"),
+                                                            },
+                                                        )
+                                                    except Exception:
+                                                        pass
                                                     if speak:
                                                         now = time.time()
                                                         if now < tts_busy_until:
@@ -2541,6 +2710,148 @@ def create_app() -> FastAPI:
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
+                                    elif tool_name == "recall_http_response":
+                                        source_tool_name = str(patch.get("source_tool_name") or "").strip()
+                                        source_req_id = str(patch.get("source_req_id") or "").strip()
+                                        fields_required = str(patch.get("fields_required") or "").strip()
+                                        why_api_was_called = str(patch.get("why_api_was_called") or "").strip()
+
+                                        missing_keys = [
+                                            k
+                                            for k in ("source_tool_name", "fields_required", "why_api_was_called")
+                                            if not str(patch.get(k) or "").strip()
+                                        ]
+                                        if missing_keys:
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Missing required tool args.", "missing": missing_keys},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            ev = find_saved_run(
+                                                conversation_id=str(conv_id),
+                                                source_tool_name=source_tool_name,
+                                                source_req_id=(source_req_id or None),
+                                            )
+                                            if not ev:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {
+                                                        "message": f"No saved response found for tool '{source_tool_name}' in this conversation.",
+                                                        "tool_name": source_tool_name,
+                                                        "req_id": source_req_id or None,
+                                                    },
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                saved_input = str(ev.get("input_json_path") or "").strip()
+                                                saved_schema = str(ev.get("schema_json_path") or "").strip()
+                                                if not saved_input and str(ev.get("output_dir") or "").strip():
+                                                    saved_input = os.path.join(str(ev.get("output_dir") or ""), "input_response.json")
+                                                if not saved_schema and str(ev.get("output_dir") or "").strip():
+                                                    saved_schema = os.path.join(str(ev.get("output_dir") or ""), "input_schema.json")
+
+                                                source_tool_cfg = get_integration_tool_by_name(
+                                                    session, bot_id=bot.id, name=source_tool_name
+                                                )
+                                                codex_model = (
+                                                    (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                    or "gpt-5.1-codex-mini"
+                                                )
+                                                progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                                def _progress(s: str) -> None:
+                                                    try:
+                                                        progress_q.put_nowait(str(s))
+                                                    except Exception:
+                                                        return
+
+                                                agent_task = asyncio.create_task(
+                                                    asyncio.to_thread(
+                                                        run_codex_http_agent_one_shot_from_paths,
+                                                        api_key=api_key or "",
+                                                        model=codex_model,
+                                                        input_json_path=saved_input,
+                                                        input_schema_json_path=saved_schema or None,
+                                                        fields_required=fields_required,
+                                                        why_api_was_called=why_api_was_called,
+                                                        conversation_id=str(conv_id) if conv_id is not None else None,
+                                                        req_id=req_id,
+                                                        tool_codex_prompt=getattr(source_tool_cfg, "codex_prompt", "") or "",
+                                                        progress_fn=_progress,
+                                                    )
+                                                )
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                last_wait = time.time()
+                                                last_progress = last_wait
+                                                wait_interval_s = 15.0
+                                                while not agent_task.done():
+                                                    try:
+                                                        while True:
+                                                            p = progress_q.get_nowait()
+                                                            if p:
+                                                                await _send_interim(p, kind="progress")
+                                                                last_progress = time.time()
+                                                    except queue.Empty:
+                                                        pass
+                                                    now = time.time()
+                                                    if (
+                                                        wait_reply
+                                                        and (now - last_wait) >= wait_interval_s
+                                                        and (now - last_progress) >= wait_interval_s
+                                                    ):
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                        last_wait = now
+                                                    await asyncio.sleep(0.2)
+
+                                                tool_result = {
+                                                    "ok": True,
+                                                    "recall_source_tool": source_tool_name,
+                                                    "recall_source_req_id": str(ev.get("req_id") or "") or None,
+                                                }
+                                                try:
+                                                    agent_res = await agent_task
+                                                    tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
+                                                    tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
+                                                    tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
+                                                    tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
+                                                    tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
+                                                    tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
+                                                    tool_result["codex_continue_reason"] = getattr(agent_res, "continue_reason", "")
+                                                    tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                    err = getattr(agent_res, "error", None)
+                                                    if err:
+                                                        tool_result["codex_error"] = str(err)
+                                                except Exception as exc:
+                                                    tool_result["codex_ok"] = False
+                                                    tool_result["codex_error"] = str(exc)
+
+                                                try:
+                                                    append_saved_run_index(
+                                                        conversation_id=str(conv_id),
+                                                        event={
+                                                            "kind": "recall",
+                                                            "tool_name": source_tool_name,
+                                                            "req_id": req_id,
+                                                            "source_req_id": str(ev.get("req_id") or "") or None,
+                                                            "input_json_path": saved_input,
+                                                            "schema_json_path": saved_schema,
+                                                            "fields_required": fields_required,
+                                                            "why_api_was_called": why_api_was_called,
+                                                            "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                            "codex_ok": tool_result.get("codex_ok"),
+                                                        },
+                                                    )
+                                                except Exception:
+                                                    pass
+
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
                                     else:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
@@ -2686,12 +2997,34 @@ def create_app() -> FastAPI:
                                                             agent_res, "continue_reason", ""
                                                         )
                                                         tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                        saved_input_json_path = getattr(agent_res, "input_json_path", "")
+                                                        saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
                                                         err = getattr(agent_res, "error", None)
                                                         if err:
                                                             tool_result["codex_error"] = str(err)
                                                     except Exception as exc:
                                                         tool_result["codex_ok"] = False
                                                         tool_result["codex_error"] = str(exc)
+                                                        saved_input_json_path = ""
+                                                        saved_schema_json_path = ""
+
+                                                    try:
+                                                        append_saved_run_index(
+                                                            conversation_id=str(conv_id),
+                                                            event={
+                                                                "kind": "integration_http",
+                                                                "tool_name": tool_name,
+                                                                "req_id": req_id,
+                                                                "input_json_path": saved_input_json_path,
+                                                                "schema_json_path": saved_schema_json_path,
+                                                                "fields_required": fields_required,
+                                                                "why_api_was_called": why_api_was_called,
+                                                                "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                                "codex_ok": tool_result.get("codex_ok"),
+                                                            },
+                                                        )
+                                                    except Exception:
+                                                        pass
 
                                     add_message_with_metrics(
                                         session,
@@ -3267,6 +3600,152 @@ def create_app() -> FastAPI:
                                     if tool_failed or not next_reply:
                                         needs_followup_llm = True
                                         final = ""
+                                elif tool_name == "recall_http_response":
+                                    source_tool_name = str(patch.get("source_tool_name") or "").strip()
+                                    source_req_id = str(patch.get("source_req_id") or "").strip()
+                                    fields_required = str(patch.get("fields_required") or "").strip()
+                                    why_api_was_called = str(patch.get("why_api_was_called") or "").strip()
+
+                                    missing_keys = [
+                                        k
+                                        for k in ("source_tool_name", "fields_required", "why_api_was_called")
+                                        if not str(patch.get(k) or "").strip()
+                                    ]
+                                    if missing_keys:
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": "Missing required tool args.", "missing": missing_keys},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        final = ""
+                                    else:
+                                        ev = find_saved_run(
+                                            conversation_id=str(conv_id),
+                                            source_tool_name=source_tool_name,
+                                            source_req_id=(source_req_id or None),
+                                        )
+                                        if not ev:
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {
+                                                    "message": f"No saved response found for tool '{source_tool_name}' in this conversation.",
+                                                    "tool_name": source_tool_name,
+                                                    "req_id": source_req_id or None,
+                                                },
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            final = ""
+                                        else:
+                                            saved_input = str(ev.get("input_json_path") or "").strip()
+                                            saved_schema = str(ev.get("schema_json_path") or "").strip()
+                                            if not saved_input and str(ev.get("output_dir") or "").strip():
+                                                saved_input = os.path.join(str(ev.get("output_dir") or ""), "input_response.json")
+                                            if not saved_schema and str(ev.get("output_dir") or "").strip():
+                                                saved_schema = os.path.join(str(ev.get("output_dir") or ""), "input_schema.json")
+
+                                            source_tool_cfg = get_integration_tool_by_name(
+                                                session, bot_id=bot.id, name=source_tool_name
+                                            )
+                                            codex_model = (
+                                                (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                or "gpt-5.1-codex-mini"
+                                            )
+                                            progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                            def _progress(s: str) -> None:
+                                                try:
+                                                    progress_q.put_nowait(str(s))
+                                                except Exception:
+                                                    return
+
+                                            agent_task = asyncio.create_task(
+                                                asyncio.to_thread(
+                                                    run_codex_http_agent_one_shot_from_paths,
+                                                    api_key=api_key or "",
+                                                    model=codex_model,
+                                                    input_json_path=saved_input,
+                                                    input_schema_json_path=saved_schema or None,
+                                                    fields_required=fields_required,
+                                                    why_api_was_called=why_api_was_called,
+                                                    conversation_id=str(conv_id) if conv_id is not None else None,
+                                                    req_id=req_id,
+                                                    tool_codex_prompt=getattr(source_tool_cfg, "codex_prompt", "") or "",
+                                                    progress_fn=_progress,
+                                                )
+                                            )
+                                            if wait_reply:
+                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                            last_wait = time.time()
+                                            last_progress = last_wait
+                                            wait_interval_s = 15.0
+                                            while not agent_task.done():
+                                                try:
+                                                    while True:
+                                                        p = progress_q.get_nowait()
+                                                        if p:
+                                                            await _public_send_interim(
+                                                                ws, req_id=req_id, kind="progress", text=p
+                                                            )
+                                                            last_progress = time.time()
+                                                except queue.Empty:
+                                                    pass
+                                                now = time.time()
+                                                if (
+                                                    wait_reply
+                                                    and (now - last_wait) >= wait_interval_s
+                                                    and (now - last_progress) >= wait_interval_s
+                                                ):
+                                                    await _public_send_interim(
+                                                        ws, req_id=req_id, kind="wait", text=wait_reply
+                                                    )
+                                                    last_wait = now
+                                                await asyncio.sleep(0.2)
+
+                                            tool_result = {
+                                                "ok": True,
+                                                "recall_source_tool": source_tool_name,
+                                                "recall_source_req_id": str(ev.get("req_id") or "") or None,
+                                            }
+                                            try:
+                                                agent_res = await agent_task
+                                                tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
+                                                tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
+                                                tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
+                                                tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
+                                                tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
+                                                tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
+                                                tool_result["codex_continue_reason"] = getattr(agent_res, "continue_reason", "")
+                                                tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                err = getattr(agent_res, "error", None)
+                                                if err:
+                                                    tool_result["codex_error"] = str(err)
+                                            except Exception as exc:
+                                                tool_result["codex_ok"] = False
+                                                tool_result["codex_error"] = str(exc)
+
+                                            try:
+                                                append_saved_run_index(
+                                                    conversation_id=str(conv_id),
+                                                    event={
+                                                        "kind": "recall",
+                                                        "tool_name": source_tool_name,
+                                                        "req_id": req_id,
+                                                        "source_req_id": str(ev.get("req_id") or "") or None,
+                                                        "input_json_path": saved_input,
+                                                        "schema_json_path": saved_schema,
+                                                        "fields_required": fields_required,
+                                                        "why_api_was_called": why_api_was_called,
+                                                        "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                        "codex_ok": tool_result.get("codex_ok"),
+                                                    },
+                                                )
+                                            except Exception:
+                                                pass
+
+                                            needs_followup_llm = True
+                                            final = ""
                                 else:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:
@@ -3406,12 +3885,34 @@ def create_app() -> FastAPI:
                                                         agent_res, "continue_reason", ""
                                                     )
                                                     tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                    saved_input_json_path = getattr(agent_res, "input_json_path", "")
+                                                    saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
                                                     err = getattr(agent_res, "error", None)
                                                     if err:
                                                         tool_result["codex_error"] = str(err)
                                                 except Exception as exc:
                                                     tool_result["codex_ok"] = False
                                                     tool_result["codex_error"] = str(exc)
+                                                    saved_input_json_path = ""
+                                                    saved_schema_json_path = ""
+
+                                                try:
+                                                    append_saved_run_index(
+                                                        conversation_id=str(conv_id),
+                                                        event={
+                                                            "kind": "integration_http",
+                                                            "tool_name": tool_name,
+                                                            "req_id": req_id,
+                                                            "input_json_path": saved_input_json_path,
+                                                            "schema_json_path": saved_schema_json_path,
+                                                            "fields_required": fields_required,
+                                                            "why_api_was_called": why_api_was_called,
+                                                            "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                            "codex_ok": tool_result.get("codex_ok"),
+                                                        },
+                                                    )
+                                                except Exception:
+                                                    pass
 
                                 add_message_with_metrics(
                                     session,
