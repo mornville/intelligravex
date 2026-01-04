@@ -28,8 +28,7 @@ from voicebot.config import Settings
 from voicebot.crypto import CryptoError, get_crypto_box
 from voicebot.db import init_db, make_engine
 from voicebot.asr.whisper_asr import WhisperASR
-from voicebot.llm.codex_http_agent import run_codex_http_agent
-from voicebot.llm.conversation_artifacts import record_http_response_artifact
+from voicebot.llm.codex_http_agent import run_codex_http_agent_one_shot
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
 from voicebot.models import Bot
 from voicebot.store import (
@@ -754,16 +753,19 @@ def create_app() -> FastAPI:
             intent_schema = {
                 "type": "object",
                 "properties": {
-                    "what_to_search_for": {
+                    "fields_required": {
                         "type": "string",
-                        "description": "Precise data needed to answer the user's question.",
+                        "description": "Fields required from the HTTP response to craft the final user-facing response.",
                     },
-                    "why_to_search_for": {
+                    "why_api_was_called": {
                         "type": "string",
-                        "description": "User intent or business reason for this search.",
+                        "description": "User intent or business reason for calling this API.",
                     },
+                    # Backwards-compat: accept older keys if already present in existing tool calls.
+                    "what_to_search_for": {"type": "string"},
+                    "why_to_search_for": {"type": "string"},
                 },
-                "required": ["what_to_search_for", "why_to_search_for"],
+                "required": ["fields_required", "why_api_was_called"],
                 "additionalProperties": True,
             }
 
@@ -779,7 +781,7 @@ def create_app() -> FastAPI:
             else:
                 args_schema = {"allOf": [args_schema, intent_schema]}
 
-        schema = {
+        schema: dict[str, Any] = {
             "type": "object",
             "properties": {
                 "wait_reply": {
@@ -790,19 +792,20 @@ def create_app() -> FastAPI:
                     "description": "Arguments used to call the integration (required).",
                     **args_schema,
                 },
-                "next_reply": {
-                    "type": "string",
-                    "description": (
-                        "What the assistant should say next (no second LLM call). "
-                        "Variables like {{.firstName}} are allowed."
-                        if not use_codex_response
-                        else "Optional. If omitted, the backend will run a Codex agent and the main chat model will rephrase its output."
-                    ),
-                },
             },
-            "required": ["args"] if use_codex_response else ["args", "next_reply"],
             "additionalProperties": True,
         }
+        if use_codex_response:
+            schema["required"] = ["args"]
+        else:
+            schema["properties"]["next_reply"] = {
+                "type": "string",
+                "description": (
+                    "What the assistant should say next (no second LLM call). "
+                    "Variables like {{.firstName}} are allowed."
+                ),
+            }
+            schema["required"] = ["args", "next_reply"]
         return {
             "type": "function",
             "name": t.name,
@@ -811,7 +814,7 @@ def create_app() -> FastAPI:
             + (
                 "Return your spoken/text response in next_reply (you can use metadata variables like {{.firstName}})."
                 if not use_codex_response
-                else "If Codex mode is enabled, the backend runs a Codex agent to post-process the HTTP response and stores the result for the main model to rephrase."
+                else "If Codex mode is enabled, the backend runs a Codex agent to generate a result string, and the main chat model will rephrase it."
             ),
             "parameters": schema,
             "strict": False,
@@ -1046,7 +1049,12 @@ def create_app() -> FastAPI:
         required_args = _parse_required_args_json(getattr(tool, "args_required_json", "[]"))
         missing = _missing_required_args(required_args, tool_args or {})
         if bool(getattr(tool, "use_codex_response", False)):
-            missing += _missing_required_args(["what_to_search_for", "why_to_search_for"], tool_args or {})
+            args0 = tool_args or {}
+            # Prefer new keys, but accept old ones if present.
+            if not str(args0.get("fields_required") or "").strip() and not str(args0.get("what_to_search_for") or "").strip():
+                missing.append("fields_required")
+            if not str(args0.get("why_api_was_called") or "").strip() and not str(args0.get("why_to_search_for") or "").strip():
+                missing.append("why_api_was_called")
         if missing:
             return {
                 "__tool_args_error__": {
@@ -1057,6 +1065,8 @@ def create_app() -> FastAPI:
 
         # Internal intent keys (LLM-only); never forward to the upstream HTTP API.
         request_args = dict(tool_args or {})
+        request_args.pop("fields_required", None)
+        request_args.pop("why_api_was_called", None)
         request_args.pop("what_to_search_for", None)
         request_args.pop("why_to_search_for", None)
 
@@ -1788,11 +1798,15 @@ def create_app() -> FastAPI:
                                                 except Exception:
                                                     static_preview = ""
                                             if (not static_preview) and bool(getattr(tool_cfg, "use_codex_response", False)):
-                                                what_to_search_for = str(patch.get("what_to_search_for") or "").strip()
-                                                why_to_search_for = str(patch.get("why_to_search_for") or "").strip()
-                                                if not what_to_search_for or not why_to_search_for:
+                                                fields_required = str(
+                                                    patch.get("fields_required") or patch.get("what_to_search_for") or ""
+                                                ).strip()
+                                                why_api_was_called = str(
+                                                    patch.get("why_api_was_called") or patch.get("why_to_search_for") or ""
+                                                ).strip()
+                                                if not fields_required or not why_api_was_called:
                                                     tool_result["codex_ok"] = False
-                                                    tool_result["codex_error"] = "Missing what_to_search_for / why_to_search_for."
+                                                    tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                                 else:
                                                     codex_model = (
                                                         (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
@@ -1806,38 +1820,19 @@ def create_app() -> FastAPI:
                                                         except Exception:
                                                             return
 
-                                                    artifact_input_path = ""
-                                                    artifact_index_path = ""
-                                                    try:
-                                                        if conv_id is not None:
-                                                            rec = record_http_response_artifact(
-                                                                conversation_id=conv_id,
-                                                                tool_name=tool_name,
-                                                                method=getattr(tool_cfg, "method", None),
-                                                                url=getattr(tool_cfg, "url", None),
-                                                                what_to_search_for=what_to_search_for,
-                                                                why_to_search_for=why_to_search_for,
-                                                                response_json=response_json,
-                                                            )
-                                                            artifact_input_path = rec.get("response_path", "") or ""
-                                                            artifact_index_path = rec.get("index_path", "") or ""
-                                                    except Exception as exc:
-                                                        _progress(f"Codex agent: warning: failed to record artifact ({exc})")
-
                                                     agent_task = asyncio.create_task(
                                                         asyncio.to_thread(
-                                                            run_codex_http_agent,
+                                                            run_codex_http_agent_one_shot,
                                                             api_key=api_key or "",
                                                             model=codex_model,
                                                             response_json=response_json,
-                                                            what_to_search_for=what_to_search_for,
-                                                            why_to_search_for=why_to_search_for,
+                                                            fields_required=fields_required,
+                                                            why_api_was_called=why_api_was_called,
                                                             response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
-                                                            input_json_path=artifact_input_path or None,
-                                                            conversation_artifacts_index_path=artifact_index_path or None,
+                                                            conversation_id=str(conv_id) if conv_id is not None else None,
+                                                            req_id=req_id,
                                                             tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
                                                             progress_fn=_progress,
-                                                            max_cycles=2,
                                                         )
                                                     )
                                                     if wait_reply:
@@ -1867,9 +1862,7 @@ def create_app() -> FastAPI:
                                                         agent_res = await agent_task
                                                         tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
                                                         tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
-                                                        tool_result["codex_output_file"] = getattr(
-                                                            agent_res, "validated_json_path", ""
-                                                        )
+                                                        tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
                                                         tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
                                                         tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
                                                         tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
@@ -1921,15 +1914,20 @@ def create_app() -> FastAPI:
                                             needs_followup_llm = False
                                             rendered_reply = static_text
                                         else:
-                                            needs_followup_llm = _should_followup_llm_for_tool(
-                                                tool=tool_cfg, static_rendered=static_text
-                                            )
-                                            candidate = _render_with_meta(next_reply, meta_current).strip()
-                                            if candidate:
-                                                rendered_reply = candidate
-                                                needs_followup_llm = False
-                                            else:
+                                            if bool(getattr(tool_cfg, "use_codex_response", False)):
+                                                # In Codex mode, always ask the main chat model to rephrase the tool result.
+                                                needs_followup_llm = True
                                                 rendered_reply = ""
+                                            else:
+                                                needs_followup_llm = _should_followup_llm_for_tool(
+                                                    tool=tool_cfg, static_rendered=static_text
+                                                )
+                                                candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                if candidate:
+                                                    rendered_reply = candidate
+                                                    needs_followup_llm = False
+                                                else:
+                                                    rendered_reply = ""
                                     else:
                                         candidate = _render_with_meta(next_reply, meta_current).strip()
                                         rendered_reply = candidate or rendered_reply
@@ -2610,11 +2608,15 @@ def create_app() -> FastAPI:
                                                 except Exception:
                                                     static_preview = ""
                                             if (not static_preview) and bool(getattr(tool_cfg, "use_codex_response", False)):
-                                                what_to_search_for = str(patch.get("what_to_search_for") or "").strip()
-                                                why_to_search_for = str(patch.get("why_to_search_for") or "").strip()
-                                                if not what_to_search_for or not why_to_search_for:
+                                                fields_required = str(
+                                                    patch.get("fields_required") or patch.get("what_to_search_for") or ""
+                                                ).strip()
+                                                why_api_was_called = str(
+                                                    patch.get("why_api_was_called") or patch.get("why_to_search_for") or ""
+                                                ).strip()
+                                                if not fields_required or not why_api_was_called:
                                                     tool_result["codex_ok"] = False
-                                                    tool_result["codex_error"] = "Missing what_to_search_for / why_to_search_for."
+                                                    tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                                 else:
                                                     codex_model = (
                                                         (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
@@ -2628,38 +2630,19 @@ def create_app() -> FastAPI:
                                                         except Exception:
                                                             return
 
-                                                    artifact_input_path = ""
-                                                    artifact_index_path = ""
-                                                    try:
-                                                        if conv_id is not None:
-                                                            rec = record_http_response_artifact(
-                                                                conversation_id=conv_id,
-                                                                tool_name=tool_name,
-                                                                method=getattr(tool_cfg, "method", None),
-                                                                url=getattr(tool_cfg, "url", None),
-                                                                what_to_search_for=what_to_search_for,
-                                                                why_to_search_for=why_to_search_for,
-                                                                response_json=response_json,
-                                                            )
-                                                            artifact_input_path = rec.get("response_path", "") or ""
-                                                            artifact_index_path = rec.get("index_path", "") or ""
-                                                    except Exception as exc:
-                                                        _progress(f"Codex agent: warning: failed to record artifact ({exc})")
-
                                                     agent_task = asyncio.create_task(
                                                         asyncio.to_thread(
-                                                            run_codex_http_agent,
+                                                            run_codex_http_agent_one_shot,
                                                             api_key=api_key or "",
                                                             model=codex_model,
                                                             response_json=response_json,
-                                                            what_to_search_for=what_to_search_for,
-                                                            why_to_search_for=why_to_search_for,
+                                                            fields_required=fields_required,
+                                                            why_api_was_called=why_api_was_called,
                                                             response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
-                                                            input_json_path=artifact_input_path or None,
-                                                            conversation_artifacts_index_path=artifact_index_path or None,
+                                                            conversation_id=str(conv_id) if conv_id is not None else None,
+                                                            req_id=req_id,
                                                             tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
                                                             progress_fn=_progress,
-                                                            max_cycles=2,
                                                         )
                                                     )
                                                     if wait_reply:
@@ -2695,9 +2678,7 @@ def create_app() -> FastAPI:
                                                         agent_res = await agent_task
                                                         tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
                                                         tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
-                                                        tool_result["codex_output_file"] = getattr(
-                                                            agent_res, "validated_json_path", ""
-                                                        )
+                                                        tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
                                                         tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
                                                         tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
                                                         tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
@@ -2767,7 +2748,9 @@ def create_app() -> FastAPI:
                                                 if tool_failed
                                                 else ""
                                             )
-                                            + "Using the latest tool result(s) above, write the next assistant reply. Do not call any tools.",
+                                            + "Using the latest tool result(s) above, write the next assistant reply. "
+                                            "If the tool result contains codex_result_text, rephrase it for the user and do not mention file paths. "
+                                            "Do not call any tools.",
                                         )
                                     )
                                 follow_llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
@@ -3347,11 +3330,15 @@ def create_app() -> FastAPI:
                                             except Exception:
                                                 static_preview = ""
                                         if (not static_preview) and bool(getattr(tool_cfg, "use_codex_response", False)):
-                                            what_to_search_for = str(patch.get("what_to_search_for") or "").strip()
-                                            why_to_search_for = str(patch.get("why_to_search_for") or "").strip()
-                                            if not what_to_search_for or not why_to_search_for:
+                                            fields_required = str(
+                                                patch.get("fields_required") or patch.get("what_to_search_for") or ""
+                                            ).strip()
+                                            why_api_was_called = str(
+                                                patch.get("why_api_was_called") or patch.get("why_to_search_for") or ""
+                                            ).strip()
+                                            if not fields_required or not why_api_was_called:
                                                 tool_result["codex_ok"] = False
-                                                tool_result["codex_error"] = "Missing what_to_search_for / why_to_search_for."
+                                                tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                             else:
                                                 codex_model = (
                                                     (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
@@ -3365,38 +3352,19 @@ def create_app() -> FastAPI:
                                                     except Exception:
                                                         return
 
-                                                artifact_input_path = ""
-                                                artifact_index_path = ""
-                                                try:
-                                                    if conv_id is not None:
-                                                        rec = record_http_response_artifact(
-                                                            conversation_id=conv_id,
-                                                            tool_name=tool_name,
-                                                            method=getattr(tool_cfg, "method", None),
-                                                            url=getattr(tool_cfg, "url", None),
-                                                            what_to_search_for=what_to_search_for,
-                                                            why_to_search_for=why_to_search_for,
-                                                            response_json=response_json,
-                                                        )
-                                                        artifact_input_path = rec.get("response_path", "") or ""
-                                                        artifact_index_path = rec.get("index_path", "") or ""
-                                                except Exception as exc:
-                                                    _progress(f"Codex agent: warning: failed to record artifact ({exc})")
-
                                                 agent_task = asyncio.create_task(
                                                     asyncio.to_thread(
-                                                        run_codex_http_agent,
+                                                        run_codex_http_agent_one_shot,
                                                         api_key=api_key or "",
                                                         model=codex_model,
                                                         response_json=response_json,
-                                                        what_to_search_for=what_to_search_for,
-                                                        why_to_search_for=why_to_search_for,
+                                                        fields_required=fields_required,
+                                                        why_api_was_called=why_api_was_called,
                                                         response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
-                                                        input_json_path=artifact_input_path or None,
-                                                        conversation_artifacts_index_path=artifact_index_path or None,
+                                                        conversation_id=str(conv_id) if conv_id is not None else None,
+                                                        req_id=req_id,
                                                         tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
                                                         progress_fn=_progress,
-                                                        max_cycles=2,
                                                     )
                                                 )
                                                 if wait_reply:
@@ -3430,9 +3398,7 @@ def create_app() -> FastAPI:
                                                     agent_res = await agent_task
                                                     tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
                                                     tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
-                                                    tool_result["codex_output_file"] = getattr(
-                                                        agent_res, "validated_json_path", ""
-                                                    )
+                                                    tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
                                                     tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
                                                     tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
                                                     tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
@@ -3473,15 +3439,19 @@ def create_app() -> FastAPI:
                                         needs_followup_llm = False
                                         final = static_text
                                     else:
-                                        needs_followup_llm = _should_followup_llm_for_tool(
-                                            tool=tool_cfg, static_rendered=static_text
-                                        )
-                                        candidate = _render_with_meta(next_reply, meta_current).strip()
-                                        if candidate:
-                                            final = candidate
-                                            needs_followup_llm = False
-                                        else:
+                                        if bool(getattr(tool_cfg, "use_codex_response", False)):
+                                            needs_followup_llm = True
                                             final = ""
+                                        else:
+                                            needs_followup_llm = _should_followup_llm_for_tool(
+                                                tool=tool_cfg, static_rendered=static_text
+                                            )
+                                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                                            if candidate:
+                                                final = candidate
+                                                needs_followup_llm = False
+                                            else:
+                                                final = ""
                                 else:
                                     candidate = _render_with_meta(next_reply, meta_current).strip()
                                     final = candidate or final

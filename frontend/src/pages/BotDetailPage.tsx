@@ -688,8 +688,9 @@ Rules:
                 placeholder=""
               />
               <div className="muted">
-                The LLM calls this tool with <span className="mono">{'{ "args": { ... }, "next_reply": "..." }'}</span> (if “Use Codex for response” is
-                enabled, <span className="mono">next_reply</span> is optional). These keys will be required inside <span className="mono">args</span>.
+                The LLM calls this tool with <span className="mono">{'{ "args": { ... }, "wait_reply": "..." }'}</span>. If “Use Codex for response” is
+                enabled, the backend runs Codex and the main chat model rephrases the tool result (don’t rely on <span className="mono">next_reply</span>).
+                These keys will be required inside <span className="mono">args</span>.
               </div>
             </div>
             <div className="formRow">
