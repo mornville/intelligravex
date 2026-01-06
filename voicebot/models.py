@@ -24,6 +24,9 @@ class Bot(SQLModel, table=True):
     openai_model: str = "o4-mini"
     web_search_model: str = "gpt-4o-mini"
     codex_model: str = "gpt-5.1-codex-mini"
+    # List of tool names disabled for this bot (JSON list stored as text).
+    # Applies to system tools (e.g. web_search, recall_http_response) and integration tools by name.
+    disabled_tools_json: str = "[]"
     system_prompt: str = "You are a fast, helpful voice assistant. Keep answers concise unless asked."
     openai_key_id: Optional[UUID] = Field(default=None, foreign_key="apikey.id")
 
@@ -130,6 +133,8 @@ class IntegrationTool(SQLModel, table=True):
 
     # If true, backend uses the bot's codex_model to generate the post-tool reply (instead of trusting next_reply).
     use_codex_response: bool = Field(default=False)
+    # If false, this tool is not exposed to the LLM and cannot be executed.
+    enabled: bool = Field(default=True)
 
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)

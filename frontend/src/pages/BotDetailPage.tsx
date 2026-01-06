@@ -31,6 +31,7 @@ export default function BotDetailPage() {
     description: '',
     url: '',
     method: 'GET',
+    enabled: true,
     use_codex_response: false,
     args_required_csv: '',
     headers_template_json: '{}',
@@ -138,6 +139,7 @@ Rules:
       description: '',
       url: '',
       method: (options?.http_methods?.[0] || 'GET') as any,
+      enabled: true,
       use_codex_response: false,
       args_required_csv: '',
       headers_template_json: '{}',
@@ -160,6 +162,7 @@ Rules:
       description: t.description || '',
       url: t.url,
       method: t.method || 'GET',
+      enabled: Boolean(t.enabled ?? true),
       use_codex_response: Boolean(t.use_codex_response),
       args_required_csv: (t.args_required || []).join(', '),
       // Write-only: never hydrate secrets back into the UI.
@@ -196,6 +199,7 @@ Rules:
           description: toolForm.description,
           url,
           method: toolForm.method,
+          enabled: Boolean(toolForm.enabled),
           use_codex_response: Boolean(toolForm.use_codex_response),
           args_required,
           request_body_template: toolForm.request_body_template || '{}',
@@ -215,6 +219,7 @@ Rules:
           description: toolForm.description,
           url,
           method: toolForm.method,
+          enabled: Boolean(toolForm.enabled),
           use_codex_response: Boolean(toolForm.use_codex_response),
           args_required,
           headers_template_json: toolForm.headers_template_json || '{}',
@@ -245,6 +250,35 @@ Rules:
       setErr(String(e?.message || e))
     }
   }
+
+  function toggleSystemTool(name: string, enabled: boolean) {
+    setSystemTools((prev) => prev.map((t) => (t.name === name ? { ...t, enabled } : t)))
+  }
+
+  async function toggleIntegrationTool(t: IntegrationTool, enabled: boolean) {
+    if (!botId) return
+    setErr(null)
+    try {
+      await apiPut<IntegrationTool>(`/api/bots/${botId}/tools/${t.id}`, { enabled })
+      setTools((prev) => prev.map((x) => (x.id === t.id ? { ...x, enabled } : x)))
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
+
+  async function saveSystemTools() {
+    if (!bot) return
+    const disabled = systemTools.filter((t) => t.enabled === false).map((t) => t.name)
+    await save({ disabled_tools: disabled })
+  }
+
+  const systemToolsDirty = useMemo(() => {
+    const a = new Set<string>(bot?.disabled_tools || [])
+    const b = new Set<string>(systemTools.filter((t) => t.enabled === false).map((t) => t.name))
+    if (a.size !== b.size) return true
+    for (const x of a) if (!b.has(x)) return true
+    return false
+  }, [bot?.disabled_tools, systemTools])
 
   return (
     <div className="page">
@@ -534,11 +568,15 @@ Rules:
                 <>
                   <div className="cardSubTitle">System tools (default)</div>
                   <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                    <div className="muted">Built-in tools available to every bot (not editable here).</div>
+                    <div className="muted">Toggle built-in tools per bot. Click “Update tools” to save.</div>
+                    <button className="btn" onClick={() => void saveSystemTools()} disabled={!systemToolsDirty || saving}>
+                      Update tools
+                    </button>
                   </div>
                   <table className="table" style={{ marginBottom: 16 }}>
                     <thead>
                       <tr>
+                        <th>Enabled</th>
                         <th>Name</th>
                         <th>Description</th>
                       </tr>
@@ -546,6 +584,14 @@ Rules:
                     <tbody>
                       {systemTools.map((t) => (
                         <tr key={t.name}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(t.enabled ?? true)}
+                              disabled={t.can_disable === false}
+                              onChange={(e) => toggleSystemTool(t.name, e.target.checked)}
+                            />
+                          </td>
                           <td className="mono">{t.name}</td>
                           <td className="muted" style={{ maxWidth: 520 }}>
                             {t.description}
@@ -573,6 +619,7 @@ Rules:
                   <thead>
                     <tr>
                       <th>Name</th>
+                      <th>Enabled</th>
                       <th>Method</th>
                       <th>URL</th>
                       <th />
@@ -582,6 +629,13 @@ Rules:
                     {tools.map((t) => (
                       <tr key={t.id}>
                         <td className="mono">{t.name}</td>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(t.enabled ?? true)}
+                            onChange={(e) => void toggleIntegrationTool(t, e.target.checked)}
+                          />
+                        </td>
                         <td className="mono">{t.method}</td>
                         <td className="mono" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {t.url}
@@ -631,9 +685,9 @@ Rules:
                 placeholder=""
               />
             </div>
-            <div className="formRow">
-              <label>
-                Description{' '}
+              <div className="formRow">
+                <label>
+                  Description{' '}
                 <HelpTip>
                   <div className="tipTitle">Example</div>
                   <pre className="tipPre">{'Fetch user profile (firstName, lastName, dob) by user_id.'}</pre>
@@ -655,6 +709,17 @@ Rules:
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="formRow">
+                <label>Enabled</label>
+                <label className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(toolForm.enabled)}
+                    onChange={(e) => setToolForm((p) => ({ ...p, enabled: e.target.checked }))}
+                  />
+                  <span className="muted">When disabled, the LLM cannot call this integration.</span>
+                </label>
               </div>
               <div className="formRow">
                 <label>

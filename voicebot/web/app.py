@@ -356,6 +356,7 @@ class BotUpdateRequest(BaseModel):
     tts_chunk_max_chars: Optional[int] = None
     start_message_mode: Optional[str] = None
     start_message_text: Optional[str] = None
+    disabled_tools: Optional[list[str]] = None
 
 
 class IntegrationToolCreateRequest(BaseModel):
@@ -364,6 +365,7 @@ class IntegrationToolCreateRequest(BaseModel):
     url: str
     method: str = "GET"
     use_codex_response: bool = False
+    enabled: bool = True
     args_required: list[str] = []
     headers_template_json: str = "{}"
     request_body_template: str = "{}"
@@ -380,6 +382,7 @@ class IntegrationToolUpdateRequest(BaseModel):
     url: Optional[str] = None
     method: Optional[str] = None
     use_codex_response: Optional[bool] = None
+    enabled: Optional[bool] = None
     args_required: Optional[list[str]] = None
     headers_template_json: Optional[str] = None
     request_body_template: Optional[str] = None
@@ -687,6 +690,23 @@ def create_app() -> FastAPI:
     def _export_http_response_tool_def() -> dict:
         return export_http_response_tool_def()
 
+    def _disabled_tool_names(bot: Bot) -> set[str]:
+        raw = (getattr(bot, "disabled_tools_json", "") or "[]").strip() or "[]"
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            obj = []
+        out: set[str] = set()
+        if isinstance(obj, list):
+            for x in obj:
+                s = str(x or "").strip()
+                if s:
+                    out.add(s)
+        # Never allow disabling set_metadata; conversations depend on it.
+        out.discard("set_metadata")
+        out.discard("set_variable")
+        return out
+
     def _system_tools_defs() -> list[dict[str, Any]]:
         # Tools that are always available for every bot.
         #
@@ -699,14 +719,20 @@ def create_app() -> FastAPI:
             _export_http_response_tool_def(),
         ]
 
-    def _system_tools_public_list() -> list[dict[str, Any]]:
+    def _system_tools_public_list(*, disabled: set[str]) -> list[dict[str, Any]]:
         # UI-friendly list of built-in tools (do not include full JSON Schema).
         out: list[dict[str, Any]] = []
         for d in _system_tools_defs():
+            name = str(d.get("name") or "")
+            if not name:
+                continue
+            can_disable = name not in ("set_metadata", "set_variable")
             out.append(
                 {
-                    "name": str(d.get("name") or ""),
+                    "name": name,
                     "description": str(d.get("description") or ""),
+                    "enabled": name not in disabled,
+                    "can_disable": can_disable,
                 }
             )
         return [x for x in out if x.get("name")]
@@ -837,8 +863,14 @@ def create_app() -> FastAPI:
         }
 
     def _build_tools_for_bot(session: Session, bot_id: UUID) -> list[dict[str, Any]]:
-        tools: list[dict[str, Any]] = list(_system_tools_defs())
+        bot = get_bot(session, bot_id)
+        disabled = _disabled_tool_names(bot)
+        tools: list[dict[str, Any]] = [d for d in _system_tools_defs() if str(d.get("name") or "") not in disabled]
         for t in list_integration_tools(session, bot_id=bot_id):
+            if not bool(getattr(t, "enabled", True)):
+                continue
+            if str(getattr(t, "name", "") or "").strip() in disabled:
+                continue
             try:
                 tools.append(_integration_tool_def(t))
             except Exception:
@@ -1631,6 +1663,7 @@ def create_app() -> FastAPI:
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
+                                disabled_tools = _disabled_tool_names(bot)
 
                                 for tc in tool_calls:
                                     tool_name = tc.name
@@ -1675,7 +1708,15 @@ def create_app() -> FastAPI:
                                     tool_cfg: IntegrationTool | None = None
                                     response_json: Any | None = None
 
-                                    if tool_name == "set_metadata":
+                                    if tool_name in disabled_tools:
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": f"Tool '{tool_name}' is disabled for this bot."},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
+                                    elif tool_name == "set_metadata":
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
@@ -2231,21 +2272,29 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        task = asyncio.create_task(
-                                            asyncio.to_thread(
-                                                _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                        if not bool(getattr(tool_cfg, "enabled", True)):
+                                            response_json = {
+                                                "__tool_args_error__": {
+                                                    "missing": [],
+                                                    "message": f"Tool '{tool_name}' is disabled for this bot.",
+                                                }
+                                            }
+                                        else:
+                                            task = asyncio.create_task(
+                                                asyncio.to_thread(
+                                                    _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                                )
                                             )
-                                        )
-                                        if wait_reply:
-                                            await _send_interim(wait_reply, kind="wait")
-                                        while True:
-                                            try:
-                                                response_json = await asyncio.wait_for(task, timeout=60.0)
-                                                break
-                                            except asyncio.TimeoutError:
-                                                if wait_reply:
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                continue
+                                            if wait_reply:
+                                                await _send_interim(wait_reply, kind="wait")
+                                            while True:
+                                                try:
+                                                    response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                    break
+                                                except asyncio.TimeoutError:
+                                                    if wait_reply:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                    continue
                                         if speak:
                                             now = time.time()
                                             if now < tts_busy_until:
@@ -2944,7 +2993,9 @@ def create_app() -> FastAPI:
                                     return
 
                             with Session(engine) as session:
+                                bot2 = get_bot(session, bot_id)
                                 meta_current = _get_conversation_meta(session, conversation_id=conv_id)
+                                disabled_tools = _disabled_tool_names(bot2)
 
                                 for tc in tool_calls:
                                     tool_name = tc.name
@@ -2989,7 +3040,15 @@ def create_app() -> FastAPI:
                                     tool_cfg: IntegrationTool | None = None
                                     response_json: Any | None = None
 
-                                    if tool_name == "set_metadata":
+                                    if tool_name in disabled_tools:
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": f"Tool '{tool_name}' is disabled for this bot."},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
+                                    elif tool_name == "set_metadata":
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
@@ -3205,21 +3264,29 @@ def create_app() -> FastAPI:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
                                             raise RuntimeError(f"Unknown tool: {tool_name}")
-                                        task = asyncio.create_task(
-                                            asyncio.to_thread(
-                                                _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                        if not bool(getattr(tool_cfg, "enabled", True)):
+                                            response_json = {
+                                                "__tool_args_error__": {
+                                                    "missing": [],
+                                                    "message": f"Tool '{tool_name}' is disabled for this bot.",
+                                                }
+                                            }
+                                        else:
+                                            task = asyncio.create_task(
+                                                asyncio.to_thread(
+                                                    _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                                )
                                             )
-                                        )
-                                        if wait_reply:
-                                            await _send_interim(wait_reply, kind="wait")
-                                        while True:
-                                            try:
-                                                response_json = await asyncio.wait_for(task, timeout=60.0)
-                                                break
-                                            except asyncio.TimeoutError:
-                                                if wait_reply:
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                continue
+                                            if wait_reply:
+                                                await _send_interim(wait_reply, kind="wait")
+                                            while True:
+                                                try:
+                                                    response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                    break
+                                                except asyncio.TimeoutError:
+                                                    if wait_reply:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                    continue
                                         if speak:
                                             now = time.time()
                                             if now < tts_busy_until:
@@ -3843,6 +3910,7 @@ def create_app() -> FastAPI:
 
                         if tool_calls:
                             meta_current = _get_conversation_meta(session, conversation_id=conv_id)
+                            disabled_tools = _disabled_tool_names(bot)
                             final = ""
                             needs_followup_llm = False
                             tool_failed = False
@@ -3877,7 +3945,15 @@ def create_app() -> FastAPI:
 
                                 tool_cfg: IntegrationTool | None = None
                                 response_json: Any | None = None
-                                if tool_name == "set_metadata":
+                                if tool_name in disabled_tools:
+                                    tool_result = {
+                                        "ok": False,
+                                        "error": {"message": f"Tool '{tool_name}' is disabled for this bot."},
+                                    }
+                                    tool_failed = True
+                                    needs_followup_llm = True
+                                    final = ""
+                                elif tool_name == "set_metadata":
                                     new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                     tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                 elif tool_name == "web_search":
@@ -4266,21 +4342,31 @@ def create_app() -> FastAPI:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:
                                         raise RuntimeError(f"Unknown tool: {tool_name}")
-                                    task = asyncio.create_task(
-                                        asyncio.to_thread(
-                                            _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                    if not bool(getattr(tool_cfg, "enabled", True)):
+                                        response_json = {
+                                            "__tool_args_error__": {
+                                                "missing": [],
+                                                "message": f"Tool '{tool_name}' is disabled for this bot.",
+                                            }
+                                        }
+                                    else:
+                                        task = asyncio.create_task(
+                                            asyncio.to_thread(
+                                                _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                                            )
                                         )
-                                    )
-                                    if wait_reply:
-                                        await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                    while True:
-                                        try:
-                                            response_json = await asyncio.wait_for(task, timeout=60.0)
-                                            break
-                                        except asyncio.TimeoutError:
-                                            if wait_reply:
-                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                            continue
+                                        if wait_reply:
+                                            await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                        while True:
+                                            try:
+                                                response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                break
+                                            except asyncio.TimeoutError:
+                                                if wait_reply:
+                                                    await _public_send_interim(
+                                                        ws, req_id=req_id, kind="wait", text=wait_reply
+                                                    )
+                                                continue
                                     if isinstance(response_json, dict) and "__tool_args_error__" in response_json:
                                         err = response_json["__tool_args_error__"] or {}
                                         tool_result = {"ok": False, "error": err}
@@ -4635,12 +4721,14 @@ def create_app() -> FastAPI:
         return FileResponse(path=file_path, media_type=mime_type, filename=filename)
 
     def _bot_to_dict(bot: Bot) -> dict:
+        disabled = _disabled_tool_names(bot)
         return {
             "id": str(bot.id),
             "name": bot.name,
             "openai_model": bot.openai_model,
             "web_search_model": getattr(bot, "web_search_model", bot.openai_model),
             "codex_model": getattr(bot, "codex_model", "gpt-5.1-codex-mini"),
+            "disabled_tools": sorted(disabled),
             "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
             "language": bot.language,
@@ -4671,6 +4759,7 @@ def create_app() -> FastAPI:
             "description": t.description,
             "url": t.url,
             "method": t.method,
+            "enabled": bool(getattr(t, "enabled", True)),
             "args_required": _parse_required_args_json(getattr(t, "args_required_json", "[]")),
             # Never expose secret headers (write-only). Return masked preview for UI.
             "headers_template_json": "{}",
@@ -4753,6 +4842,20 @@ def create_app() -> FastAPI:
                 patch[k] = (v or "").strip()
             elif k == "openai_tts_speed":
                 patch[k] = float(v) if v is not None else 1.0
+            elif k == "disabled_tools":
+                vals = v or []
+                if not isinstance(vals, list):
+                    vals = []
+                cleaned: list[str] = []
+                for x in vals:
+                    s = str(x or "").strip()
+                    if not s:
+                        continue
+                    if s in ("set_metadata", "set_variable"):
+                        continue
+                    if s not in cleaned:
+                        cleaned.append(s)
+                patch["disabled_tools_json"] = json.dumps(cleaned, ensure_ascii=False)
             else:
                 patch[k] = v
         bot = update_bot(session, bot_id, patch)
@@ -4765,9 +4868,14 @@ def create_app() -> FastAPI:
 
     @app.get("/api/bots/{bot_id}/tools")
     def api_list_tools(bot_id: UUID, session: Session = Depends(get_session)) -> dict:
-        _ = get_bot(session, bot_id)
+        bot = get_bot(session, bot_id)
         tools = list_integration_tools(session, bot_id=bot_id)
-        return {"items": [_tool_to_dict(t) for t in tools], "system_tools": _system_tools_public_list()}
+        disabled = _disabled_tool_names(bot)
+        return {
+            "items": [_tool_to_dict(t) for t in tools],
+            "system_tools": _system_tools_public_list(disabled=disabled),
+            "disabled_tools": sorted(disabled),
+        }
 
     @app.post("/api/bots/{bot_id}/tools")
     def api_create_tool(bot_id: UUID, payload: IntegrationToolCreateRequest, session: Session = Depends(get_session)) -> dict:
@@ -4784,6 +4892,7 @@ def create_app() -> FastAPI:
             url=payload.url,
             method=(payload.method or "GET").upper(),
             use_codex_response=bool(payload.use_codex_response),
+            enabled=bool(payload.enabled),
             args_required_json=json.dumps(payload.args_required or [], ensure_ascii=False),
             headers_template_json=payload.headers_template_json or "{}",
             request_body_template=payload.request_body_template or "{}",

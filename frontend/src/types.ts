@@ -24,6 +24,7 @@ export type Bot = {
   tts_chunk_max_chars: number
   start_message_mode: 'llm' | 'static'
   start_message_text: string
+  disabled_tools?: string[]
   stats?: {
     conversations: number
     input_tokens: number
@@ -122,6 +123,7 @@ export type IntegrationTool = {
   description: string
   url: string
   method: string
+  enabled?: boolean
   use_codex_response?: boolean
   args_required: string[]
   headers_template_json: string
@@ -140,4 +142,6 @@ export type IntegrationTool = {
 export type SystemTool = {
   name: string
   description: string
+  enabled?: boolean
+  can_disable?: boolean
 }
