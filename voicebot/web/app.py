@@ -2240,7 +2240,7 @@ def create_app() -> FastAPI:
                                             await _send_interim(wait_reply, kind="wait")
                                         while True:
                                             try:
-                                                response_json = await asyncio.wait_for(task, timeout=1000.0)
+                                                response_json = await asyncio.wait_for(task, timeout=60.0)
                                                 break
                                             except asyncio.TimeoutError:
                                                 if wait_reply:
@@ -3214,7 +3214,7 @@ def create_app() -> FastAPI:
                                             await _send_interim(wait_reply, kind="wait")
                                         while True:
                                             try:
-                                                response_json = await asyncio.wait_for(task, timeout=7.0)
+                                                response_json = await asyncio.wait_for(task, timeout=60.0)
                                                 break
                                             except asyncio.TimeoutError:
                                                 if wait_reply:
@@ -4275,7 +4275,7 @@ def create_app() -> FastAPI:
                                         await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
                                     while True:
                                         try:
-                                            response_json = await asyncio.wait_for(task, timeout=7.0)
+                                            response_json = await asyncio.wait_for(task, timeout=60.0)
                                             break
                                         except asyncio.TimeoutError:
                                             if wait_reply:
