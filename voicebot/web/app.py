@@ -399,6 +399,23 @@ def create_app() -> FastAPI:
     init_db(engine)
 
     app = FastAPI(title="Intelligravex VoiceBot Studio")
+
+    download_base_url = (getattr(settings, "download_base_url", "") or "127.0.0.1:8000").strip()
+
+    def _download_url_for_token(token: str) -> str:
+        """
+        Builds an absolute download URL for /api/downloads/{token}.
+
+        Configure via VOICEBOT_DOWNLOAD_BASE_URL (supports full URL or host[:port]).
+        """
+        base = (download_base_url or "").strip()
+        if not base:
+            return f"/api/downloads/{token}"
+        if not (base.startswith("http://") or base.startswith("https://")):
+            base = "http://" + base
+        base = base.rstrip("/")
+        return f"{base}/api/downloads/{token}"
+
     cors_raw = (os.environ.get("VOICEBOT_CORS_ORIGINS") or "").strip()
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()] if cors_raw else []
     cors_origin_regex: str | None = None
@@ -2072,7 +2089,7 @@ def create_app() -> FastAPI:
                                                             },
                                                         )
                                                         tool_result["download_token"] = token
-                                                        tool_result["download_url"] = f"/api/downloads/{token}"
+                                                        tool_result["download_url"] = _download_url_for_token(token)
                                                         try:
                                                             tool_result["size_bytes"] = int(os.path.getsize(export_path))
                                                         except Exception:
@@ -2241,7 +2258,7 @@ def create_app() -> FastAPI:
                                                             },
                                                         )
                                                         tool_result["download_token"] = token
-                                                        tool_result["download_url"] = f"/api/downloads/{token}"
+                                                        tool_result["download_url"] = _download_url_for_token(token)
                                                         try:
                                                             tool_result["size_bytes"] = int(os.path.getsize(export_path))
                                                         except Exception:
@@ -4311,7 +4328,7 @@ def create_app() -> FastAPI:
                                                         },
                                                     )
                                                     tool_result["download_token"] = token
-                                                    tool_result["download_url"] = f"/api/downloads/{token}"
+                                                    tool_result["download_url"] = _download_url_for_token(token)
                                                     try:
                                                         tool_result["size_bytes"] = int(os.path.getsize(export_path))
                                                     except Exception:

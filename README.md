@@ -1,9 +1,31 @@
 # Intelligravex VoiceBot
 
-Continuous, local, end-to-end AI voice bot:
+Continuous, local, end-to-end AI voice bot + Studio:
 - **ASR:** Whisper (local)
 - **LLM:** OpenAI `gpt-4o`
 - **TTS:** Coqui **XTTS v2** (local)
+
+## Features
+
+- **Studio UI (React)** to create bots, manage API keys, run mic tests, and inspect conversations.
+- **Multiple model slots per bot**:
+  - `openai_model` (main chat)
+  - `web_search_model` (system tool: web_search)
+  - `codex_model` (HTTP tools with “Use Codex for response”)
+- **System tools** (built-in): `set_metadata`, `web_search`, `recall_http_response`, `export_http_response`.
+- **Per-bot tool enable/disable** from the bot page:
+  - Disable/enable built-in system tools (except `set_metadata`).
+  - Disable/enable each HTTP integration tool.
+- **HTTP integration tools** (LLM tool-calling → HTTP → metadata templating), with optional:
+  - JSON Schema for tool args
+  - JSON Schema for the HTTP response
+  - Response-to-metadata mapping
+  - Static reply templates (Jinja2)
+  - “Use Codex for response” post-processing
+- **Saved response recall + exports**:
+  - Recall previously saved HTTP responses to answer follow-ups without re-calling the API.
+  - Export prior results to CSV/JSON and serve via a short-lived download token URL.
+- **Embeddable widget** (text chat) with client keys and a public WebSocket API.
 
 ## Quickstart
 
@@ -77,6 +99,16 @@ Then open the React Studio UI (see below) to create keys + bots, and run locally
 voicebot run --bot <uuid>
 ```
 
+### Download URL host (exports)
+
+`export_http_response` returns a `download_url` that points at the Studio server.
+
+Set the base URL (host[:port] or full URL) using:
+
+```bash
+VOICEBOT_DOWNLOAD_BASE_URL=127.0.0.1:8000
+```
+
 ### Test from UI / API
 
 - Mic conversation test is in the React Studio bot page. Conversations are stored in the DB with `test_flag=true`.
@@ -146,7 +178,7 @@ Missing variables resolve to an empty string.
 You can attach HTTP API “integration tools” to a bot. The LLM can call them, and the backend will:
 1) Execute the HTTP request.
 2) Map selected response fields into conversation metadata (via a response mapper).
-3) Return `next_reply` to the user (with variables resolved), without making a second LLM call.
+3) Return a tool result to the chat model, which then replies to the user.
 
 Important:
 - Raw HTTP responses are **not** sent back to the LLM.
@@ -154,23 +186,61 @@ Important:
 
 ### Tool call schema (LLM-facing)
 
-Each integration tool is exposed to the LLM as a function tool with:
-- Your custom parameters (JSON schema object)
-- A required `next_reply` string (can contain variables like `{{.firstName}}`)
+Each integration tool is exposed to the LLM as a function tool with a top-level shape:
 
-### Static reply (optional, Jinja2)
+```json
+{
+  "args": { "... tool args ..." },
+  "wait_reply": "optional short filler while the tool runs",
+  "next_reply": "optional (only when Codex is NOT enabled)"
+}
+```
 
-Integrations can also be configured with an optional `static_reply_template`.
+Notes:
+- `args` is always required.
+- `next_reply` is required when **Codex is NOT enabled** (to avoid a second LLM call).
+- If “Use Codex for response” is enabled, `next_reply` is not required; the backend runs a Codex post-processor and returns a result to the main chat model to rephrase.
+
+### Args schema (required args + JSON schema)
+
+You can define `args` in two ways:
+- **Required args list** (comma-separated in UI): the backend generates a permissive schema and requires those keys.
+- **Args schema (JSON Schema)**: the backend uses this as the schema for `args`.
+
+If both are present, required args are appended to the schema (they are not removed), so the integration still has all the fields needed to call the API.
+
+### Static reply (optional, Jinja2) — takes priority
+
+Integrations can be configured with an optional `static_reply_template`.
 
 If `static_reply_template` is set:
-- The backend ignores the LLM-provided `next_reply`.
+- The backend ignores `next_reply`.
+- The backend also ignores “Use Codex for response” (static template wins).
 - The backend renders `static_reply_template` using **Jinja2** (supports `{% if %}`, `{% for %}`, etc).
-- Shorthand `.key` is supported inside Jinja expressions and is treated as `meta.key` (e.g. `{{.firstName}}`, `{% if .vip %}`).
 
 Template context:
 - `meta`: current conversation metadata (after response mapping)
 - `response`: raw HTTP response JSON
 - `args` / `params`: tool-call arguments (excluding `next_reply`)
+
+### Use Codex for response (optional)
+
+If enabled, the backend runs a separate Codex “one-shot” agent after the HTTP request:
+1) The HTTP response is saved to a temp file.
+2) The Codex model receives:
+   - the response JSON schema (from the tool config, or a best-effort derived schema)
+   - the response file path (so its generated Python script can read locally)
+   - intent fields inside `args`:
+     - `fields_required`: what fields are needed to build the response
+     - `why_api_was_called`: why this API call happened (user intent)
+3) Codex returns a Python script that extracts/aggregates the required info and writes a `result.txt`.
+4) The tool result includes `codex_result_text` and file paths; the **main chat model** rephrases the final user-facing reply.
+
+### Tool enabling/disabling
+
+From the bot page in Studio:
+- System tools can be toggled per bot (click “Update tools” to save). `set_metadata` cannot be disabled.
+- Each HTTP integration tool has an `Enabled` toggle; disabled tools are not exposed to the LLM.
 
 ### Response mapper
 
@@ -238,6 +308,18 @@ Events (server → client):
 - `done`: final turn text + `metrics` (model, token estimates, cost, latencies)
 
 Tool calls/results are executed server-side but **not exposed** over the public WebSocket.
+
+## Downloads (Exports)
+
+`export_http_response` creates an export file (CSV/JSON) from a previously saved integration response, and returns:
+- `download_url`: absolute URL to `GET /api/downloads/<token>`
+- `download_token`: token used by the downloads endpoint
+
+The downloads endpoint:
+- `GET /api/downloads/<token>` (serves the exported file)
+
+Configure the base host/URL for `download_url` via:
+- `VOICEBOT_DOWNLOAD_BASE_URL` (default `127.0.0.1:8000`)
 
 ### Widget script
 

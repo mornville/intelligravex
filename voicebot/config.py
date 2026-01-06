@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Storage
     db_url: str = "sqlite:///voicebot.db"
     secret_key: Optional[str] = None  # Fernet key for encrypting provider secrets
+    # Absolute base URL used for download links returned by export_http_response.
+    # Override via VOICEBOT_DOWNLOAD_BASE_URL (supports full URL or host[:port]).
+    download_base_url: str = "127.0.0.1:8000"
 
     # Audio I/O
     input_device: Optional[str] = None
