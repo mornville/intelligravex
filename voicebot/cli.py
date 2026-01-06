@@ -132,7 +132,7 @@ def tts_speakers() -> None:
 
 @app.command()
 def web(
-    host: str = typer.Option("127.0.0.1", "--host"),
+    host: str = typer.Option("0.0.0.0", "--host", help="Bind host (use 127.0.0.1 for localhost-only)."),
     port: int = typer.Option(8000, "--port"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on file changes (dev only)."),
 ) -> None:

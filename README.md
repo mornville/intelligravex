@@ -88,9 +88,9 @@ voicebot web --help
 2) Run:
 
 ```bash
-voicebot web --host 127.0.0.1 --port 8000
+voicebot web --host 0.0.0.0 --port 8000
 # or:
-./start.sh web --host 127.0.0.1 --port 8000
+./start.sh web --host 0.0.0.0 --port 8000
 ```
 
 Then open the React Studio UI (see below) to create keys + bots, and run locally by UUID:
@@ -130,7 +130,7 @@ The repo also includes a React (Vite) frontend under `frontend/`.
 1) Start the backend:
 
 ```bash
-./start.sh web --host 127.0.0.1 --port 8000
+./start.sh web --host 0.0.0.0 --port 8000
 ```
 
 2) Start the React frontend (separate terminal):
