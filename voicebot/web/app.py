@@ -1437,7 +1437,6 @@ def create_app() -> FastAPI:
         tool: IntegrationTool,
         meta: dict,
         tool_args: dict,
-        progress_fn: Optional[Callable[[str], None]] = None,
     ) -> dict:
         pagination_raw = (getattr(tool, "pagination_json", "") or "").strip()
         pagination_cfg: dict[str, Any] | None = None
@@ -1623,22 +1622,6 @@ def create_app() -> FastAPI:
         fetched = 0
 
         for i in range(max_pages):
-            if progress_fn:
-                try:
-                    # Estimate total pages if max_items is provided.
-                    total_pages = None
-                    if max_items is not None and limit_val > 0:
-                        total_pages = (max_items + limit_val - 1) // limit_val
-                        if total_pages < 1:
-                            total_pages = 1
-                        if total_pages > max_pages:
-                            total_pages = max_pages
-                    label = f"{i+1}"
-                    if total_pages is not None:
-                        label = f"{i+1}/{total_pages}"
-                    progress_fn(f"Fetching page {label}…")
-                except Exception:
-                    pass
             loop_args = dict(tool_args or {})
             loop_args[limit_arg] = limit_val
             if mode == "page_limit":
@@ -1673,11 +1656,6 @@ def create_app() -> FastAPI:
 
             fetched += 1
             aggregated.extend(page_items)
-            if progress_fn:
-                try:
-                    progress_fn(f"Fetched page {i+1}. Total items: {len(aggregated)}.")
-                except Exception:
-                    pass
 
             if max_items is not None and len(aggregated) >= max_items:
                 aggregated = aggregated[:max_items]
@@ -2840,47 +2818,21 @@ def create_app() -> FastAPI:
                                                 }
                                             }
                                         else:
-                                            progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                            def _progress(s: str) -> None:
-                                                try:
-                                                    progress_q.put_nowait(str(s))
-                                                except Exception:
-                                                    return
-
                                             task = asyncio.create_task(
                                                 asyncio.to_thread(
-                                                    _execute_integration_http,
-                                                    tool=tool_cfg,
-                                                    meta=meta_current,
-                                                    tool_args=patch,
-                                                    progress_fn=_progress,
+                                                    _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
                                                 )
                                             )
                                             if wait_reply:
                                                 await _send_interim(wait_reply, kind="wait")
-                                            last_wait = time.time()
-                                            last_progress = last_wait
-                                            wait_interval_s = 15.0
-                                            while not task.done():
+                                            while True:
                                                 try:
-                                                    while True:
-                                                        p = progress_q.get_nowait()
-                                                        if p:
-                                                            await _send_interim(p, kind="progress")
-                                                            last_progress = time.time()
-                                                except queue.Empty:
-                                                    pass
-                                                now = time.time()
-                                                if (
-                                                    wait_reply
-                                                    and (now - last_wait) >= wait_interval_s
-                                                    and (now - last_progress) >= wait_interval_s
-                                                ):
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                    last_wait = now
-                                                await asyncio.sleep(0.2)
-                                            response_json = await task
+                                                    response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                    break
+                                                except asyncio.TimeoutError:
+                                                    if wait_reply:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                    continue
                                         if speak:
                                             now = time.time()
                                             if now < tts_busy_until:
@@ -3882,47 +3834,21 @@ def create_app() -> FastAPI:
                                                 }
                                             }
                                         else:
-                                            progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                            def _progress(s: str) -> None:
-                                                try:
-                                                    progress_q.put_nowait(str(s))
-                                                except Exception:
-                                                    return
-
                                             task = asyncio.create_task(
                                                 asyncio.to_thread(
-                                                    _execute_integration_http,
-                                                    tool=tool_cfg,
-                                                    meta=meta_current,
-                                                    tool_args=patch,
-                                                    progress_fn=_progress,
+                                                    _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
                                                 )
                                             )
                                             if wait_reply:
                                                 await _send_interim(wait_reply, kind="wait")
-                                            last_wait = time.time()
-                                            last_progress = last_wait
-                                            wait_interval_s = 15.0
-                                            while not task.done():
+                                            while True:
                                                 try:
-                                                    while True:
-                                                        p = progress_q.get_nowait()
-                                                        if p:
-                                                            await _send_interim(p, kind="progress")
-                                                            last_progress = time.time()
-                                                except queue.Empty:
-                                                    pass
-                                                now = time.time()
-                                                if (
-                                                    wait_reply
-                                                    and (now - last_wait) >= wait_interval_s
-                                                    and (now - last_progress) >= wait_interval_s
-                                                ):
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                    last_wait = now
-                                                await asyncio.sleep(0.2)
-                                            response_json = await task
+                                                    response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                    break
+                                                except asyncio.TimeoutError:
+                                                    if wait_reply:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                    continue
                                         if speak:
                                             now = time.time()
                                             if now < tts_busy_until:
@@ -5010,47 +4936,23 @@ def create_app() -> FastAPI:
                                             }
                                         }
                                     else:
-                                        progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                        def _progress(s: str) -> None:
-                                            try:
-                                                progress_q.put_nowait(str(s))
-                                            except Exception:
-                                                return
-
                                         task = asyncio.create_task(
                                             asyncio.to_thread(
-                                                _execute_integration_http,
-                                                tool=tool_cfg,
-                                                meta=meta_current,
-                                                tool_args=patch,
-                                                progress_fn=_progress,
+                                                _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
                                             )
                                         )
                                         if wait_reply:
                                             await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                        last_wait = time.time()
-                                        last_progress = last_wait
-                                        wait_interval_s = 15.0
-                                        while not task.done():
+                                        while True:
                                             try:
-                                                while True:
-                                                    p = progress_q.get_nowait()
-                                                    if p:
-                                                        await _public_send_interim(ws, req_id=req_id, kind="progress", text=p)
-                                                        last_progress = time.time()
-                                            except queue.Empty:
-                                                pass
-                                            now = time.time()
-                                            if (
-                                                wait_reply
-                                                and (now - last_wait) >= wait_interval_s
-                                                and (now - last_progress) >= wait_interval_s
-                                            ):
-                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                                last_wait = now
-                                            await asyncio.sleep(0.2)
-                                        response_json = await task
+                                                response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                break
+                                            except asyncio.TimeoutError:
+                                                if wait_reply:
+                                                    await _public_send_interim(
+                                                        ws, req_id=req_id, kind="wait", text=wait_reply
+                                                    )
+                                                continue
                                     if isinstance(response_json, dict) and "__tool_args_error__" in response_json:
                                         err = response_json["__tool_args_error__"] or {}
                                         tool_result = {"ok": False, "error": err}
