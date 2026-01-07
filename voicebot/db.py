@@ -70,6 +70,8 @@ def _apply_light_migrations(engine) -> None:
         add_bot_col("openai_tts_speed", "REAL NOT NULL DEFAULT 1.0")
         add_bot_col("web_search_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini'")
         add_bot_col("codex_model", "TEXT NOT NULL DEFAULT 'gpt-5.1-codex-mini'")
+        add_bot_col("summary_model", "TEXT NOT NULL DEFAULT 'gpt-5-nano'")
+        add_bot_col("history_window_turns", "INTEGER NOT NULL DEFAULT 16")
         add_bot_col("disabled_tools_json", "TEXT NOT NULL DEFAULT '[]'")
         try:
             conn.execute(

@@ -6,6 +6,8 @@ export type Bot = {
   openai_model: string
   web_search_model: string
   codex_model: string
+  summary_model?: string
+  history_window_turns?: number
   openai_key_id: UUID | null
   system_prompt: string
   language: string

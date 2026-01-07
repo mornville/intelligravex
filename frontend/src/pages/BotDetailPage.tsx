@@ -58,6 +58,7 @@ Rules:
 `
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'tools'>('llm')
 
   const speakerChoices = useMemo(() => {
     const s = ttsMeta?.speakers || []
@@ -310,129 +311,189 @@ Rules:
             <div className="cardTitle">Configuration</div>
             {saving ? <div className="pill">saving…</div> : <div className="pill">saved</div>}
           </div>
+          <div className="row gap" style={{ marginTop: 10, flexWrap: 'wrap' }}>
+            <button className={activeTab === 'llm' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('llm')}>
+              LLM
+            </button>
+            <button className={activeTab === 'asr' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('asr')}>
+              ASR
+            </button>
+            <button className={activeTab === 'tts' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tts')}>
+              TTS
+            </button>
+            <button className={activeTab === 'tools' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tools')}>
+              Tools
+            </button>
+          </div>
 
           {!bot ? (
             <div className="muted">Loading…</div>
           ) : (
             <>
-              <div className="formRow">
-                <label>Name</label>
-                <input value={bot.name} onChange={(e) => setBot((p) => (p ? { ...p, name: e.target.value } : p))} />
-              </div>
-              <div className="formRow">
-                <label>OpenAI model</label>
-                <select
-                  value={bot.openai_model}
-                  onChange={(e) => void save({ openai_model: e.target.value })}
-                >
-                  {(options?.openai_models || [bot.openai_model]).map((m) => (
-                    <option value={m} key={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="formRow">
-                <label>Web search model</label>
-                <select
-                  value={bot.web_search_model || bot.openai_model}
-                  onChange={(e) => void save({ web_search_model: e.target.value })}
-                >
-                  {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
-                    <option value={m} key={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-                <div className="muted">Used for web_search filtering + summarization.</div>
-              </div>
-              <div className="formRow">
-                <label>Codex model</label>
-                <select value={bot.codex_model || 'gpt-5.1-codex-mini'} onChange={(e) => void save({ codex_model: e.target.value })}>
-                  {(options?.openai_models || [bot.codex_model || 'gpt-5.1-codex-mini']).map((m) => (
-                    <option value={m} key={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-                <div className="muted">Used for “use Codex for response” HTTP integrations.</div>
-              </div>
-              <div className="formRow">
-                <label>OpenAI key</label>
-                <select
-                  value={bot.openai_key_id || ''}
-                  onChange={(e) => void save({ openai_key_id: e.target.value || null })}
-                >
-                  <option value="">(use env OPENAI_API_KEY)</option>
-                  {keys.map((k) => (
-                    <option value={k.id} key={k.id}>
-                      {k.name} — {k.hint}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="formRow">
-                <label>System prompt</label>
-                <textarea
-                  value={bot.system_prompt}
-                  onChange={(e) => setBot((p) => (p ? { ...p, system_prompt: e.target.value } : p))}
-                  rows={10}
-                />
-                <div className="row">
-                  <button className="btn" onClick={() => void save({ name: bot.name, system_prompt: bot.system_prompt })}>
-                    Save prompt/name
-                  </button>
-                </div>
-              </div>
-
-              <div className="cardSubTitle">Conversation start message</div>
-              <div className="formRowGrid2">
-                <div className="formRow">
-                  <label>Mode</label>
-                  <select value={bot.start_message_mode} onChange={(e) => void save({ start_message_mode: e.target.value })}>
-                    <option value="static">Static</option>
-                    <option value="llm">LLM-generated</option>
-                  </select>
-                </div>
-                <div className="formRow">
-                  <label>Static start message (optional)</label>
-                  <input
-                    value={bot.start_message_text}
-                    placeholder="(empty = will be generated by LLM)"
-                    onChange={(e) => setBot((p) => (p ? { ...p, start_message_text: e.target.value } : p))}
-                  />
-                  <div className="row">
-                    <button className="btn" onClick={() => void save({ start_message_text: bot.start_message_text })}>
-                      Save start message
-                    </button>
+              {activeTab === 'llm' ? (
+                <>
+                  <div className="formRow">
+                    <label>Name</label>
+                    <input value={bot.name} onChange={(e) => setBot((p) => (p ? { ...p, name: e.target.value } : p))} />
                   </div>
-                </div>
-              </div>
+                  <div className="formRow">
+                    <label>OpenAI model</label>
+                    <select value={bot.openai_model} onChange={(e) => void save({ openai_model: e.target.value })}>
+                      {(options?.openai_models || [bot.openai_model]).map((m) => (
+                        <option value={m} key={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="formRow">
+                    <label>Web search model</label>
+                    <select value={bot.web_search_model || bot.openai_model} onChange={(e) => void save({ web_search_model: e.target.value })}>
+                      {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
+                        <option value={m} key={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="muted">Used for web_search filtering + summarization.</div>
+                  </div>
+                  <div className="formRow">
+                    <label>Codex model</label>
+                    <select value={bot.codex_model || 'gpt-5.1-codex-mini'} onChange={(e) => void save({ codex_model: e.target.value })}>
+                      {(options?.openai_models || [bot.codex_model || 'gpt-5.1-codex-mini']).map((m) => (
+                        <option value={m} key={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="muted">Used for “use Codex for response” HTTP integrations.</div>
+                  </div>
+                  <div className="formRow">
+                    <label>Summary model</label>
+                    <select value={bot.summary_model || 'gpt-5-nano'} onChange={(e) => void save({ summary_model: e.target.value })}>
+                      {(options?.openai_models || [bot.summary_model || 'gpt-5-nano']).map((m) => (
+                        <option value={m} key={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="muted">Used to summarize older conversation history when context grows.</div>
+                  </div>
+                  <div className="formRow">
+                    <label>History window (turns)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="64"
+                      value={bot.history_window_turns ?? 16}
+                      onChange={(e) => void save({ history_window_turns: Number(e.target.value) })}
+                    />
+                    <div className="muted">Keep the last N user turns verbatim; older turns are summarized.</div>
+                  </div>
+                  <div className="formRow">
+                    <label>OpenAI key</label>
+                    <select value={bot.openai_key_id || ''} onChange={(e) => void save({ openai_key_id: e.target.value || null })}>
+                      <option value="">(use env OPENAI_API_KEY)</option>
+                      {keys.map((k) => (
+                        <option value={k.id} key={k.id}>
+                          {k.name} — {k.hint}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="formRow">
+                    <label>System prompt</label>
+                    <textarea
+                      value={bot.system_prompt}
+                      onChange={(e) => setBot((p) => (p ? { ...p, system_prompt: e.target.value } : p))}
+                      rows={10}
+                    />
+                    <div className="row">
+                      <button className="btn" onClick={() => void save({ name: bot.name, system_prompt: bot.system_prompt })}>
+                        Save prompt/name
+                      </button>
+                    </div>
+                  </div>
 
-              <div className="formRowGrid2">
-                <div className="formRow">
-                  <label>ASR language</label>
-                  <select value={bot.language} onChange={(e) => void save({ language: e.target.value })}>
-                    {(options?.languages || [bot.language]).map((l) => (
-                      <option value={l} key={l}>
-                        {l}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="formRow">
-                  <label>TTS vendor</label>
-                  <select value={bot.tts_vendor} onChange={(e) => void save({ tts_vendor: e.target.value })}>
-                    {(options?.tts_vendors?.length ? options.tts_vendors : [bot.tts_vendor]).map((v) => (
-                      <option value={v} key={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+                  <div className="cardSubTitle">Conversation start message</div>
+                  <div className="formRowGrid2">
+                    <div className="formRow">
+                      <label>Mode</label>
+                      <select value={bot.start_message_mode} onChange={(e) => void save({ start_message_mode: e.target.value })}>
+                        <option value="static">Static</option>
+                        <option value="llm">LLM-generated</option>
+                      </select>
+                    </div>
+                    <div className="formRow">
+                      <label>Static start message (optional)</label>
+                      <input
+                        value={bot.start_message_text}
+                        placeholder="(empty = will be generated by LLM)"
+                        onChange={(e) => setBot((p) => (p ? { ...p, start_message_text: e.target.value } : p))}
+                      />
+                      <div className="row">
+                        <button className="btn" onClick={() => void save({ start_message_text: bot.start_message_text })}>
+                          Save start message
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : null}
 
-              {bot.tts_vendor === 'xtts_local' ? (
+              {activeTab === 'asr' ? (
+                <>
+                  <div className="formRow">
+                    <label>ASR language</label>
+                    <select value={bot.language} onChange={(e) => void save({ language: e.target.value })}>
+                      {(options?.languages || [bot.language]).map((l) => (
+                        <option value={l} key={l}>
+                          {l}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="formRowGrid2">
+                    <div className="formRow">
+                      <label>Whisper model</label>
+                      <select value={bot.whisper_model} onChange={(e) => void save({ whisper_model: e.target.value })}>
+                        {(options?.whisper_models || [bot.whisper_model]).map((m) => (
+                          <option value={m} key={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="formRow">
+                      <label>Whisper device</label>
+                      <select value={bot.whisper_device} onChange={(e) => void save({ whisper_device: e.target.value })}>
+                        {(options?.whisper_devices || [bot.whisper_device]).map((d) => (
+                          <option value={d} key={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              ) : null}
+
+              {activeTab === 'tts' ? (
+                <>
+                  <div className="formRow">
+                    <label>TTS vendor</label>
+                    <select value={bot.tts_vendor} onChange={(e) => void save({ tts_vendor: e.target.value })}>
+                      {(options?.tts_vendors?.length ? options.tts_vendors : [bot.tts_vendor]).map((v) => (
+                        <option value={v} key={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              ) : null}
+
+              {activeTab === 'tts' && bot.tts_vendor === 'xtts_local' ? (
                 <div className="formRow">
                   <label>TTS language</label>
                   <select value={bot.tts_language} onChange={(e) => void save({ tts_language: e.target.value })}>
@@ -445,7 +506,7 @@ Rules:
                 </div>
               ) : null}
 
-              {bot.tts_vendor === 'openai_tts' ? (
+              {activeTab === 'tts' && bot.tts_vendor === 'openai_tts' ? (
                 <>
                   <div className="formRowGrid2">
                     <div className="formRow">
@@ -483,30 +544,7 @@ Rules:
                 </>
               ) : null}
 
-              <div className="formRowGrid2">
-                <div className="formRow">
-                  <label>Whisper model</label>
-                  <select value={bot.whisper_model} onChange={(e) => void save({ whisper_model: e.target.value })}>
-                    {(options?.whisper_models || [bot.whisper_model]).map((m) => (
-                      <option value={m} key={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="formRow">
-                  <label>Whisper device</label>
-                  <select value={bot.whisper_device} onChange={(e) => void save({ whisper_device: e.target.value })}>
-                    {(options?.whisper_devices || [bot.whisper_device]).map((d) => (
-                      <option value={d} key={d}>
-                        {d}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {bot.tts_vendor === 'xtts_local' ? (
+              {activeTab === 'tts' && bot.tts_vendor === 'xtts_local' ? (
                 <>
                   <div className="formRow">
                     <label>XTTS v2 model</label>
@@ -550,26 +588,28 @@ Rules:
                 </>
               ) : null}
 
-              <div className="formRowGrid2">
-                <div className="formRow">
-                  <label>TTS chunk min chars</label>
-                  <input
-                    type="number"
-                    value={bot.tts_chunk_min_chars}
-                    onChange={(e) => void save({ tts_chunk_min_chars: Number(e.target.value) })}
-                  />
+              {activeTab === 'tts' ? (
+                <div className="formRowGrid2">
+                  <div className="formRow">
+                    <label>TTS chunk min chars</label>
+                    <input
+                      type="number"
+                      value={bot.tts_chunk_min_chars}
+                      onChange={(e) => void save({ tts_chunk_min_chars: Number(e.target.value) })}
+                    />
+                  </div>
+                  <div className="formRow">
+                    <label>TTS chunk max chars</label>
+                    <input
+                      type="number"
+                      value={bot.tts_chunk_max_chars}
+                      onChange={(e) => void save({ tts_chunk_max_chars: Number(e.target.value) })}
+                    />
+                  </div>
                 </div>
-                <div className="formRow">
-                  <label>TTS chunk max chars</label>
-                  <input
-                    type="number"
-                    value={bot.tts_chunk_max_chars}
-                    onChange={(e) => void save({ tts_chunk_max_chars: Number(e.target.value) })}
-                  />
-                </div>
-              </div>
+              ) : null}
 
-              {systemTools.length ? (
+              {activeTab === 'tools' && systemTools.length ? (
                 <>
                   <div className="cardSubTitle">System tools (default)</div>
                   <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
@@ -608,69 +648,73 @@ Rules:
                 </>
               ) : null}
 
-              <div className="cardSubTitle">Integrations (HTTP tools)</div>
-              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-                <div className="muted">
-                  Use variables like <span className="mono">{'{{.firstName}}'}</span> in prompts and tool next_reply.{' '}
-                  <HelpTip>
-                    <div className="tipTitle">How integrations work</div>
-                    <div className="tipText">
-                      The LLM calls your tool with <span className="mono">{'{ "args": { ... } }'}</span>. The backend renders URL/body templates, calls the
-                      HTTP API, maps selected fields into metadata, and returns a tool result.
+              {activeTab === 'tools' ? (
+                <>
+                  <div className="cardSubTitle">Integrations (HTTP tools)</div>
+                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div className="muted">
+                      Use variables like <span className="mono">{'{{.firstName}}'}</span> in prompts and tool next_reply.{' '}
+                      <HelpTip>
+                        <div className="tipTitle">How integrations work</div>
+                        <div className="tipText">
+                          The LLM calls your tool with <span className="mono">{'{ "args": { ... } }'}</span>. The backend renders URL/body templates, calls the
+                          HTTP API, maps selected fields into metadata, and returns a tool result.
+                        </div>
+                        <div className="tipText">
+                          Pagination: if configured, the backend will fetch multiple pages and merge results (the LLM can pass{' '}
+                          <span className="mono">max_items</span> to stop early).
+                        </div>
+                      </HelpTip>
                     </div>
-                    <div className="tipText">
-                      Pagination: if configured, the backend will fetch multiple pages and merge results (the LLM can pass{' '}
-                      <span className="mono">max_items</span> to stop early).
-                    </div>
-                  </HelpTip>
-                </div>
-                <button className="btn primary" onClick={openNewTool}>
-                  Add integration
-                </button>
-              </div>
-              {tools.length === 0 ? (
-                <div className="muted">No integrations yet.</div>
-              ) : (
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Enabled</th>
-                      <th>Method</th>
-                      <th>URL</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tools.map((t) => (
-                      <tr key={t.id}>
-                        <td className="mono">{t.name}</td>
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(t.enabled ?? true)}
-                            onChange={(e) => void toggleIntegrationTool(t, e.target.checked)}
-                          />
-                        </td>
-                        <td className="mono">{t.method}</td>
-                        <td className="mono" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {t.url}
-                        </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <div className="row" style={{ justifyContent: 'flex-end' }}>
-                            <button className="btn" onClick={() => openEditTool(t)}>
-                              Edit
-                            </button>
-                            <button className="btn danger ghost" onClick={() => void deleteTool(t)}>
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    <button className="btn primary" onClick={openNewTool}>
+                      Add integration
+                    </button>
+                  </div>
+                  {tools.length === 0 ? (
+                    <div className="muted">No integrations yet.</div>
+                  ) : (
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Enabled</th>
+                          <th>Method</th>
+                          <th>URL</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tools.map((t) => (
+                          <tr key={t.id}>
+                            <td className="mono">{t.name}</td>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(t.enabled ?? true)}
+                                onChange={(e) => void toggleIntegrationTool(t, e.target.checked)}
+                              />
+                            </td>
+                            <td className="mono">{t.method}</td>
+                            <td className="mono" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {t.url}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div className="row" style={{ justifyContent: 'flex-end' }}>
+                                <button className="btn" onClick={() => openEditTool(t)}>
+                                  Edit
+                                </button>
+                                <button className="btn danger ghost" onClick={() => void deleteTool(t)}>
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </>
+              ) : null}
             </>
           )}
         </section>

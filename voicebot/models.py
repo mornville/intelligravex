@@ -24,6 +24,8 @@ class Bot(SQLModel, table=True):
     openai_model: str = "o4-mini"
     web_search_model: str = "gpt-4o-mini"
     codex_model: str = "gpt-5.1-codex-mini"
+    summary_model: str = "gpt-5-nano"
+    history_window_turns: int = 16
     # List of tool names disabled for this bot (JSON list stored as text).
     # Applies to system tools (e.g. web_search, recall_http_response) and integration tools by name.
     disabled_tools_json: str = "[]"

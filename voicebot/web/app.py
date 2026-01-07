@@ -424,6 +424,8 @@ class BotCreateRequest(BaseModel):
     openai_model: str = "o4-mini"
     web_search_model: Optional[str] = None
     codex_model: Optional[str] = None
+    summary_model: Optional[str] = None
+    history_window_turns: Optional[int] = None
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
@@ -449,6 +451,8 @@ class BotUpdateRequest(BaseModel):
     openai_model: Optional[str] = None
     web_search_model: Optional[str] = None
     codex_model: Optional[str] = None
+    summary_model: Optional[str] = None
+    history_window_turns: Optional[int] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     tts_language: Optional[str] = None
@@ -798,6 +802,181 @@ def create_app() -> FastAPI:
                 except Exception:
                     pass
                 messages.append(Message(role="system", content=render_template(f"Tool event: {m.content}", ctx=ctx)))
+        return messages
+
+    def _build_history_budgeted(
+        *,
+        session: Session,
+        bot: Bot,
+        conversation_id: Optional[UUID],
+        api_key: Optional[str],
+        status_cb: Optional[Callable[[str], None]] = None,
+    ) -> list[Message]:
+        """
+        Builds an LLM history capped to a token budget by using:
+        - rolling summary stored in conversation metadata
+        - a sliding window of the most recent N user turns (configurable per bot)
+
+        If summarization runs, status_cb("summarizing") is invoked (UI-only).
+        """
+
+        HISTORY_TOKEN_BUDGET = 28000
+        SUMMARY_BATCH_MIN_MESSAGES = 8
+
+        def _system_prompt_with_runtime(*, prompt: str) -> str:
+            ts = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+            return f"Current Date Time(UTC): {ts}\n\n{prompt}"
+
+        if not conversation_id:
+            return [Message(role="system", content=_system_prompt_with_runtime(prompt=bot.system_prompt))]
+
+        conv = get_conversation(session, conversation_id)
+        if conv.bot_id != bot.id:
+            raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
+
+        meta = safe_json_loads(conv.metadata_json or "{}") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+
+        memory = meta.get("memory") if isinstance(meta.get("memory"), dict) else {}
+        if not isinstance(memory, dict):
+            memory = {}
+        memory_summary = str(memory.get("summary") or "").strip()
+        pinned_facts = str(memory.get("pinned_facts") or "").strip()
+        last_summarized_id = str(memory.get("last_summarized_message_id") or "").strip()
+
+        ctx = {"meta": meta}
+        system_prompt = _system_prompt_with_runtime(prompt=render_template(bot.system_prompt, ctx=ctx))
+
+        db_msgs = list_messages(session, conversation_id=conversation_id)
+        # Determine sliding window start index by last N user turns.
+        try:
+            n_turns = int(getattr(bot, "history_window_turns", 16) or 16)
+        except Exception:
+            n_turns = 16
+        if n_turns < 1:
+            n_turns = 1
+        if n_turns > 64:
+            n_turns = 64
+
+        user_indices = [i for i, m in enumerate(db_msgs) if m.role == "user"]
+        if len(user_indices) > n_turns:
+            start_idx = user_indices[-n_turns]
+        else:
+            start_idx = 0
+
+        def _format_for_summary(m) -> str:
+            role = m.role
+            content = (m.content or "").strip()
+            if role == "tool":
+                # Avoid huge tool payloads; keep a short breadcrumb.
+                content = content[:2000]
+            return f"{role.upper()}: {content}"
+
+        # Update rolling summary for messages that will be dropped from the prompt.
+        old_msgs = db_msgs[:start_idx]
+        new_old_msgs = old_msgs
+        if last_summarized_id:
+            # Keep only messages after last summarized id.
+            found = False
+            tmp = []
+            for m in old_msgs:
+                if found:
+                    tmp.append(m)
+                elif str(getattr(m, "id", "") or "") == last_summarized_id:
+                    found = True
+            new_old_msgs = tmp if found else old_msgs
+
+        should_summarize = False
+        if old_msgs and (not memory_summary):
+            should_summarize = True
+        elif len(new_old_msgs) >= SUMMARY_BATCH_MIN_MESSAGES:
+            should_summarize = True
+
+        if should_summarize and api_key:
+            if status_cb:
+                status_cb("summarizing")
+            chunk = "\n".join(_format_for_summary(m) for m in new_old_msgs)
+            # Keep summarizer input bounded.
+            chunk = chunk[:24000]
+
+            summary_model = (getattr(bot, "summary_model", "") or "gpt-5-nano").strip() or "gpt-5-nano"
+            summarizer = OpenAILLM(model=summary_model, api_key=api_key)
+            summary_prompt = (
+                "You are a conversation summarizer.\n"
+                "Return STRICT JSON with keys: summary, pinned_facts, open_tasks.\n"
+                "- summary: concise running summary (<= 1200 words)\n"
+                "- pinned_facts: stable facts/preferences (<= 400 words)\n"
+                "- open_tasks: short list (<= 12 items)\n"
+                "Do not include any extra keys.\n"
+            )
+            prior = memory_summary or ""
+            summarizer_input = (
+                f"PRIOR_SUMMARY:\n{prior}\n\n"
+                f"NEW_MESSAGES_TO_ABSORB:\n{chunk}\n"
+            )
+            text = summarizer.complete_text(
+                messages=[
+                    Message(role="system", content=summary_prompt),
+                    Message(role="user", content=summarizer_input),
+                ]
+            )
+            new_summary = ""
+            new_pinned = ""
+            try:
+                obj = json.loads(text)
+                if isinstance(obj, dict):
+                    new_summary = str(obj.get("summary") or "").strip()
+                    new_pinned = str(obj.get("pinned_facts") or "").strip()
+            except Exception:
+                # Fail closed: keep existing summary.
+                new_summary = memory_summary
+                new_pinned = pinned_facts
+
+            if new_summary:
+                patch = {
+                    "memory.summary": new_summary,
+                    "memory.pinned_facts": new_pinned,
+                    "memory.last_summarized_message_id": str(getattr(new_old_msgs[-1], "id", "")) if new_old_msgs else last_summarized_id,
+                    "memory.updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+                meta = merge_conversation_metadata(session, conversation_id=conversation_id, patch=patch)
+                if isinstance(meta, dict):
+                    memory = meta.get("memory") if isinstance(meta.get("memory"), dict) else {}
+                    if isinstance(memory, dict):
+                        memory_summary = str(memory.get("summary") or "").strip()
+                        pinned_facts = str(memory.get("pinned_facts") or "").strip()
+
+        # Build prompt messages: system prompt + summary + recent window.
+        messages: list[Message] = [Message(role="system", content=system_prompt)]
+        if memory_summary:
+            messages.append(Message(role="system", content=f"Conversation summary:\n{memory_summary}"))
+        if pinned_facts:
+            messages.append(Message(role="system", content=f"Pinned facts:\n{pinned_facts}"))
+
+        for m in db_msgs[start_idx:]:
+            if m.role in ("user", "assistant"):
+                messages.append(Message(role=m.role, content=render_template(m.content, ctx={"meta": meta})))
+            elif m.role == "tool":
+                try:
+                    obj = json.loads(m.content or "")
+                    if isinstance(obj, dict) and obj.get("tool") == "debug_llm_request":
+                        continue
+                except Exception:
+                    pass
+                # Keep tool breadcrumbs but truncated.
+                content = (m.content or "")
+                if len(content) > 3000:
+                    content = content[:3000] + "…"
+                messages.append(Message(role="system", content=render_template(f"Tool event: {content}", ctx={"meta": meta})))
+
+        # If still over budget, trim oldest messages (keeping system + last user turn).
+        try:
+            while estimate_messages_tokens(messages, bot.openai_model) > HISTORY_TOKEN_BUDGET and len(messages) > 4:
+                # Drop the oldest non-system message after the initial system+summary blocks.
+                del messages[3]
+        except Exception:
+            pass
         return messages
 
     def _get_conversation_meta(session: Session, *, conversation_id: UUID) -> dict:
@@ -1815,7 +1994,20 @@ def create_app() -> FastAPI:
                                     role="user",
                                     content=user_text,
                                 )
-                                history = _build_history(session, bot, conv_id)
+                                loop = asyncio.get_running_loop()
+
+                                def _status_cb(stage: str) -> None:
+                                    asyncio.run_coroutine_threadsafe(
+                                        _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
+                                    )
+
+                                history = _build_history_budgeted(
+                                    session=session,
+                                    bot=bot,
+                                    conversation_id=conv_id,
+                                    api_key=api_key,
+                                    status_cb=_status_cb,
+                                )
                                 tools_defs = _build_tools_for_bot(session, bot.id)
                                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                                 tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
@@ -2856,7 +3048,13 @@ def create_app() -> FastAPI:
                                 await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                                 with Session(engine) as session:
                                     followup_bot = get_bot(session, bot_id)
-                                    followup_history = _build_history(session, followup_bot, conv_id)
+                                    followup_history = _build_history_budgeted(
+                                        session=session,
+                                        bot=followup_bot,
+                                        conversation_id=conv_id,
+                                        api_key=api_key,
+                                        status_cb=None,
+                                    )
                                 followup_history.append(
                                     Message(
                                         role="system",
@@ -3110,7 +3308,20 @@ def create_app() -> FastAPI:
                                 content=user_text,
                                 asr_ms=int(round((asr_end_ts - asr_start_ts) * 1000.0)),
                             )
-                            history = _build_history(session, bot, conv_id)
+                            loop = asyncio.get_running_loop()
+
+                            def _status_cb(stage: str) -> None:
+                                asyncio.run_coroutine_threadsafe(
+                                    _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
+                                )
+
+                            history = _build_history_budgeted(
+                                session=session,
+                                bot=bot,
+                                conversation_id=conv_id,
+                                api_key=api_key,
+                                status_cb=_status_cb,
+                            )
                             tools_defs = _build_tools_for_bot(session, bot.id)
 
                             llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
@@ -3844,7 +4055,13 @@ def create_app() -> FastAPI:
                                 await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                                 with Session(engine) as session:
                                     bot2 = get_bot(session, bot_id)
-                                    followup_history = _build_history(session, bot2, conv_id)
+                                    followup_history = _build_history_budgeted(
+                                        session=session,
+                                        bot=bot2,
+                                        conversation_id=conv_id,
+                                        api_key=api_key,
+                                        status_cb=None,
+                                    )
                                     followup_history.append(
                                         Message(
                                             role="system",
@@ -4233,7 +4450,20 @@ def create_app() -> FastAPI:
                             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
                         add_message_with_metrics(session, conversation_id=conv_id, role="user", content=user_text)
-                        history = _build_history(session, bot, conv_id)
+                        loop = asyncio.get_running_loop()
+
+                        def _status_cb(stage: str) -> None:
+                            asyncio.run_coroutine_threadsafe(
+                                _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
+                            )
+
+                        history = _build_history_budgeted(
+                            session=session,
+                            bot=bot,
+                            conversation_id=conv_id,
+                            api_key=api_key,
+                            status_cb=_status_cb,
+                        )
                         tools_defs = _build_tools_for_bot(session, bot.id)
                         llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
 
@@ -4921,7 +5151,13 @@ def create_app() -> FastAPI:
                                     final = candidate or final
 
                             if needs_followup_llm:
-                                followup_history = _build_history(session, bot, conv_id)
+                                followup_history = _build_history_budgeted(
+                                    session=session,
+                                    bot=bot,
+                                    conversation_id=conv_id,
+                                    api_key=api_key,
+                                    status_cb=None,
+                                )
                                 followup_history.append(
                                     Message(
                                         role="system",
@@ -5089,6 +5325,8 @@ def create_app() -> FastAPI:
             "openai_model": bot.openai_model,
             "web_search_model": getattr(bot, "web_search_model", bot.openai_model),
             "codex_model": getattr(bot, "codex_model", "gpt-5.1-codex-mini"),
+            "summary_model": getattr(bot, "summary_model", "gpt-5-nano"),
+            "history_window_turns": int(getattr(bot, "history_window_turns", 16) or 16),
             "disabled_tools": sorted(disabled),
             "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
@@ -5167,6 +5405,8 @@ def create_app() -> FastAPI:
             openai_model=payload.openai_model,
             web_search_model=(payload.web_search_model or payload.openai_model).strip() or payload.openai_model,
             codex_model=(payload.codex_model or "gpt-5.1-codex-mini").strip() or "gpt-5.1-codex-mini",
+            summary_model=(payload.summary_model or "gpt-5-nano").strip() or "gpt-5-nano",
+            history_window_turns=int(payload.history_window_turns or 16),
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,
@@ -5200,10 +5440,27 @@ def create_app() -> FastAPI:
         for k, v in payload.model_dump(exclude_unset=True).items():
             if k in ("speaker_id", "speaker_wav"):
                 patch[k] = (v or "").strip() or None
-            elif k in ("tts_vendor", "openai_tts_model", "openai_tts_voice", "web_search_model", "codex_model"):
+            elif k in (
+                "tts_vendor",
+                "openai_tts_model",
+                "openai_tts_voice",
+                "web_search_model",
+                "codex_model",
+                "summary_model",
+            ):
                 patch[k] = (v or "").strip()
             elif k == "openai_tts_speed":
                 patch[k] = float(v) if v is not None else 1.0
+            elif k == "history_window_turns":
+                try:
+                    n = int(v) if v is not None else 16
+                except Exception:
+                    n = 16
+                if n < 1:
+                    n = 1
+                if n > 64:
+                    n = 64
+                patch[k] = n
             elif k == "disabled_tools":
                 vals = v or []
                 if not isinstance(vals, list):
@@ -5687,7 +5944,13 @@ def create_app() -> FastAPI:
             yield _ndjson({"type": "conversation", "id": str(conv_id)})
             yield _ndjson({"type": "asr", "text": user_text})
 
-            history = _build_history(session, bot, conv_id)
+            history = _build_history_budgeted(
+                session=session,
+                bot=bot,
+                conversation_id=conv_id,
+                api_key=api_key,
+                status_cb=None,
+            )
 
             delta_q_client: "queue.Queue[Optional[str]]" = queue.Queue()
             delta_q_tts: "queue.Queue[Optional[str]]" = queue.Queue()
