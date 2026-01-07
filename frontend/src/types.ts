@@ -134,6 +134,7 @@ export type IntegrationTool = {
   response_schema_json?: string
   codex_prompt?: string
   response_mapper_json: string
+  pagination_json?: string
   static_reply_template: string
   created_at: string
   updated_at: string

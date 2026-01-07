@@ -135,6 +135,9 @@ class IntegrationTool(SQLModel, table=True):
     use_codex_response: bool = Field(default=False)
     # If false, this tool is not exposed to the LLM and cannot be executed.
     enabled: bool = Field(default=True)
+    # Optional pagination config (JSON). If set, backend will automatically fetch multiple pages
+    # and merge results before mapping/Codex post-processing.
+    pagination_json: str = Field(default="")
 
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)

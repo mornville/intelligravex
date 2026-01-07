@@ -124,6 +124,117 @@ def _headers_configured(headers_json: str) -> bool:
     return any(k for k, v in obj.items() if str(k).strip() and (v is not None and str(v).strip()))
 
 
+def _get_json_path(obj: Any, path: str) -> Any:
+    """
+    Very small dotted-path getter for dict/list JSON structures.
+
+    Supports:
+    - "a.b.c" for dict keys
+    - "items.0.name" for list indices
+    """
+    cur: Any = obj
+    p = (path or "").strip()
+    if not p:
+        return cur
+    for raw in p.split("."):
+        k = raw.strip()
+        if not k:
+            continue
+        if isinstance(cur, dict):
+            if k not in cur:
+                return None
+            cur = cur.get(k)
+            continue
+        if isinstance(cur, list):
+            try:
+                idx = int(k)
+            except Exception:
+                return None
+            if idx < 0 or idx >= len(cur):
+                return None
+            cur = cur[idx]
+            continue
+        return None
+    return cur
+
+
+def _set_json_path(obj: Any, path: str, value: Any) -> bool:
+    """
+    Set a dotted path inside a dict/list JSON structure. Returns True if set.
+    Only supports paths that traverse existing containers.
+    """
+    p = (path or "").strip()
+    if not p:
+        return False
+    parts = [x.strip() for x in p.split(".") if x.strip()]
+    if not parts:
+        return False
+    cur: Any = obj
+    for part in parts[:-1]:
+        if isinstance(cur, dict):
+            if part not in cur:
+                return False
+            cur = cur.get(part)
+        elif isinstance(cur, list):
+            try:
+                idx = int(part)
+            except Exception:
+                return False
+            if idx < 0 or idx >= len(cur):
+                return False
+            cur = cur[idx]
+        else:
+            return False
+    last = parts[-1]
+    if isinstance(cur, dict):
+        cur[last] = value
+        return True
+    if isinstance(cur, list):
+        try:
+            idx = int(last)
+        except Exception:
+            return False
+        if idx < 0 or idx >= len(cur):
+            return False
+        cur[idx] = value
+        return True
+    return False
+
+
+def _apply_schema_defaults(schema: Any, value: Any) -> Any:
+    """
+    Best-effort JSON Schema defaults application.
+
+    Supports:
+    - object properties with "default"
+    - nested objects/arrays
+
+    Does not attempt to resolve oneOf/allOf/anyOf, refs, etc.
+    """
+    if not isinstance(schema, dict):
+        return value
+    t = schema.get("type")
+    if t in (None, "object") and isinstance(value, dict):
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            return value
+        out = dict(value)
+        for k, sub in props.items():
+            if not isinstance(k, str) or not k:
+                continue
+            if k not in out and isinstance(sub, dict) and "default" in sub:
+                out[k] = sub.get("default")
+            if k in out and isinstance(sub, dict):
+                out[k] = _apply_schema_defaults(sub, out.get(k))
+        return out
+    if t == "array" and isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            return [_apply_schema_defaults(items, x) for x in value]
+        return value
+    return value
+
+
 def _http_error_response(*, url: str, status_code: int | None, body: str | None, message: str | None) -> dict:
     out: dict[str, Any] = {"url": url}
     if status_code is not None:
@@ -132,7 +243,7 @@ def _http_error_response(*, url: str, status_code: int | None, body: str | None,
         out["message"] = str(message)
     if body:
         out["body"] = str(body)[:1200]
-    return {"__http_error__": out}
+        return {"__http_error__": out}
 
 
 _TEMPLATE_VAR_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
@@ -373,6 +484,7 @@ class IntegrationToolCreateRequest(BaseModel):
     response_schema_json: str = ""
     codex_prompt: str = ""
     response_mapper_json: str = "{}"
+    pagination_json: str = ""
     static_reply_template: str = ""
 
 
@@ -390,6 +502,7 @@ class IntegrationToolUpdateRequest(BaseModel):
     response_schema_json: Optional[str] = None
     codex_prompt: Optional[str] = None
     response_mapper_json: Optional[str] = None
+    pagination_json: Optional[str] = None
     static_reply_template: Optional[str] = None
 
 
@@ -865,6 +978,41 @@ def create_app() -> FastAPI:
                 ),
             }
             schema["required"] = ["args", "next_reply"]
+
+        # Pagination: allow the model to optionally request fewer items than the API page size.
+        try:
+            pag = safe_json_loads(getattr(t, "pagination_json", "") or "") or None
+        except Exception:
+            pag = None
+        if isinstance(pag, dict) and str(pag.get("items_path") or "").strip():
+            max_items_cap = pag.get("max_items_cap")
+            try:
+                max_items_cap_i = int(max_items_cap) if max_items_cap is not None else 5000
+            except Exception:
+                max_items_cap_i = 5000
+            if max_items_cap_i < 1:
+                max_items_cap_i = 5000
+            if max_items_cap_i > 50000:
+                max_items_cap_i = 50000
+            props = schema.get("properties")
+            if isinstance(props, dict):
+                args_props = props.get("args")
+                if isinstance(args_props, dict):
+                    # args_props is a schema object; add `max_items` as an optional arg.
+                    args_props.setdefault("properties", {})
+                    if isinstance(args_props.get("properties"), dict):
+                        args_props["properties"].setdefault(
+                            "max_items",
+                            {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": max_items_cap_i,
+                                "description": (
+                                    f"Optional: stop pagination after collecting this many items (max {max_items_cap_i}). "
+                                    "Backend will fetch multiple pages if needed."
+                                ),
+                            },
+                        )
         return {
             "type": "function",
             "name": t.name,
@@ -1111,6 +1259,29 @@ def create_app() -> FastAPI:
         meta: dict,
         tool_args: dict,
     ) -> dict:
+        pagination_raw = (getattr(tool, "pagination_json", "") or "").strip()
+        pagination_cfg: dict[str, Any] | None = None
+        pagination_cfg_error: str | None = None
+        if pagination_raw:
+            try:
+                obj = json.loads(pagination_raw)
+                if isinstance(obj, dict):
+                    pagination_cfg = obj
+                else:
+                    pagination_cfg_error = "pagination_json must be a JSON object."
+            except Exception as exc:
+                pagination_cfg_error = f"invalid pagination_json: {exc}"
+
+        # Apply JSON Schema defaults to tool args (helps URL/body templates that reference args.page/args.limit).
+        args0 = dict(tool_args or {})
+        try:
+            schema_obj = json.loads(getattr(tool, "parameters_schema_json", "") or "null")
+        except Exception:
+            schema_obj = None
+        if isinstance(schema_obj, dict):
+            args0 = _apply_schema_defaults(schema_obj, args0)
+        tool_args = args0
+
         required_args = _parse_required_args_json(getattr(tool, "args_required_json", "[]"))
         missing = _missing_required_args(required_args, tool_args or {})
         if bool(getattr(tool, "use_codex_response", False)):
@@ -1128,68 +1299,226 @@ def create_app() -> FastAPI:
                 }
             }
 
-        # Internal intent keys (LLM-only); never forward to the upstream HTTP API.
-        request_args = dict(tool_args or {})
-        request_args.pop("fields_required", None)
-        request_args.pop("why_api_was_called", None)
-        request_args.pop("what_to_search_for", None)
-        request_args.pop("why_to_search_for", None)
+        def _single_request(*, loop_args: dict[str, Any]) -> tuple[Any, str]:
+            # Render URL/body templates using current metadata + tool args.
+            ctx = {"meta": meta, "args": loop_args, "params": loop_args}
+            url = render_template(tool.url, ctx=ctx)
+            method = (tool.method or "GET").upper()
 
-        # Render URL/body templates using current metadata + tool args.
-        ctx = {"meta": meta, "args": tool_args, "params": tool_args}
-        url = render_template(tool.url, ctx=ctx)
-        method = (tool.method or "GET").upper()
+            headers_obj: dict[str, str] = {}
+            headers_template = tool.headers_template_json or ""
+            if headers_template.strip():
+                rendered_headers = render_template(headers_template, ctx=ctx)
+                try:
+                    h = json.loads(rendered_headers)
+                    if isinstance(h, dict):
+                        for k, v in h.items():
+                            if isinstance(k, str) and isinstance(v, str) and k.strip():
+                                headers_obj[k] = v
+                except Exception:
+                    headers_obj = {}
 
-        headers_obj: dict[str, str] = {}
-        headers_template = tool.headers_template_json or ""
-        if headers_template.strip():
-            rendered_headers = render_template(headers_template, ctx=ctx)
+            body_template = tool.request_body_template or ""
+            body_obj = None
+            if body_template.strip():
+                rendered_body = render_template(body_template, ctx=ctx)
+                try:
+                    body_obj = json.loads(rendered_body)
+                except Exception:
+                    # If body isn't valid JSON, send as raw string.
+                    body_obj = rendered_body
+
+            loop_request_args = dict(loop_args)
+            # Internal intent keys (LLM-only); never forward to the upstream HTTP API.
+            for k in ("fields_required", "why_api_was_called", "what_to_search_for", "why_to_search_for", "max_items"):
+                loop_request_args.pop(k, None)
+
+            timeout = httpx.Timeout(20.0, connect=10.0)
             try:
-                h = json.loads(rendered_headers)
-                if isinstance(h, dict):
-                    for k, v in h.items():
-                        if isinstance(k, str) and isinstance(v, str) and k.strip():
-                            headers_obj[k] = v
-            except Exception:
-                headers_obj = {}
-
-        body_template = tool.request_body_template or ""
-        body_obj = None
-        if body_template.strip():
-            rendered_body = render_template(body_template, ctx=ctx)
-            try:
-                body_obj = json.loads(rendered_body)
-            except Exception:
-                # If body isn't valid JSON, send as raw string.
-                body_obj = rendered_body
-
-        timeout = httpx.Timeout(20.0, connect=10.0)
-        try:
-            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-                if method == "GET":
-                    resp = client.request(method, url, params=request_args or None, headers=headers_obj or None)
-                else:
-                    # Prefer JSON for objects/lists; otherwise raw data.
-                    if isinstance(body_obj, (dict, list)):
-                        resp = client.request(method, url, json=body_obj, headers=headers_obj or None)
-                    elif body_obj is None:
-                        # Most APIs expect an object for JSON bodies. Send {} instead of null when args are empty.
-                        resp = client.request(method, url, json=(request_args or {}), headers=headers_obj or None)
+                with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                    if method == "GET":
+                        resp = client.request(method, url, headers=headers_obj or None)
                     else:
-                        resp = client.request(method, url, content=str(body_obj), headers=headers_obj or None)
-            if resp.status_code >= 400:
-                return _http_error_response(
-                    url=str(resp.request.url),
-                    status_code=resp.status_code,
-                    body=(resp.text or None),
-                    message=resp.reason_phrase,
-                )
+                        # Prefer JSON for objects/lists; otherwise raw data.
+                        if isinstance(body_obj, (dict, list)):
+                            # If pagination is enabled and the body is a dict, the caller may have inserted
+                            # page/limit keys into loop_args and referenced them in the template; we keep
+                            # the rendered body as the source of truth.
+                            resp = client.request(method, url, json=body_obj, headers=headers_obj or None)
+                        elif body_obj is None:
+                            # Most APIs expect an object for JSON bodies. Send {} instead of null when args are empty.
+                            resp = client.request(
+                                method, url, json=(loop_request_args or {}), headers=headers_obj or None
+                            )
+                        else:
+                            resp = client.request(method, url, content=str(body_obj), headers=headers_obj or None)
+                if resp.status_code >= 400:
+                    return (
+                        _http_error_response(
+                            url=str(resp.request.url),
+                            status_code=resp.status_code,
+                            body=(resp.text or None),
+                            message=resp.reason_phrase,
+                        ),
+                        url,
+                    )
+                try:
+                    return resp.json(), url
+                except Exception:
+                    return {"raw": resp.text}, url
+            except httpx.RequestError as exc:
+                return _http_error_response(url=url, status_code=None, body=None, message=str(exc)), url
+
+        # If pagination is not configured, do a single request.
+        if not isinstance(pagination_cfg, dict) or not pagination_cfg:
+            resp_json, _ = _single_request(loop_args=dict(tool_args or {}))
+            if pagination_cfg_error and isinstance(resp_json, dict) and "__http_error__" not in resp_json:
+                resp_json["__igx_pagination__"] = {"error": pagination_cfg_error}
+            return resp_json
+
+        mode = str(pagination_cfg.get("mode") or "page_limit").strip()
+        if mode not in ("page_limit", "offset_limit"):
+            resp_json, _ = _single_request(loop_args=dict(tool_args or {}))
+            if isinstance(resp_json, dict) and "__http_error__" not in resp_json:
+                resp_json["__igx_pagination__"] = {"error": f"unsupported pagination mode: {mode}"}
+            return resp_json
+
+        items_path = str(pagination_cfg.get("items_path") or "").strip()
+        if not items_path:
+            resp_json, _ = _single_request(loop_args=dict(tool_args or {}))
+            if isinstance(resp_json, dict) and "__http_error__" not in resp_json:
+                resp_json["__igx_pagination__"] = {"error": "pagination_json missing items_path."}
+            return resp_json
+
+        page_arg = str(pagination_cfg.get("page_arg") or "page").strip() or "page"
+        limit_arg = str(pagination_cfg.get("limit_arg") or "limit").strip() or "limit"
+        offset_arg = str(pagination_cfg.get("offset_arg") or "offset").strip() or "offset"
+        max_pages = int(pagination_cfg.get("max_pages") or 5)
+        if max_pages < 1:
+            max_pages = 1
+        if max_pages > 50:
+            max_pages = 50
+
+        # max_items is optional; if missing, we still cap total work via max_pages.
+        max_items_cap = int(pagination_cfg.get("max_items_cap") or 5000)
+        if max_items_cap < 1:
+            max_items_cap = 5000
+        if max_items_cap > 50000:
+            max_items_cap = 50000
+
+        requested_max_items = tool_args.get("max_items")
+        if requested_max_items is None:
+            requested_max_items = pagination_cfg.get("max_items_default")
+        try:
+            max_items = int(requested_max_items) if requested_max_items is not None else None
+        except Exception:
+            max_items = None
+        if max_items is not None:
+            if max_items < 1:
+                max_items = None
+            else:
+                max_items = min(max_items, max_items_cap)
+
+        def _read_int(v: Any, default: int) -> int:
             try:
-                return resp.json()
+                x = int(v)
+                return x
             except Exception:
-                return {"raw": resp.text}
-        except httpx.RequestError as exc:
-            return _http_error_response(url=url, status_code=None, body=None, message=str(exc))
+                return default
+
+        limit_val = _read_int(tool_args.get(limit_arg), int(pagination_cfg.get("limit_default") or 100))
+        if limit_val < 1:
+            limit_val = 100
+
+        start_page = _read_int(tool_args.get(page_arg), 1)
+        if start_page < 1:
+            start_page = 1
+
+        start_offset = _read_int(tool_args.get(offset_arg), 0)
+        if start_offset < 0:
+            start_offset = 0
+
+        base_resp: Any = None
+        aggregated: list[Any] = []
+        fetched = 0
+
+        for i in range(max_pages):
+            loop_args = dict(tool_args or {})
+            loop_args[limit_arg] = limit_val
+            if mode == "page_limit":
+                loop_args[page_arg] = start_page + i
+            else:
+                loop_args[offset_arg] = start_offset + (i * limit_val)
+
+            resp_json, _url = _single_request(loop_args=loop_args)
+            # Pass-through errors / non-JSON bodies immediately.
+            if isinstance(resp_json, dict) and resp_json.get("__http_error__"):
+                return resp_json
+
+            if base_resp is None:
+                # Shallow copy so we can mutate the items list in-place without affecting downstream.
+                base_resp = resp_json if not isinstance(resp_json, dict) else dict(resp_json)
+
+            page_items = _get_json_path(resp_json, items_path)
+            if not isinstance(page_items, list):
+                # If we can't find a list at items_path, return first page + diagnostics.
+                if isinstance(base_resp, dict):
+                    base_resp["__igx_pagination__"] = {
+                        "mode": mode,
+                        "items_path": items_path,
+                        "limit": limit_val,
+                        "pages_fetched": fetched,
+                        "items_returned": len(aggregated),
+                        "max_items": max_items,
+                        "max_pages": max_pages,
+                        "error": f"items_path not a list: {items_path}",
+                    }
+                return base_resp
+
+            fetched += 1
+            aggregated.extend(page_items)
+
+            if max_items is not None and len(aggregated) >= max_items:
+                aggregated = aggregated[:max_items]
+                break
+
+            # Stop if the API returned fewer than the page size (common "last page" signal).
+            if len(page_items) < limit_val:
+                break
+
+        if base_resp is None:
+            resp_json, _ = _single_request(loop_args=dict(tool_args or {}))
+            return resp_json
+
+        # Replace the items list with the aggregated list (if possible).
+        if not _set_json_path(base_resp, items_path, aggregated):
+            # If we can't set, just return the first page response.
+            if isinstance(base_resp, dict):
+                base_resp["__igx_pagination__"] = {
+                    "mode": mode,
+                    "items_path": items_path,
+                    "limit": limit_val,
+                    "pages_fetched": fetched,
+                    "items_returned": len(aggregated),
+                    "max_items": max_items,
+                    "max_pages": max_pages,
+                    "error": f"failed to set items_path: {items_path}",
+                }
+            return base_resp
+
+        # Minimal pagination diagnostics (kept out of the merged items list; caller can surface it in tool_result).
+        if isinstance(base_resp, dict):
+            base_resp["__igx_pagination__"] = {
+                "mode": mode,
+                "items_path": items_path,
+                "limit": limit_val,
+                "pages_fetched": fetched,
+                "items_returned": len(aggregated),
+                "max_items": max_items,
+                "max_pages": max_pages,
+            }
+
+        return base_resp
 
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False))
@@ -2329,6 +2658,9 @@ def create_app() -> FastAPI:
                                             needs_followup_llm = True
                                             rendered_reply = ""
                                         else:
+                                            pagination_info = None
+                                            if isinstance(response_json, dict) and "__igx_pagination__" in response_json:
+                                                pagination_info = response_json.pop("__igx_pagination__", None)
                                             if bool(getattr(tool_cfg, "use_codex_response", False)):
                                                 # Avoid bloating LLM-visible conversation metadata in Codex mode.
                                                 tool_result = {"ok": True}
@@ -2345,6 +2677,8 @@ def create_app() -> FastAPI:
                                                 )
                                                 meta_current = new_meta
                                                 tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+                                            if pagination_info:
+                                                tool_result["pagination"] = pagination_info
 
                                             # Optional Codex HTTP agent (post-process the raw response JSON).
                                             # Static reply (if configured) takes priority.
@@ -3321,6 +3655,9 @@ def create_app() -> FastAPI:
                                             needs_followup_llm = True
                                             rendered_reply = ""
                                         else:
+                                            pagination_info = None
+                                            if isinstance(response_json, dict) and "__igx_pagination__" in response_json:
+                                                pagination_info = response_json.pop("__igx_pagination__", None)
                                             if bool(getattr(tool_cfg, "use_codex_response", False)):
                                                 # Avoid bloating LLM-visible conversation metadata in Codex mode.
                                                 tool_result = {"ok": True}
@@ -3337,6 +3674,8 @@ def create_app() -> FastAPI:
                                                 )
                                                 meta_current = new_meta
                                                 tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+                                            if pagination_info:
+                                                tool_result["pagination"] = pagination_info
 
                                             # Optional Codex HTTP agent (post-process the raw response JSON).
                                             # Static reply (if configured) takes priority.
@@ -4397,6 +4736,9 @@ def create_app() -> FastAPI:
                                         needs_followup_llm = True
                                         final = ""
                                     else:
+                                        pagination_info = None
+                                        if isinstance(response_json, dict) and "__igx_pagination__" in response_json:
+                                            pagination_info = response_json.pop("__igx_pagination__", None)
                                         if bool(getattr(tool_cfg, "use_codex_response", False)):
                                             # Avoid bloating LLM-visible conversation metadata in Codex mode.
                                             tool_result = {"ok": True}
@@ -4413,6 +4755,8 @@ def create_app() -> FastAPI:
                                             )
                                             meta_current = new_meta
                                             tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+                                        if pagination_info:
+                                            tool_result["pagination"] = pagination_info
 
                                         # Optional Codex HTTP agent (post-process the raw response JSON).
                                         # Static reply (if configured) takes priority.
@@ -4787,6 +5131,7 @@ def create_app() -> FastAPI:
             "response_schema_json": getattr(t, "response_schema_json", "") or "",
             "codex_prompt": getattr(t, "codex_prompt", "") or "",
             "response_mapper_json": t.response_mapper_json,
+            "pagination_json": getattr(t, "pagination_json", "") or "",
             "static_reply_template": t.static_reply_template,
             "use_codex_response": bool(getattr(t, "use_codex_response", False)),
             "created_at": t.created_at.isoformat(),
@@ -4917,6 +5262,7 @@ def create_app() -> FastAPI:
             response_schema_json=payload.response_schema_json or "",
             codex_prompt=(payload.codex_prompt or ""),
             response_mapper_json=payload.response_mapper_json or "{}",
+            pagination_json=payload.pagination_json or "",
             static_reply_template=payload.static_reply_template or "",
         )
         create_integration_tool(session, tool)
@@ -4951,6 +5297,8 @@ def create_app() -> FastAPI:
             patch["response_schema_json"] = patch["response_schema_json"] or ""
         if "codex_prompt" in patch:
             patch["codex_prompt"] = patch["codex_prompt"] or ""
+        if "pagination_json" in patch:
+            patch["pagination_json"] = patch["pagination_json"] or ""
         tool = update_integration_tool(session, tool_id, patch)
         return _tool_to_dict(tool)
 

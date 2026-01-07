@@ -258,6 +258,17 @@ Notes:
 - Keys with dots (e.g. `user.id`) are stored as nested objects in `metadata_json`.
 - Templates can return raw JSON values if the whole value is a single placeholder.
 
+### GET query params (explicit in URL)
+
+For `GET` integrations, query parameters are taken from the URL template itself (the backend does not auto-append
+unused tool args as query params). This prevents accidental duplication like:
+
+`/individuals/1730174632?npi=1730174632`
+
+Example:
+
+`https://analytics.candorhealth.com/api/individuals/{{args.npi}}?include_reviews={{args.include_reviews}}`
+
 ### UI / API
 
 - React Studio: Bot page → “Integrations (HTTP tools)” → Add integration.

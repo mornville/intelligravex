@@ -42,6 +42,7 @@ export default function BotDetailPage() {
     response_schema_json: '',
     codex_prompt: '',
     response_mapper_json: '{}',
+    pagination_json: '',
     static_reply_template: '',
   })
 
@@ -150,6 +151,7 @@ Rules:
       response_schema_json: '',
       codex_prompt: '',
       response_mapper_json: '{}',
+      pagination_json: '',
       static_reply_template: '',
     })
     setShowToolModal(true)
@@ -174,6 +176,7 @@ Rules:
       response_schema_json: t.response_schema_json || '',
       codex_prompt: t.codex_prompt || '',
       response_mapper_json: t.response_mapper_json || '{}',
+      pagination_json: t.pagination_json || '',
       static_reply_template: t.static_reply_template || '',
     })
     setShowToolModal(true)
@@ -207,6 +210,7 @@ Rules:
           response_schema_json: toolForm.response_schema_json || '',
           codex_prompt: toolForm.codex_prompt || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
+          pagination_json: toolForm.pagination_json || '',
           static_reply_template: toolForm.static_reply_template || '',
         }
         if (toolForm.headers_template_json.trim()) {
@@ -228,6 +232,7 @@ Rules:
           response_schema_json: toolForm.response_schema_json || '',
           codex_prompt: toolForm.codex_prompt || '',
           response_mapper_json: toolForm.response_mapper_json || '{}',
+          pagination_json: toolForm.pagination_json || '',
           static_reply_template: toolForm.static_reply_template || '',
         })
       }
@@ -606,7 +611,18 @@ Rules:
               <div className="cardSubTitle">Integrations (HTTP tools)</div>
               <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
                 <div className="muted">
-                  Use variables like <span className="mono">{'{{.firstName}}'}</span> in prompts and tool next_reply.
+                  Use variables like <span className="mono">{'{{.firstName}}'}</span> in prompts and tool next_reply.{' '}
+                  <HelpTip>
+                    <div className="tipTitle">How integrations work</div>
+                    <div className="tipText">
+                      The LLM calls your tool with <span className="mono">{'{ "args": { ... } }'}</span>. The backend renders URL/body templates, calls the
+                      HTTP API, maps selected fields into metadata, and returns a tool result.
+                    </div>
+                    <div className="tipText">
+                      Pagination: if configured, the backend will fetch multiple pages and merge results (the LLM can pass{' '}
+                      <span className="mono">max_items</span> to stop early).
+                    </div>
+                  </HelpTip>
                 </div>
                 <button className="btn primary" onClick={openNewTool}>
                   Add integration
@@ -890,6 +906,35 @@ Rules:
               <div className="muted">
                 You can reference metadata with <span className="mono">{'{{.path}}'}</span> and tool args with{' '}
                 <span className="mono">{'{{args.user_id}}'}</span>.
+              </div>
+            </div>
+            <div className="formRow">
+                <label>
+                  Pagination (JSON, optional){' '}
+                  <HelpTip>
+                    <div className="tipTitle">Example (page + limit)</div>
+                  <pre className="tipPre">
+                    {'{\n  \"mode\": \"page_limit\",\n  \"items_path\": \"items\",\n  \"page_arg\": \"page\",\n  \"limit_arg\": \"limit\",\n  \"max_pages\": 5,\n  \"max_items_cap\": 5000\n}\n'}
+                  </pre>
+                  <div className="tipText">
+                    If set, the backend will fetch multiple pages (up to <span className="mono">max_pages</span>) and merge the list at{' '}
+                    <span className="mono">items_path</span>. The LLM can optionally pass <span className="mono">max_items</span> inside args to stop early.
+                  </div>
+                    <div className="tipText">This field must be valid JSON (no templates like <span className="mono">{'{{...}}'}</span>).</div>
+                    <div className="tipText">
+                      Important: your URL/body template must reference <span className="mono">args.page</span> and <span className="mono">args.limit</span>{' '}
+                      (where your API expects them), otherwise every request will fetch the first page.
+                    </div>
+                  </HelpTip>
+                </label>
+              <textarea
+                value={toolForm.pagination_json}
+                onChange={(e) => setToolForm((p) => ({ ...p, pagination_json: e.target.value }))}
+                rows={4}
+                placeholder=""
+              />
+              <div className="muted">
+                Set <span className="mono">items_path</span> to the JSON path that contains the returned list (e.g. <span className="mono">providers.rows</span>).
               </div>
             </div>
             <div className="formRow">
