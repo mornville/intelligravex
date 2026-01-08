@@ -4,6 +4,7 @@ import asyncio
 import base64
 import datetime as dt
 import json
+import logging
 import os
 import queue
 import re
@@ -531,6 +532,7 @@ def create_app() -> FastAPI:
     init_db(engine)
 
     app = FastAPI(title="Intelligravex VoiceBot Studio")
+    logger = logging.getLogger("voicebot.web")
 
     download_base_url = (getattr(settings, "download_base_url", "") or "127.0.0.1:8000").strip()
 
@@ -1084,9 +1086,11 @@ def create_app() -> FastAPI:
                 meta = _get_conversation_meta(session, conversation_id=conversation_id)
                 da = _data_agent_meta(meta)
                 if str(da.get("container_id") or "").strip():
+                    logger.info("Data Agent kickoff: already started conv=%s container_id=%s", conversation_id, da.get("container_id"))
                     return
                 api_key = _get_openai_api_key_for_bot(session, bot=bot)
                 if not api_key:
+                    logger.warning("Data Agent kickoff: missing OpenAI key conv=%s bot=%s", conversation_id, bot_id)
                     merge_conversation_metadata(
                         session,
                         conversation_id=conversation_id,
@@ -1094,6 +1098,7 @@ def create_app() -> FastAPI:
                     )
                     return
                 workspace_dir = str(da.get("workspace_dir") or "").strip() or default_workspace_dir_for_conversation(conversation_id)
+            logger.info("Data Agent kickoff: starting conv=%s workspace=%s", conversation_id, workspace_dir)
             container_id = await asyncio.to_thread(
                 ensure_conversation_container,
                 conversation_id=conversation_id,
@@ -1109,7 +1114,9 @@ def create_app() -> FastAPI:
                         "data_agent.workspace_dir": workspace_dir,
                     },
                 )
+            logger.info("Data Agent kickoff: started conv=%s container_id=%s", conversation_id, container_id)
         except Exception:
+            logger.exception("Data Agent kickoff failed conv=%s bot=%s", conversation_id, bot_id)
             return
 
     def _set_metadata_tool_def() -> dict:
@@ -2490,6 +2497,12 @@ def create_app() -> FastAPI:
                                             else:
                                                 # Ensure the per-conversation runtime exists (Docker) and run Codex CLI.
                                                 try:
+                                                    logger.info(
+                                                        "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                                        conv_id,
+                                                        bot_id,
+                                                        (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
+                                                    )
                                                     da = _data_agent_meta(meta_current)
                                                     workspace_dir = (
                                                         str(da.get("workspace_dir") or "").strip()
@@ -2504,13 +2517,15 @@ def create_app() -> FastAPI:
                                                             "No OpenAI API key configured for this bot (needed for Data Agent)."
                                                         )
 
-                                                    if not container_id:
-                                                        container_id = await asyncio.to_thread(
-                                                            ensure_conversation_container,
-                                                            conversation_id=conv_id,
-                                                            workspace_dir=workspace_dir,
-                                                            openai_api_key=api_key,
-                                                        )
+                                                    # Ensure the container exists and is running even if metadata has a stale id.
+                                                    ensured_container_id = await asyncio.to_thread(
+                                                        ensure_conversation_container,
+                                                        conversation_id=conv_id,
+                                                        workspace_dir=workspace_dir,
+                                                        openai_api_key=api_key,
+                                                    )
+                                                    if ensured_container_id and ensured_container_id != container_id:
+                                                        container_id = ensured_container_id
                                                         meta_current = merge_conversation_metadata(
                                                             session,
                                                             conversation_id=conv_id,
@@ -2563,6 +2578,15 @@ def create_app() -> FastAPI:
                                                             conversation_id=conv_id,
                                                             patch={"data_agent.session_id": da_res.session_id},
                                                         )
+                                                    logger.info(
+                                                        "Data Agent tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
+                                                        conv_id,
+                                                        bool(da_res.ok),
+                                                        da_res.container_id,
+                                                        da_res.session_id,
+                                                        da_res.output_file,
+                                                        da_res.error,
+                                                    )
                                                     tool_result = {
                                                         "ok": bool(da_res.ok),
                                                         "result_text": da_res.result_text,
@@ -2576,6 +2600,7 @@ def create_app() -> FastAPI:
                                                     rendered_reply = ""
                                                     tool_failed = not bool(da_res.ok)
                                                 except Exception as exc:
+                                                    logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
                                                     tool_result = {
                                                         "ok": False,
                                                         "error": {"message": str(exc)},
@@ -3958,6 +3983,12 @@ def create_app() -> FastAPI:
                                                 rendered_reply = ""
                                             else:
                                                 try:
+                                                    logger.info(
+                                                        "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                                        conv_id,
+                                                        bot_id,
+                                                        (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
+                                                    )
                                                     da = _data_agent_meta(meta_current)
                                                     workspace_dir = (
                                                         str(da.get("workspace_dir") or "").strip()
@@ -4031,6 +4062,15 @@ def create_app() -> FastAPI:
                                                             conversation_id=conv_id,
                                                             patch={"data_agent.session_id": da_res.session_id},
                                                         )
+                                                    logger.info(
+                                                        "Data Agent tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
+                                                        conv_id,
+                                                        bool(da_res.ok),
+                                                        da_res.container_id,
+                                                        da_res.session_id,
+                                                        da_res.output_file,
+                                                        da_res.error,
+                                                    )
                                                     tool_result = {
                                                         "ok": bool(da_res.ok),
                                                         "result_text": da_res.result_text,
@@ -4044,6 +4084,7 @@ def create_app() -> FastAPI:
                                                     rendered_reply = ""
                                                     tool_failed = not bool(da_res.ok)
                                                 except Exception as exc:
+                                                    logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
                                                     tool_result = {
                                                         "ok": False,
                                                         "error": {"message": str(exc)},
@@ -5003,6 +5044,12 @@ def create_app() -> FastAPI:
                                             final = ""
                                         else:
                                             try:
+                                                logger.info(
+                                                    "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                                    conv_id,
+                                                    bot_id,
+                                                    (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
+                                                )
                                                 da = _data_agent_meta(meta_current)
                                                 workspace_dir = (
                                                     str(da.get("workspace_dir") or "").strip()
@@ -5079,6 +5126,15 @@ def create_app() -> FastAPI:
                                                         conversation_id=conv_id,
                                                         patch={"data_agent.session_id": da_res.session_id},
                                                     )
+                                                logger.info(
+                                                    "Data Agent tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
+                                                    conv_id,
+                                                    bool(da_res.ok),
+                                                    da_res.container_id,
+                                                    da_res.session_id,
+                                                    da_res.output_file,
+                                                    da_res.error,
+                                                )
                                                 tool_result = {
                                                     "ok": bool(da_res.ok),
                                                     "result_text": da_res.result_text,
@@ -5092,6 +5148,7 @@ def create_app() -> FastAPI:
                                                 needs_followup_llm = True
                                                 final = ""
                                             except Exception as exc:
+                                                logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
                                                 tool_result = {"ok": False, "error": {"message": str(exc)}}
                                                 tool_failed = True
                                                 needs_followup_llm = True
