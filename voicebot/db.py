@@ -72,6 +72,10 @@ def _apply_light_migrations(engine) -> None:
         add_bot_col("codex_model", "TEXT NOT NULL DEFAULT 'gpt-5.1-codex-mini'")
         add_bot_col("summary_model", "TEXT NOT NULL DEFAULT 'gpt-5-nano'")
         add_bot_col("history_window_turns", "INTEGER NOT NULL DEFAULT 16")
+        add_bot_col("enable_data_agent", "INTEGER NOT NULL DEFAULT 0")
+        add_bot_col("data_agent_api_spec_text", "TEXT NOT NULL DEFAULT ''")
+        add_bot_col("data_agent_auth_json", "TEXT NOT NULL DEFAULT '{}'")  # stored as plaintext JSON by request
+        add_bot_col("data_agent_system_prompt", "TEXT NOT NULL DEFAULT ''")
         add_bot_col("disabled_tools_json", "TEXT NOT NULL DEFAULT '[]'")
         try:
             conn.execute(

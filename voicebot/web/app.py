@@ -72,10 +72,17 @@ from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
+from voicebot.tools.data_agent import give_command_to_data_agent_tool_def
 from voicebot.tools.recall_http_response import recall_http_response_tool_def
 from voicebot.tools.export_http_response import export_http_response_tool_def
 from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
+from voicebot.data_agent.docker_runner import (
+    DEFAULT_DATA_AGENT_SYSTEM_PROMPT,
+    default_workspace_dir_for_conversation,
+    ensure_conversation_container,
+    run_data_agent,
+)
 
 
 def _mask_secret(value: str, *, keep_start: int = 10, keep_end: int = 6) -> str:
@@ -426,6 +433,10 @@ class BotCreateRequest(BaseModel):
     codex_model: Optional[str] = None
     summary_model: Optional[str] = None
     history_window_turns: Optional[int] = None
+    enable_data_agent: bool = False
+    data_agent_api_spec_text: str = ""
+    data_agent_auth_json: str = "{}"
+    data_agent_system_prompt: str = ""
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
@@ -453,6 +464,10 @@ class BotUpdateRequest(BaseModel):
     codex_model: Optional[str] = None
     summary_model: Optional[str] = None
     history_window_turns: Optional[int] = None
+    enable_data_agent: Optional[bool] = None
+    data_agent_api_spec_text: Optional[str] = None
+    data_agent_auth_json: Optional[str] = None
+    data_agent_system_prompt: Optional[str] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     tts_language: Optional[str] = None
@@ -984,6 +999,119 @@ def create_app() -> FastAPI:
         meta = safe_json_loads(conv.metadata_json or "{}") or {}
         return meta if isinstance(meta, dict) else {}
 
+    def _get_openai_api_key_for_bot(session: Session, *, bot: Bot) -> str:
+        # Prefer the per-bot stored key, fall back to env.
+        try:
+            crypto = require_crypto()
+        except Exception:
+            crypto = None
+        key = ""
+        if crypto is not None:
+            try:
+                key = decrypt_openai_key(session, crypto=crypto, bot=bot) or ""
+            except Exception:
+                key = ""
+        if not key:
+            key = os.environ.get("OPENAI_API_KEY") or ""
+        return (key or "").strip()
+
+    def _data_agent_meta(meta: dict) -> dict:
+        da = meta.get("data_agent")
+        return da if isinstance(da, dict) else {}
+
+    def _ensure_data_agent_container(
+        session: Session, *, bot: Bot, conversation_id: UUID, meta_current: dict
+    ) -> tuple[str, str, str]:
+        """
+        Ensures the per-conversation Data Agent runtime exists.
+
+        Returns: (container_id, session_id, workspace_dir).
+        """
+        da = _data_agent_meta(meta_current)
+        workspace_dir = str(da.get("workspace_dir") or "").strip() or default_workspace_dir_for_conversation(conversation_id)
+        container_id = str(da.get("container_id") or "").strip()
+        session_id = str(da.get("session_id") or "").strip()
+
+        api_key = _get_openai_api_key_for_bot(session, bot=bot)
+        if not api_key:
+            raise RuntimeError("No OpenAI API key configured for this bot (needed for Data Agent).")
+
+        if not container_id:
+            container_id = ensure_conversation_container(
+                conversation_id=conversation_id,
+                workspace_dir=workspace_dir,
+                openai_api_key=api_key,
+            )
+            meta_current = merge_conversation_metadata(
+                session,
+                conversation_id=conversation_id,
+                patch={
+                    "data_agent.container_id": container_id,
+                    "data_agent.workspace_dir": workspace_dir,
+                    "data_agent.session_id": session_id,
+                },
+            )
+        return container_id, session_id, workspace_dir
+
+    def _build_data_agent_conversation_context(session: Session, *, bot: Bot, conversation_id: UUID, meta: dict) -> dict[str, Any]:
+        # Keep this small: reuse our existing summary (if any) + last N messages.
+        summary = ""
+        try:
+            mem = meta.get("memory")
+            if isinstance(mem, dict):
+                summary = str(mem.get("summary") or "").strip()
+        except Exception:
+            summary = ""
+
+        msgs = list_messages(session, conversation_id=conversation_id)
+        n_turns = int(getattr(bot, "history_window_turns", 16) or 16)
+        max_msgs = max(8, min(96, n_turns * 2))
+        tail = msgs[-max_msgs:] if len(msgs) > max_msgs else msgs
+        history = [{"role": m.role, "content": m.content} for m in tail]
+        return {"summary": summary, "messages": history}
+
+    async def _kickoff_data_agent_container_if_enabled(*, bot_id: UUID, conversation_id: UUID) -> None:
+        """
+        Best-effort: start the per-conversation Data Agent runtime at conversation start.
+
+        NOTE: This uses Docker locally. For Kubernetes, this should be replaced with a Pod/Job-based runner.
+        """
+        try:
+            with Session(engine) as session:
+                bot = get_bot(session, bot_id)
+                if not bool(getattr(bot, "enable_data_agent", False)):
+                    return
+                meta = _get_conversation_meta(session, conversation_id=conversation_id)
+                da = _data_agent_meta(meta)
+                if str(da.get("container_id") or "").strip():
+                    return
+                api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                if not api_key:
+                    merge_conversation_metadata(
+                        session,
+                        conversation_id=conversation_id,
+                        patch={"data_agent.init_error": "No OpenAI API key configured for this bot."},
+                    )
+                    return
+                workspace_dir = str(da.get("workspace_dir") or "").strip() or default_workspace_dir_for_conversation(conversation_id)
+            container_id = await asyncio.to_thread(
+                ensure_conversation_container,
+                conversation_id=conversation_id,
+                workspace_dir=workspace_dir,
+                openai_api_key=api_key,
+            )
+            with Session(engine) as session:
+                merge_conversation_metadata(
+                    session,
+                    conversation_id=conversation_id,
+                    patch={
+                        "data_agent.container_id": container_id,
+                        "data_agent.workspace_dir": workspace_dir,
+                    },
+                )
+        except Exception:
+            return
+
     def _set_metadata_tool_def() -> dict:
         return set_metadata_tool_def()
 
@@ -1016,22 +1144,25 @@ def create_app() -> FastAPI:
         out.discard("set_variable")
         return out
 
-    def _system_tools_defs() -> list[dict[str, Any]]:
-        # Tools that are always available for every bot.
+    def _system_tools_defs(*, bot: Bot) -> list[dict[str, Any]]:
+        # Tools that are always available for every bot (plus optional per-bot tools).
         #
         # Note: `set_variable` is kept as a runtime alias for backwards-compat, but we only expose
         # `set_metadata` to the model to avoid duplicate tools that do the same thing.
-        return [
+        tools = [
             _set_metadata_tool_def(),
             _web_search_tool_def(),
             _recall_http_response_tool_def(),
             _export_http_response_tool_def(),
         ]
+        if bool(getattr(bot, "enable_data_agent", False)):
+            tools.append(give_command_to_data_agent_tool_def())
+        return tools
 
-    def _system_tools_public_list(*, disabled: set[str]) -> list[dict[str, Any]]:
+    def _system_tools_public_list(*, bot: Bot, disabled: set[str]) -> list[dict[str, Any]]:
         # UI-friendly list of built-in tools (do not include full JSON Schema).
         out: list[dict[str, Any]] = []
-        for d in _system_tools_defs():
+        for d in _system_tools_defs(bot=bot):
             name = str(d.get("name") or "")
             if not name:
                 continue
@@ -1209,7 +1340,9 @@ def create_app() -> FastAPI:
     def _build_tools_for_bot(session: Session, bot_id: UUID) -> list[dict[str, Any]]:
         bot = get_bot(session, bot_id)
         disabled = _disabled_tool_names(bot)
-        tools: list[dict[str, Any]] = [d for d in _system_tools_defs() if str(d.get("name") or "") not in disabled]
+        tools: list[dict[str, Any]] = [
+            d for d in _system_tools_defs(bot=bot) if str(d.get("name") or "") not in disabled
+        ]
         for t in list_integration_tools(session, bot_id=bot_id):
             if not bool(getattr(t, "enabled", True)):
                 continue
@@ -1921,7 +2054,15 @@ def create_app() -> FastAPI:
 
                         await _ws_send_json(
                             ws,
-                            {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
+                            {
+                                "type": "conversation",
+                                "req_id": req_id,
+                                "conversation_id": str(conv_id),
+                                "id": str(conv_id),
+                            },
+                        )
+                        asyncio.create_task(
+                            _kickoff_data_agent_container_if_enabled(bot_id=bot_id, conversation_id=conv_id)
                         )
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "recording"})
 
@@ -1976,6 +2117,7 @@ def create_app() -> FastAPI:
                             ws,
                             {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
                         )
+                        asyncio.create_task(_kickoff_data_agent_container_if_enabled(bot_id=bot_id, conversation_id=conv_id))
 
                         try:
                             with Session(engine) as session:
@@ -2326,6 +2468,121 @@ def create_app() -> FastAPI:
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
+                                    elif tool_name == "give_command_to_data_agent":
+                                        if not bool(getattr(bot, "enable_data_agent", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Data Agent is disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            what_to_do = str(patch.get("what_to_do") or "").strip()
+                                            if not what_to_do:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {"message": "Missing required tool arg: what_to_do"},
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                # Ensure the per-conversation runtime exists (Docker) and run Codex CLI.
+                                                try:
+                                                    da = _data_agent_meta(meta_current)
+                                                    workspace_dir = (
+                                                        str(da.get("workspace_dir") or "").strip()
+                                                        or default_workspace_dir_for_conversation(conv_id)
+                                                    )
+                                                    container_id = str(da.get("container_id") or "").strip()
+                                                    session_id = str(da.get("session_id") or "").strip()
+
+                                                    api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                                                    if not api_key:
+                                                        raise RuntimeError(
+                                                            "No OpenAI API key configured for this bot (needed for Data Agent)."
+                                                        )
+
+                                                    if not container_id:
+                                                        container_id = await asyncio.to_thread(
+                                                            ensure_conversation_container,
+                                                            conversation_id=conv_id,
+                                                            workspace_dir=workspace_dir,
+                                                            openai_api_key=api_key,
+                                                        )
+                                                        meta_current = merge_conversation_metadata(
+                                                            session,
+                                                            conversation_id=conv_id,
+                                                            patch={
+                                                                "data_agent.container_id": container_id,
+                                                                "data_agent.workspace_dir": workspace_dir,
+                                                            },
+                                                        )
+
+                                                    ctx = _build_data_agent_conversation_context(
+                                                        session,
+                                                        bot=bot,
+                                                        conversation_id=conv_id,
+                                                        meta=meta_current,
+                                                    )
+                                                    api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
+                                                    auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                                    sys_prompt = (
+                                                        (getattr(bot, "data_agent_system_prompt", "") or "").strip()
+                                                        or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
+                                                    )
+
+                                                    task = asyncio.create_task(
+                                                        asyncio.to_thread(
+                                                            run_data_agent,
+                                                            conversation_id=conv_id,
+                                                            container_id=container_id,
+                                                            session_id=session_id,
+                                                            workspace_dir=workspace_dir,
+                                                            api_spec_text=api_spec_text,
+                                                            auth_json=auth_json,
+                                                            system_prompt=sys_prompt,
+                                                            conversation_context=ctx,
+                                                            what_to_do=what_to_do,
+                                                        )
+                                                    )
+                                                    if wait_reply:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                    last_wait = time.time()
+                                                    while not task.done():
+                                                        if wait_reply and (time.time() - last_wait) >= 10.0:
+                                                            await _send_interim(wait_reply, kind="wait")
+                                                            last_wait = time.time()
+                                                        await asyncio.sleep(0.2)
+                                                    da_res = await task
+
+                                                    if da_res.session_id and da_res.session_id != session_id:
+                                                        meta_current = merge_conversation_metadata(
+                                                            session,
+                                                            conversation_id=conv_id,
+                                                            patch={"data_agent.session_id": da_res.session_id},
+                                                        )
+                                                    tool_result = {
+                                                        "ok": bool(da_res.ok),
+                                                        "result_text": da_res.result_text,
+                                                        "data_agent_container_id": da_res.container_id,
+                                                        "data_agent_session_id": da_res.session_id,
+                                                        "data_agent_output_file": da_res.output_file,
+                                                        "data_agent_debug_file": da_res.debug_file,
+                                                        "error": da_res.error,
+                                                    }
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
+                                                    tool_failed = not bool(da_res.ok)
+                                                except Exception as exc:
+                                                    tool_result = {
+                                                        "ok": False,
+                                                        "error": {"message": str(exc)},
+                                                    }
+                                                    tool_failed = True
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
                                     elif tool_name == "recall_http_response":
                                         source_tool_name = str(patch.get("source_tool_name") or "").strip()
                                         source_req_id = str(patch.get("source_req_id") or "").strip()
@@ -3680,6 +3937,120 @@ def create_app() -> FastAPI:
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
+                                    elif tool_name == "give_command_to_data_agent":
+                                        if not bool(getattr(bot2, "enable_data_agent", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Data Agent is disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            what_to_do = str(patch.get("what_to_do") or "").strip()
+                                            if not what_to_do:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {"message": "Missing required tool arg: what_to_do"},
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                try:
+                                                    da = _data_agent_meta(meta_current)
+                                                    workspace_dir = (
+                                                        str(da.get("workspace_dir") or "").strip()
+                                                        or default_workspace_dir_for_conversation(conv_id)
+                                                    )
+                                                    container_id = str(da.get("container_id") or "").strip()
+                                                    session_id = str(da.get("session_id") or "").strip()
+
+                                                    api_key = _get_openai_api_key_for_bot(session, bot=bot2)
+                                                    if not api_key:
+                                                        raise RuntimeError(
+                                                            "No OpenAI API key configured for this bot (needed for Data Agent)."
+                                                        )
+
+                                                    if not container_id:
+                                                        container_id = await asyncio.to_thread(
+                                                            ensure_conversation_container,
+                                                            conversation_id=conv_id,
+                                                            workspace_dir=workspace_dir,
+                                                            openai_api_key=api_key,
+                                                        )
+                                                        meta_current = merge_conversation_metadata(
+                                                            session,
+                                                            conversation_id=conv_id,
+                                                            patch={
+                                                                "data_agent.container_id": container_id,
+                                                                "data_agent.workspace_dir": workspace_dir,
+                                                            },
+                                                        )
+
+                                                    ctx = _build_data_agent_conversation_context(
+                                                        session,
+                                                        bot=bot2,
+                                                        conversation_id=conv_id,
+                                                        meta=meta_current,
+                                                    )
+                                                    api_spec_text = getattr(bot2, "data_agent_api_spec_text", "") or ""
+                                                    auth_json = getattr(bot2, "data_agent_auth_json", "") or "{}"
+                                                    sys_prompt = (
+                                                        (getattr(bot2, "data_agent_system_prompt", "") or "").strip()
+                                                        or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
+                                                    )
+
+                                                    task = asyncio.create_task(
+                                                        asyncio.to_thread(
+                                                            run_data_agent,
+                                                            conversation_id=conv_id,
+                                                            container_id=container_id,
+                                                            session_id=session_id,
+                                                            workspace_dir=workspace_dir,
+                                                            api_spec_text=api_spec_text,
+                                                            auth_json=auth_json,
+                                                            system_prompt=sys_prompt,
+                                                            conversation_context=ctx,
+                                                            what_to_do=what_to_do,
+                                                        )
+                                                    )
+                                                    if wait_reply:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                    last_wait = time.time()
+                                                    while not task.done():
+                                                        if wait_reply and (time.time() - last_wait) >= 10.0:
+                                                            await _send_interim(wait_reply, kind="wait")
+                                                            last_wait = time.time()
+                                                        await asyncio.sleep(0.2)
+                                                    da_res = await task
+
+                                                    if da_res.session_id and da_res.session_id != session_id:
+                                                        meta_current = merge_conversation_metadata(
+                                                            session,
+                                                            conversation_id=conv_id,
+                                                            patch={"data_agent.session_id": da_res.session_id},
+                                                        )
+                                                    tool_result = {
+                                                        "ok": bool(da_res.ok),
+                                                        "result_text": da_res.result_text,
+                                                        "data_agent_container_id": da_res.container_id,
+                                                        "data_agent_session_id": da_res.session_id,
+                                                        "data_agent_output_file": da_res.output_file,
+                                                        "data_agent_debug_file": da_res.debug_file,
+                                                        "error": da_res.error,
+                                                    }
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
+                                                    tool_failed = not bool(da_res.ok)
+                                                except Exception as exc:
+                                                    tool_result = {
+                                                        "ok": False,
+                                                        "error": {"message": str(exc)},
+                                                    }
+                                                    tool_failed = True
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
                                     elif tool_name == "recall_http_response":
                                         source_tool_name = str(patch.get("source_tool_name") or "").strip()
                                         source_req_id = str(patch.get("source_req_id") or "").strip()
@@ -4611,6 +4982,120 @@ def create_app() -> FastAPI:
                                     if tool_failed or not next_reply:
                                         needs_followup_llm = True
                                         final = ""
+                                elif tool_name == "give_command_to_data_agent":
+                                    if not bool(getattr(bot, "enable_data_agent", False)):
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": "Data Agent is disabled for this bot."},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        final = ""
+                                    else:
+                                        what_to_do = str(patch.get("what_to_do") or "").strip()
+                                        if not what_to_do:
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Missing required tool arg: what_to_do"},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            final = ""
+                                        else:
+                                            try:
+                                                da = _data_agent_meta(meta_current)
+                                                workspace_dir = (
+                                                    str(da.get("workspace_dir") or "").strip()
+                                                    or default_workspace_dir_for_conversation(conv_id)
+                                                )
+                                                container_id = str(da.get("container_id") or "").strip()
+                                                session_id = str(da.get("session_id") or "").strip()
+
+                                                if not container_id:
+                                                    api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                                                    if not api_key:
+                                                        raise RuntimeError(
+                                                            "No OpenAI API key configured for this bot (needed for Data Agent)."
+                                                        )
+                                                    container_id = await asyncio.to_thread(
+                                                        ensure_conversation_container,
+                                                        conversation_id=conv_id,
+                                                        workspace_dir=workspace_dir,
+                                                        openai_api_key=api_key,
+                                                    )
+                                                    meta_current = merge_conversation_metadata(
+                                                        session,
+                                                        conversation_id=conv_id,
+                                                        patch={
+                                                            "data_agent.container_id": container_id,
+                                                            "data_agent.workspace_dir": workspace_dir,
+                                                        },
+                                                    )
+
+                                                ctx = _build_data_agent_conversation_context(
+                                                    session,
+                                                    bot=bot,
+                                                    conversation_id=conv_id,
+                                                    meta=meta_current,
+                                                )
+                                                api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
+                                                auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                                sys_prompt = (
+                                                    (getattr(bot, "data_agent_system_prompt", "") or "").strip()
+                                                    or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
+                                                )
+
+                                                task = asyncio.create_task(
+                                                    asyncio.to_thread(
+                                                        run_data_agent,
+                                                        conversation_id=conv_id,
+                                                        container_id=container_id,
+                                                        session_id=session_id,
+                                                        workspace_dir=workspace_dir,
+                                                        api_spec_text=api_spec_text,
+                                                        auth_json=auth_json,
+                                                        system_prompt=sys_prompt,
+                                                        conversation_context=ctx,
+                                                        what_to_do=what_to_do,
+                                                    )
+                                                )
+                                                if wait_reply:
+                                                    await _public_send_interim(
+                                                        ws, req_id=req_id, kind="wait", text=wait_reply
+                                                    )
+                                                last_wait = time.time()
+                                                while not task.done():
+                                                    if wait_reply and (time.time() - last_wait) >= 10.0:
+                                                        await _public_send_interim(
+                                                            ws, req_id=req_id, kind="wait", text=wait_reply
+                                                        )
+                                                        last_wait = time.time()
+                                                    await asyncio.sleep(0.2)
+                                                da_res = await task
+
+                                                if da_res.session_id and da_res.session_id != session_id:
+                                                    meta_current = merge_conversation_metadata(
+                                                        session,
+                                                        conversation_id=conv_id,
+                                                        patch={"data_agent.session_id": da_res.session_id},
+                                                    )
+                                                tool_result = {
+                                                    "ok": bool(da_res.ok),
+                                                    "result_text": da_res.result_text,
+                                                    "data_agent_container_id": da_res.container_id,
+                                                    "data_agent_session_id": da_res.session_id,
+                                                    "data_agent_output_file": da_res.output_file,
+                                                    "data_agent_debug_file": da_res.debug_file,
+                                                    "error": da_res.error,
+                                                }
+                                                tool_failed = not bool(da_res.ok)
+                                                needs_followup_llm = True
+                                                final = ""
+                                            except Exception as exc:
+                                                tool_result = {"ok": False, "error": {"message": str(exc)}}
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                final = ""
                                 elif tool_name == "recall_http_response":
                                     source_tool_name = str(patch.get("source_tool_name") or "").strip()
                                     source_req_id = str(patch.get("source_req_id") or "").strip()
@@ -5327,6 +5812,10 @@ def create_app() -> FastAPI:
             "codex_model": getattr(bot, "codex_model", "gpt-5.1-codex-mini"),
             "summary_model": getattr(bot, "summary_model", "gpt-5-nano"),
             "history_window_turns": int(getattr(bot, "history_window_turns", 16) or 16),
+            "enable_data_agent": bool(getattr(bot, "enable_data_agent", False)),
+            "data_agent_api_spec_text": getattr(bot, "data_agent_api_spec_text", "") or "",
+            "data_agent_auth_json": getattr(bot, "data_agent_auth_json", "") or "{}",
+            "data_agent_system_prompt": getattr(bot, "data_agent_system_prompt", "") or "",
             "disabled_tools": sorted(disabled),
             "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
@@ -5407,6 +5896,10 @@ def create_app() -> FastAPI:
             codex_model=(payload.codex_model or "gpt-5.1-codex-mini").strip() or "gpt-5.1-codex-mini",
             summary_model=(payload.summary_model or "gpt-5-nano").strip() or "gpt-5-nano",
             history_window_turns=int(payload.history_window_turns or 16),
+            enable_data_agent=bool(getattr(payload, "enable_data_agent", False)),
+            data_agent_api_spec_text=(payload.data_agent_api_spec_text or ""),
+            data_agent_auth_json=(payload.data_agent_auth_json or "{}"),
+            data_agent_system_prompt=(payload.data_agent_system_prompt or ""),
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,
@@ -5492,7 +5985,7 @@ def create_app() -> FastAPI:
         disabled = _disabled_tool_names(bot)
         return {
             "items": [_tool_to_dict(t) for t in tools],
-            "system_tools": _system_tools_public_list(disabled=disabled),
+            "system_tools": _system_tools_public_list(bot=bot, disabled=disabled),
             "disabled_tools": sorted(disabled),
         }
 

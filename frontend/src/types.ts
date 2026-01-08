@@ -8,6 +8,10 @@ export type Bot = {
   codex_model: string
   summary_model?: string
   history_window_turns?: number
+  enable_data_agent?: boolean
+  data_agent_api_spec_text?: string
+  data_agent_auth_json?: string
+  data_agent_system_prompt?: string
   openai_key_id: UUID | null
   system_prompt: string
   language: string

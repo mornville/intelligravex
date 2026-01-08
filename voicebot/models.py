@@ -26,6 +26,12 @@ class Bot(SQLModel, table=True):
     codex_model: str = "gpt-5.1-codex-mini"
     summary_model: str = "gpt-5-nano"
     history_window_turns: int = 16
+    enable_data_agent: bool = Field(default=False)
+    # Data Agent (Codex CLI in an isolated runtime, per conversation).
+    # NOTE: auth is stored as plaintext JSON per user request (no masking); handle with care.
+    data_agent_api_spec_text: str = Field(default="")
+    data_agent_auth_json: str = Field(default="{}")
+    data_agent_system_prompt: str = Field(default="")
     # List of tool names disabled for this bot (JSON list stored as text).
     # Applies to system tools (e.g. web_search, recall_http_response) and integration tools by name.
     disabled_tools_json: str = "[]"
