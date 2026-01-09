@@ -305,10 +305,8 @@ def run_codex_http_agent(
         schema_obj = provided_schema
         schema_source = "provided_json_schema"
     else:
-        if provided_schema is not None and progress_fn:
-            progress_fn("Codex agent: provided response schema did not match payload; falling back to derived schema…")
         if progress_fn:
-            progress_fn("Codex agent: building JSON tree schema…")
+            progress_fn("Making sure I capture the right details…")
         schema_obj = _json_tree_schema(response_json)
     _write_text(schema_path, json.dumps(schema_obj, ensure_ascii=False, indent=2))
     schema_inline = json.dumps(schema_obj, ensure_ascii=False)[:24000]
@@ -772,8 +770,8 @@ def run_codex_http_agent_one_shot(
     if provided_schema is not None and _schema_matches_payload_top(provided_schema, response_json):
         schema_obj: Any = provided_schema
     else:
-        if provided_schema is not None and progress_fn:
-            progress_fn("Codex agent: provided response schema did not match payload; falling back to derived schema…")
+        if progress_fn:
+            progress_fn("Making sure I capture the right details…")
         schema_obj = _json_tree_schema(response_json)
         schema_source = "derived_tree"
     _write_text(schema_path, json.dumps(schema_obj, ensure_ascii=False, indent=2))
@@ -991,7 +989,7 @@ def run_codex_http_agent_one_shot_from_paths(
 
     if schema_obj is None:
         if progress_fn:
-            progress_fn("Recall agent: deriving schema from saved payload…")
+            progress_fn("Making sure I capture the right details…")
         try:
             with open(in_path, "r", encoding="utf-8") as f:
                 payload = json.loads(f.read() or "null")
@@ -1229,7 +1227,7 @@ def run_codex_export_from_paths(
 
     if schema_obj is None:
         if progress_fn:
-            progress_fn("Export agent: deriving schema from saved payload…")
+            progress_fn("Making sure I capture the right details…")
         try:
             with open(in_path, "r", encoding="utf-8") as f:
                 payload = json.loads(f.read() or "null")

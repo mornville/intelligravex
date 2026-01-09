@@ -251,7 +251,7 @@ def _http_error_response(*, url: str, status_code: int | None, body: str | None,
         out["message"] = str(message)
     if body:
         out["body"] = str(body)[:1200]
-        return {"__http_error__": out}
+    return {"__http_error__": out}
 
 
 _TEMPLATE_VAR_RE = re.compile(r"{{\s*([^}]+?)\s*}}")
@@ -1620,7 +1620,8 @@ def create_app() -> FastAPI:
 
         def _single_request(*, loop_args: dict[str, Any]) -> tuple[Any, str]:
             # Render URL/body templates using current metadata + tool args.
-            ctx = {"meta": meta, "args": loop_args, "params": loop_args}
+            # Include env so integrations can reference server-provided secrets without storing them in metadata.
+            ctx = {"meta": meta, "args": loop_args, "params": loop_args, "env": dict(os.environ)}
             url = render_template(tool.url, ctx=ctx)
             method = (tool.method or "GET").upper()
 
