@@ -871,7 +871,7 @@ def create_app() -> FastAPI:
         If summarization runs, status_cb("summarizing") is invoked (UI-only).
         """
 
-        HISTORY_TOKEN_BUDGET = 28000
+        HISTORY_TOKEN_BUDGET = 400000
         SUMMARY_BATCH_MIN_MESSAGES = 8
 
         def _system_prompt_with_runtime(*, prompt: str) -> str:
@@ -1015,11 +1015,14 @@ def create_app() -> FastAPI:
                         continue
                 except Exception:
                     pass
-                # Keep tool breadcrumbs but truncated.
-                content = (m.content or "")
-                if len(content) > 3000:
-                    content = content[:3000] + "…"
-                messages.append(Message(role="system", content=render_template(f"Tool event: {content}", ctx={"meta": meta})))
+                # Keep full tool breadcrumbs. (Integration tools already store filtered results; truncation can
+                # hide items and confuse follow-up questions.)
+                messages.append(
+                    Message(
+                        role="system",
+                        content=render_template(f"Tool event: {m.content or ''}", ctx={"meta": meta}),
+                    )
+                )
 
         # If still over budget, trim oldest messages (keeping system + last user turn).
         try:
