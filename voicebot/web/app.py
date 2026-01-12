@@ -3216,9 +3216,7 @@ def create_app() -> FastAPI:
                                                     tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                                 else:
                                                     fields_required_for_codex = fields_required
-                                                    if what_to_search_for and (
-                                                        what_to_search_for not in fields_required_for_codex
-                                                    ):
+                                                    if what_to_search_for:
                                                         fields_required_for_codex = (
                                                             f"{fields_required_for_codex}\n\n(what_to_search_for) {what_to_search_for}"
                                                         )
@@ -4463,9 +4461,7 @@ def create_app() -> FastAPI:
                                                     tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                                 else:
                                                     fields_required_for_codex = fields_required
-                                                    if what_to_search_for and (
-                                                        what_to_search_for not in fields_required_for_codex
-                                                    ):
+                                                    if what_to_search_for:
                                                         fields_required_for_codex = (
                                                             f"{fields_required_for_codex}\n\n(what_to_search_for) {what_to_search_for}"
                                                         )
@@ -5787,7 +5783,7 @@ def create_app() -> FastAPI:
                                                 tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                             else:
                                                 fields_required_for_codex = fields_required
-                                                if what_to_search_for and (what_to_search_for not in fields_required_for_codex):
+                                                if what_to_search_for:
                                                     fields_required_for_codex = (
                                                         f"{fields_required_for_codex}\n\n(what_to_search_for) {what_to_search_for}"
                                                     )
