@@ -41,6 +41,8 @@ export default function BotDetailPage() {
     parameters_schema_json: '',
     response_schema_json: '',
     codex_prompt: '',
+    postprocess_python: '',
+    return_result_directly: false,
     response_mapper_json: '{}',
     pagination_json: '',
     static_reply_template: '',
@@ -55,6 +57,26 @@ Rules:
 - Be deterministic and robust to missing fields.
 - If multiple matches exist, return a list of candidates and keep it short.
 - If no matches exist, return an empty result with a clear reason.
+`
+  const DEFAULT_PY_POSTPROCESS_HELP = `# Optional: run locally (no LLM). Use this to deterministically summarize/filter the HTTP response.
+#
+# You have these variables available:
+# - response_json (dict/list/str): the parsed HTTP response
+# - meta (dict): current conversation metadata
+# - args (dict): tool args used for the HTTP call
+# - fields_required (str)
+# - why_api_was_called (str)
+#
+# Produce output by calling:
+#   emit("your result text", metadata_patch={...})
+#
+# Notes:
+# - Keep it stdlib-only for portability.
+# - This runs on the server's Python; avoid Python 3.10+ only syntax like "str | None".
+#
+# Example:
+# top = (response_json or {}).get("items") or []
+# emit(f"Found {len(top)} results.")
 `
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -151,6 +173,8 @@ Rules:
       parameters_schema_json: '',
       response_schema_json: '',
       codex_prompt: '',
+      postprocess_python: '',
+      return_result_directly: false,
       response_mapper_json: '{}',
       pagination_json: '',
       static_reply_template: '',
@@ -176,6 +200,8 @@ Rules:
       parameters_schema_json: t.parameters_schema_json || '',
       response_schema_json: t.response_schema_json || '',
       codex_prompt: t.codex_prompt || '',
+      postprocess_python: t.postprocess_python || '',
+      return_result_directly: Boolean(t.return_result_directly),
       response_mapper_json: t.response_mapper_json || '{}',
       pagination_json: t.pagination_json || '',
       static_reply_template: t.static_reply_template || '',
@@ -210,6 +236,8 @@ Rules:
           parameters_schema_json: toolForm.parameters_schema_json || '',
           response_schema_json: toolForm.response_schema_json || '',
           codex_prompt: toolForm.codex_prompt || '',
+          postprocess_python: toolForm.postprocess_python || '',
+          return_result_directly: Boolean(toolForm.return_result_directly),
           response_mapper_json: toolForm.response_mapper_json || '{}',
           pagination_json: toolForm.pagination_json || '',
           static_reply_template: toolForm.static_reply_template || '',
@@ -232,6 +260,8 @@ Rules:
           parameters_schema_json: toolForm.parameters_schema_json || '',
           response_schema_json: toolForm.response_schema_json || '',
           codex_prompt: toolForm.codex_prompt || '',
+          postprocess_python: toolForm.postprocess_python || '',
+          return_result_directly: Boolean(toolForm.return_result_directly),
           response_mapper_json: toolForm.response_mapper_json || '{}',
           pagination_json: toolForm.pagination_json || '',
           static_reply_template: toolForm.static_reply_template || '',
@@ -961,6 +991,52 @@ Rules:
                   rows={8}
                   placeholder={DEFAULT_CODEX_FILTER_PROMPT}
                 />
+              </div>
+            ) : null}
+            {toolForm.use_codex_response ? (
+              <div className="formRow">
+                <label>
+                  Python post-processor (optional){' '}
+                  <HelpTip>
+                    <div className="tipTitle">What this does</div>
+                    <div className="tipText">
+                      If set, the backend runs this Python code locally (60s timeout) to summarize/filter the HTTP response and uses its output as the tool
+                      result. This skips the Codex one-shot call.
+                    </div>
+                    <div className="tipText">
+                      Use <span className="mono">emit("text", metadata_patch=&#123;...&#125;)</span> to return a result.
+                    </div>
+                  </HelpTip>
+                </label>
+                <textarea
+                  value={toolForm.postprocess_python}
+                  onChange={(e) => setToolForm((p) => ({ ...p, postprocess_python: e.target.value }))}
+                  rows={10}
+                  placeholder={DEFAULT_PY_POSTPROCESS_HELP}
+                />
+                <div className="muted">Tip: keep it stdlib-only (json/datetime/re) for portability.</div>
+              </div>
+            ) : null}
+            {toolForm.use_codex_response ? (
+              <div className="formRow">
+                <label>
+                  Return tool result directly{' '}
+                  <HelpTip>
+                    <div className="tipTitle">What this does</div>
+                    <div className="tipText">
+                      If enabled, the backend will return the post-processed result text (Python/Codex) directly as the assistant reply and will not run the
+                      chat LLM again to rephrase it.
+                    </div>
+                  </HelpTip>
+                </label>
+                <label className="row" style={{ justifyContent: 'flex-start', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(toolForm.return_result_directly)}
+                    onChange={(e) => setToolForm((p) => ({ ...p, return_result_directly: e.target.checked }))}
+                  />
+                  <span className="muted">Skip rephrasing and show the tool output as-is.</span>
+                </label>
               </div>
             ) : null}
             <div className="formRow">

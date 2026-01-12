@@ -132,6 +132,10 @@ class IntegrationTool(SQLModel, table=True):
 
     # Optional per-tool Codex prompt/instructions (applied when use_codex_response is enabled).
     codex_prompt: str = Field(default="")
+    # Optional: deterministic post-processing script (runs locally instead of Codex one_shot when non-empty).
+    postprocess_python: str = Field(default="")
+    # If true, return codex_result_text directly as the assistant reply (skip follow-up LLM rephrase).
+    return_result_directly: bool = Field(default=False)
 
     # Maps conversation metadata keys to template values using {{response...}} or {{.meta...}}.
     response_mapper_json: str = Field(default="{}")

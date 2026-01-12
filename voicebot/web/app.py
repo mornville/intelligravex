@@ -71,6 +71,7 @@ from voicebot.store import (
 from voicebot.tts.xtts import XTTSv2
 from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
+from voicebot.utils.python_postprocess import run_python_postprocessor
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
 from voicebot.tools.data_agent import give_command_to_data_agent_tool_def
@@ -370,6 +371,35 @@ def _missing_required_args(required: list[str], args: dict) -> list[str]:
     return missing
 
 
+def _normalize_content_type_header_value(v: str) -> str:
+    """
+    Normalize common JSON content-types so upstream APIs that do strict matching
+    (incorrectly) still parse JSON request bodies.
+
+    Example: "Application/json" -> "application/json"
+    """
+    raw = (v or "").strip()
+    if not raw:
+        return raw
+    parts = raw.split(";", 1)
+    mime = parts[0].strip().lower()
+    if mime != "application/json":
+        return raw
+    if len(parts) == 1:
+        return "application/json"
+    rest = parts[1].strip()
+    return "application/json" + (f"; {rest}" if rest else "")
+
+
+def _normalize_headers_for_json(headers: dict[str, str]) -> dict[str, str]:
+    # httpx treats header names case-insensitively; normalize any provided Content-Type value.
+    for k in list(headers.keys()):
+        if k.lower() == "content-type":
+            headers[k] = _normalize_content_type_header_value(headers.get(k) or "")
+            break
+    return headers
+
+
 def _integration_error_user_message(*, tool_name: str, err: dict) -> str:
     sc = err.get("status_code")
     msg = (err.get("message") or "error").strip()
@@ -503,6 +533,8 @@ class IntegrationToolCreateRequest(BaseModel):
     parameters_schema_json: str = ""
     response_schema_json: str = ""
     codex_prompt: str = ""
+    postprocess_python: str = ""
+    return_result_directly: bool = False
     response_mapper_json: str = "{}"
     pagination_json: str = ""
     static_reply_template: str = ""
@@ -521,6 +553,8 @@ class IntegrationToolUpdateRequest(BaseModel):
     parameters_schema_json: Optional[str] = None
     response_schema_json: Optional[str] = None
     codex_prompt: Optional[str] = None
+    postprocess_python: Optional[str] = None
+    return_result_directly: Optional[bool] = None
     response_mapper_json: Optional[str] = None
     pagination_json: Optional[str] = None
     static_reply_template: Optional[str] = None
@@ -1285,7 +1319,7 @@ def create_app() -> FastAPI:
             "additionalProperties": True,
         }
         if use_codex_response:
-            schema["required"] = ["args"]
+            schema["required"] = ["args", "wait_reply"]
         else:
             schema["properties"]["next_reply"] = {
                 "type": "string",
@@ -1294,7 +1328,7 @@ def create_app() -> FastAPI:
                     "Variables like {{.firstName}} are allowed."
                 ),
             }
-            schema["required"] = ["args", "next_reply"]
+            schema["required"] = ["args", "next_reply", "wait_reply"]
 
         # Pagination: allow the model to optionally request fewer items than the API page size.
         try:
@@ -1637,6 +1671,7 @@ def create_app() -> FastAPI:
                                 headers_obj[k] = v
                 except Exception:
                     headers_obj = {}
+            headers_obj = _normalize_headers_for_json(headers_obj)
 
             body_template = tool.request_body_template or ""
             body_obj = None
@@ -1653,7 +1688,7 @@ def create_app() -> FastAPI:
             for k in ("fields_required", "why_api_was_called", "what_to_search_for", "why_to_search_for", "max_items"):
                 loop_request_args.pop(k, None)
 
-            timeout = httpx.Timeout(20.0, connect=10.0)
+            timeout = httpx.Timeout(60.0, connect=20.0)
             try:
                 with httpx.Client(timeout=timeout, follow_redirects=True) as client:
                     if method == "GET":
@@ -2383,7 +2418,7 @@ def create_app() -> FastAPI:
                                     )
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
-                                    wait_reply = str(tool_args.get("wait_reply") or "").strip()
+                                    wait_reply = str(tool_args.get("wait_reply") or "").strip() or "Working on it…"
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
@@ -3110,7 +3145,7 @@ def create_app() -> FastAPI:
                                                 await _send_interim(wait_reply, kind="wait")
                                             while True:
                                                 try:
-                                                    response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                    response_json = await asyncio.wait_for(asyncio.shield(task), timeout=60.0)
                                                     break
                                                 except asyncio.TimeoutError:
                                                     if wait_reply:
@@ -3169,110 +3204,201 @@ def create_app() -> FastAPI:
                                                 except Exception:
                                                     static_preview = ""
                                             if (not static_preview) and bool(getattr(tool_cfg, "use_codex_response", False)):
-                                                fields_required = str(
-                                                    patch.get("fields_required") or patch.get("what_to_search_for") or ""
-                                                ).strip()
-                                                why_api_was_called = str(
-                                                    patch.get("why_api_was_called") or patch.get("why_to_search_for") or ""
-                                                ).strip()
+                                                fields_required = str(patch.get("fields_required") or "").strip()
+                                                what_to_search_for = str(patch.get("what_to_search_for") or "").strip()
+                                                if not fields_required:
+                                                    fields_required = what_to_search_for
+                                                why_api_was_called = str(patch.get("why_api_was_called") or "").strip()
+                                                if not why_api_was_called:
+                                                    why_api_was_called = str(patch.get("why_to_search_for") or "").strip()
                                                 if not fields_required or not why_api_was_called:
                                                     tool_result["codex_ok"] = False
                                                     tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                                 else:
-                                                    codex_model = (
-                                                        (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
-                                                        or "gpt-5.1-codex-mini"
-                                                    )
-                                                    progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                                    def _progress(s: str) -> None:
-                                                        try:
-                                                            progress_q.put_nowait(str(s))
-                                                        except Exception:
-                                                            return
-
-                                                    agent_task = asyncio.create_task(
-                                                        asyncio.to_thread(
-                                                            run_codex_http_agent_one_shot,
-                                                            api_key=api_key or "",
-                                                            model=codex_model,
-                                                            response_json=response_json,
-                                                            fields_required=fields_required,
-                                                            why_api_was_called=why_api_was_called,
-                                                            response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
-                                                            conversation_id=str(conv_id) if conv_id is not None else None,
-                                                            req_id=req_id,
-                                                            tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
-                                                            progress_fn=_progress,
+                                                    fields_required_for_codex = fields_required
+                                                    if what_to_search_for and (
+                                                        what_to_search_for not in fields_required_for_codex
+                                                    ):
+                                                        fields_required_for_codex = (
+                                                            f"{fields_required_for_codex}\n\n(what_to_search_for) {what_to_search_for}"
                                                         )
-                                                    )
-                                                    if wait_reply:
-                                                        await _send_interim(wait_reply, kind="wait")
-                                                    last_wait = time.time()
-                                                    last_progress = last_wait
-                                                    wait_interval_s = 15.0
-                                                    while not agent_task.done():
-                                                        try:
-                                                            while True:
-                                                                p = progress_q.get_nowait()
-                                                                if p:
-                                                                    await _send_interim(p, kind="progress")
-                                                                    last_progress = time.time()
-                                                        except queue.Empty:
-                                                            pass
-                                                        now = time.time()
-                                                        if (
-                                                            wait_reply
-                                                            and (now - last_wait) >= wait_interval_s
-                                                            and (now - last_progress) >= wait_interval_s
-                                                        ):
+                                                    did_postprocess = False
+                                                    postprocess_python = str(
+                                                        getattr(tool_cfg, "postprocess_python", "") or ""
+                                                    ).strip()
+                                                    if postprocess_python:
+                                                        py_task = asyncio.create_task(
+                                                            asyncio.to_thread(
+                                                                run_python_postprocessor,
+                                                                python_code=postprocess_python,
+                                                                payload={
+                                                                    "response_json": response_json,
+                                                                    "meta": new_meta or meta_current,
+                                                                    "args": patch,
+                                                                    "fields_required": fields_required,
+                                                                    "why_api_was_called": why_api_was_called,
+                                                                },
+                                                                timeout_s=60,
+                                                            )
+                                                        )
+                                                        if wait_reply:
                                                             await _send_interim(wait_reply, kind="wait")
-                                                            last_wait = now
-                                                        await asyncio.sleep(0.2)
-                                                    try:
-                                                        agent_res = await agent_task
-                                                        tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
-                                                        tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
-                                                        tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
-                                                        tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
-                                                        tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
-                                                        tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
-                                                        tool_result["codex_continue_reason"] = getattr(
-                                                            agent_res, "continue_reason", ""
-                                                        )
-                                                        tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
-                                                        saved_input_json_path = getattr(agent_res, "input_json_path", "")
-                                                        saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
-                                                        err = getattr(agent_res, "error", None)
-                                                        if err:
-                                                            tool_result["codex_error"] = str(err)
-                                                    except Exception as exc:
-                                                        tool_result["codex_ok"] = False
-                                                        tool_result["codex_error"] = str(exc)
-                                                        saved_input_json_path = ""
-                                                        saved_schema_json_path = ""
+                                                        last_wait = time.time()
+                                                        wait_interval_s = 15.0
+                                                        while not py_task.done():
+                                                            now = time.time()
+                                                            if wait_reply and (now - last_wait) >= wait_interval_s:
+                                                                await _send_interim(wait_reply, kind="wait")
+                                                                last_wait = now
+                                                            await asyncio.sleep(0.2)
+                                                        try:
+                                                            py_res = await py_task
+                                                            tool_result["python_ok"] = bool(getattr(py_res, "ok", False))
+                                                            tool_result["python_duration_ms"] = int(
+                                                                getattr(py_res, "duration_ms", 0) or 0
+                                                            )
+                                                            if getattr(py_res, "error", None):
+                                                                tool_result["python_error"] = str(getattr(py_res, "error"))
+                                                            if getattr(py_res, "stderr", None):
+                                                                tool_result["python_stderr"] = str(getattr(py_res, "stderr"))
+                                                            if py_res.ok:
+                                                                did_postprocess = True
+                                                                tool_result["postprocess_mode"] = "python"
+                                                                tool_result["codex_ok"] = True
+                                                                tool_result["codex_result_text"] = str(
+                                                                    getattr(py_res, "result_text", "") or ""
+                                                                )
+                                                                mp = getattr(py_res, "metadata_patch", None)
+                                                                if isinstance(mp, dict) and mp:
+                                                                    try:
+                                                                        meta_current = merge_conversation_metadata(
+                                                                            session,
+                                                                            conversation_id=conv_id,
+                                                                            patch=mp,
+                                                                        )
+                                                                        tool_result["python_metadata_patch"] = mp
+                                                                    except Exception:
+                                                                        pass
+                                                                try:
+                                                                    append_saved_run_index(
+                                                                        conversation_id=str(conv_id),
+                                                                        event={
+                                                                            "kind": "integration_python_postprocess",
+                                                                            "tool_name": tool_name,
+                                                                            "req_id": req_id,
+                                                                            "python_ok": tool_result.get("python_ok"),
+                                                                            "python_duration_ms": tool_result.get(
+                                                                                "python_duration_ms"
+                                                                            ),
+                                                                        },
+                                                                    )
+                                                                except Exception:
+                                                                    pass
+                                                        except Exception as exc:
+                                                            tool_result["python_ok"] = False
+                                                            tool_result["python_error"] = str(exc)
 
-                                                    try:
-                                                        append_saved_run_index(
-                                                            conversation_id=str(conv_id),
-                                                            event={
-                                                                "kind": "integration_http",
-                                                                "tool_name": tool_name,
-                                                                "req_id": req_id,
-                                                                "input_json_path": saved_input_json_path,
-                                                                "schema_json_path": saved_schema_json_path,
-                                                                "fields_required": fields_required,
-                                                                "why_api_was_called": why_api_was_called,
-                                                                "codex_output_dir": tool_result.get("codex_output_dir"),
-                                                                "codex_ok": tool_result.get("codex_ok"),
-                                                            },
+                                                    if not did_postprocess:
+                                                        codex_model = (
+                                                            (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                            or "gpt-5.1-codex-mini"
                                                         )
-                                                    except Exception:
-                                                        pass
-                                                    if speak:
-                                                        now = time.time()
-                                                        if now < tts_busy_until:
-                                                            await asyncio.sleep(tts_busy_until - now)
+                                                        progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                                        def _progress(s: str) -> None:
+                                                            try:
+                                                                progress_q.put_nowait(str(s))
+                                                            except Exception:
+                                                                return
+
+                                                        agent_task = asyncio.create_task(
+                                                            asyncio.to_thread(
+                                                                run_codex_http_agent_one_shot,
+                                                                api_key=api_key or "",
+                                                                model=codex_model,
+                                                                response_json=response_json,
+                                                                fields_required=fields_required_for_codex,
+                                                                why_api_was_called=why_api_was_called,
+                                                                response_schema_json=getattr(tool_cfg, "response_schema_json", "")
+                                                                or "",
+                                                                conversation_id=str(conv_id) if conv_id is not None else None,
+                                                                req_id=req_id,
+                                                                tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
+                                                                progress_fn=_progress,
+                                                            )
+                                                        )
+                                                        if wait_reply:
+                                                            await _send_interim(wait_reply, kind="wait")
+                                                        last_wait = time.time()
+                                                        last_progress = last_wait
+                                                        wait_interval_s = 15.0
+                                                        while not agent_task.done():
+                                                            try:
+                                                                while True:
+                                                                    p = progress_q.get_nowait()
+                                                                    if p:
+                                                                        await _send_interim(p, kind="progress")
+                                                                        last_progress = time.time()
+                                                            except queue.Empty:
+                                                                pass
+                                                            now = time.time()
+                                                            if (
+                                                                wait_reply
+                                                                and (now - last_wait) >= wait_interval_s
+                                                                and (now - last_progress) >= wait_interval_s
+                                                            ):
+                                                                await _send_interim(wait_reply, kind="wait")
+                                                                last_wait = now
+                                                            await asyncio.sleep(0.2)
+                                                        try:
+                                                            agent_res = await agent_task
+                                                            tool_result["postprocess_mode"] = "codex"
+                                                            tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
+                                                            tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
+                                                            tool_result["codex_output_file"] = getattr(
+                                                                agent_res, "result_text_path", ""
+                                                            )
+                                                            tool_result["codex_debug_file"] = getattr(
+                                                                agent_res, "debug_json_path", ""
+                                                            )
+                                                            tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
+                                                            tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
+                                                            tool_result["codex_continue_reason"] = getattr(
+                                                                agent_res, "continue_reason", ""
+                                                            )
+                                                            tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                            saved_input_json_path = getattr(agent_res, "input_json_path", "")
+                                                            saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
+                                                            err = getattr(agent_res, "error", None)
+                                                            if err:
+                                                                tool_result["codex_error"] = str(err)
+                                                        except Exception as exc:
+                                                            tool_result["codex_ok"] = False
+                                                            tool_result["codex_error"] = str(exc)
+                                                            saved_input_json_path = ""
+                                                            saved_schema_json_path = ""
+
+                                                        try:
+                                                            append_saved_run_index(
+                                                                conversation_id=str(conv_id),
+                                                                event={
+                                                                    "kind": "integration_http",
+                                                                    "tool_name": tool_name,
+                                                                    "req_id": req_id,
+                                                                    "input_json_path": saved_input_json_path,
+                                                                    "schema_json_path": saved_schema_json_path,
+                                                                    "fields_required": fields_required,
+                                                                    "why_api_was_called": why_api_was_called,
+                                                                    "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                                    "codex_ok": tool_result.get("codex_ok"),
+                                                                },
+                                                            )
+                                                        except Exception:
+                                                            pass
+                                                if speak:
+                                                    now = time.time()
+                                                    if now < tts_busy_until:
+                                                        await asyncio.sleep(tts_busy_until - now)
 
                                     add_message_with_metrics(
                                         session,
@@ -3308,9 +3434,19 @@ def create_app() -> FastAPI:
                                             rendered_reply = static_text
                                         else:
                                             if bool(getattr(tool_cfg, "use_codex_response", False)):
-                                                # In Codex mode, always ask the main chat model to rephrase the tool result.
-                                                needs_followup_llm = True
-                                                rendered_reply = ""
+                                                if bool(getattr(tool_cfg, "return_result_directly", False)) and isinstance(
+                                                    tool_result, dict
+                                                ):
+                                                    direct = str(tool_result.get("codex_result_text") or "").strip()
+                                                    if direct:
+                                                        needs_followup_llm = False
+                                                        rendered_reply = direct
+                                                    else:
+                                                        needs_followup_llm = True
+                                                        rendered_reply = ""
+                                                else:
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
                                             else:
                                                 needs_followup_llm = _should_followup_llm_for_tool(
                                                     tool=tool_cfg, static_rendered=static_text
@@ -3872,7 +4008,7 @@ def create_app() -> FastAPI:
                                     )
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
-                                    wait_reply = str(tool_args.get("wait_reply") or "").strip()
+                                    wait_reply = str(tool_args.get("wait_reply") or "").strip() or "Working on it…"
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
@@ -4256,7 +4392,7 @@ def create_app() -> FastAPI:
                                                 await _send_interim(wait_reply, kind="wait")
                                             while True:
                                                 try:
-                                                    response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                    response_json = await asyncio.wait_for(asyncio.shield(task), timeout=60.0)
                                                     break
                                                 except asyncio.TimeoutError:
                                                     if wait_reply:
@@ -4315,112 +4451,206 @@ def create_app() -> FastAPI:
                                                 except Exception:
                                                     static_preview = ""
                                             if (not static_preview) and bool(getattr(tool_cfg, "use_codex_response", False)):
-                                                fields_required = str(
-                                                    patch.get("fields_required") or patch.get("what_to_search_for") or ""
-                                                ).strip()
-                                                why_api_was_called = str(
-                                                    patch.get("why_api_was_called") or patch.get("why_to_search_for") or ""
-                                                ).strip()
+                                                fields_required = str(patch.get("fields_required") or "").strip()
+                                                what_to_search_for = str(patch.get("what_to_search_for") or "").strip()
+                                                if not fields_required:
+                                                    fields_required = what_to_search_for
+                                                why_api_was_called = str(patch.get("why_api_was_called") or "").strip()
+                                                if not why_api_was_called:
+                                                    why_api_was_called = str(patch.get("why_to_search_for") or "").strip()
                                                 if not fields_required or not why_api_was_called:
                                                     tool_result["codex_ok"] = False
                                                     tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                                 else:
-                                                    codex_model = (
-                                                        (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
-                                                        or "gpt-5.1-codex-mini"
-                                                    )
-                                                    progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                                    def _progress(s: str) -> None:
-                                                        try:
-                                                            progress_q.put_nowait(str(s))
-                                                        except Exception:
-                                                            return
-
-                                                    agent_task = asyncio.create_task(
-                                                        asyncio.to_thread(
-                                                            run_codex_http_agent_one_shot,
-                                                            api_key=api_key or "",
-                                                            model=codex_model,
-                                                            response_json=response_json,
-                                                            fields_required=fields_required,
-                                                            why_api_was_called=why_api_was_called,
-                                                            response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
-                                                            conversation_id=str(conv_id) if conv_id is not None else None,
-                                                            req_id=req_id,
-                                                            tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
-                                                            progress_fn=_progress,
+                                                    fields_required_for_codex = fields_required
+                                                    if what_to_search_for and (
+                                                        what_to_search_for not in fields_required_for_codex
+                                                    ):
+                                                        fields_required_for_codex = (
+                                                            f"{fields_required_for_codex}\n\n(what_to_search_for) {what_to_search_for}"
                                                         )
-                                                    )
-                                                    if wait_reply:
-                                                        await _public_send_interim(
-                                                            ws, req_id=req_id, kind="wait", text=wait_reply
+                                                    did_postprocess = False
+                                                    postprocess_python = str(
+                                                        getattr(tool_cfg, "postprocess_python", "") or ""
+                                                    ).strip()
+                                                    if postprocess_python:
+                                                        py_task = asyncio.create_task(
+                                                            asyncio.to_thread(
+                                                                run_python_postprocessor,
+                                                                python_code=postprocess_python,
+                                                                payload={
+                                                                    "response_json": response_json,
+                                                                    "meta": new_meta or meta_current,
+                                                                    "args": patch,
+                                                                    "fields_required": fields_required,
+                                                                    "why_api_was_called": why_api_was_called,
+                                                                },
+                                                                timeout_s=60,
+                                                            )
                                                         )
-                                                    last_wait = time.time()
-                                                    last_progress = last_wait
-                                                    wait_interval_s = 15.0
-                                                    while not agent_task.done():
-                                                        try:
-                                                            while True:
-                                                                p = progress_q.get_nowait()
-                                                                if p:
-                                                                    await _public_send_interim(
-                                                                        ws, req_id=req_id, kind="progress", text=p
-                                                                    )
-                                                                    last_progress = time.time()
-                                                        except queue.Empty:
-                                                            pass
-                                                        now = time.time()
-                                                        if (
-                                                            wait_reply
-                                                            and (now - last_wait) >= wait_interval_s
-                                                            and (now - last_progress) >= wait_interval_s
-                                                        ):
+                                                        if wait_reply:
                                                             await _public_send_interim(
                                                                 ws, req_id=req_id, kind="wait", text=wait_reply
                                                             )
-                                                            last_wait = now
-                                                        await asyncio.sleep(0.2)
-                                                    try:
-                                                        agent_res = await agent_task
-                                                        tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
-                                                        tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
-                                                        tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
-                                                        tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
-                                                        tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
-                                                        tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
-                                                        tool_result["codex_continue_reason"] = getattr(
-                                                            agent_res, "continue_reason", ""
-                                                        )
-                                                        tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
-                                                        saved_input_json_path = getattr(agent_res, "input_json_path", "")
-                                                        saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
-                                                        err = getattr(agent_res, "error", None)
-                                                        if err:
-                                                            tool_result["codex_error"] = str(err)
-                                                    except Exception as exc:
-                                                        tool_result["codex_ok"] = False
-                                                        tool_result["codex_error"] = str(exc)
-                                                        saved_input_json_path = ""
-                                                        saved_schema_json_path = ""
+                                                        last_wait = time.time()
+                                                        wait_interval_s = 15.0
+                                                        while not py_task.done():
+                                                            now = time.time()
+                                                            if wait_reply and (now - last_wait) >= wait_interval_s:
+                                                                await _public_send_interim(
+                                                                    ws, req_id=req_id, kind="wait", text=wait_reply
+                                                                )
+                                                                last_wait = now
+                                                            await asyncio.sleep(0.2)
+                                                        try:
+                                                            py_res = await py_task
+                                                            tool_result["python_ok"] = bool(getattr(py_res, "ok", False))
+                                                            tool_result["python_duration_ms"] = int(
+                                                                getattr(py_res, "duration_ms", 0) or 0
+                                                            )
+                                                            if getattr(py_res, "error", None):
+                                                                tool_result["python_error"] = str(getattr(py_res, "error"))
+                                                            if getattr(py_res, "stderr", None):
+                                                                tool_result["python_stderr"] = str(getattr(py_res, "stderr"))
+                                                            if py_res.ok:
+                                                                did_postprocess = True
+                                                                tool_result["postprocess_mode"] = "python"
+                                                                tool_result["codex_ok"] = True
+                                                                tool_result["codex_result_text"] = str(
+                                                                    getattr(py_res, "result_text", "") or ""
+                                                                )
+                                                                mp = getattr(py_res, "metadata_patch", None)
+                                                                if isinstance(mp, dict) and mp:
+                                                                    try:
+                                                                        meta_current = merge_conversation_metadata(
+                                                                            session,
+                                                                            conversation_id=conv_id,
+                                                                            patch=mp,
+                                                                        )
+                                                                        tool_result["python_metadata_patch"] = mp
+                                                                    except Exception:
+                                                                        pass
+                                                                try:
+                                                                    append_saved_run_index(
+                                                                        conversation_id=str(conv_id),
+                                                                        event={
+                                                                            "kind": "integration_python_postprocess",
+                                                                            "tool_name": tool_name,
+                                                                            "req_id": req_id,
+                                                                            "python_ok": tool_result.get("python_ok"),
+                                                                            "python_duration_ms": tool_result.get(
+                                                                                "python_duration_ms"
+                                                                            ),
+                                                                        },
+                                                                    )
+                                                                except Exception:
+                                                                    pass
+                                                        except Exception as exc:
+                                                            tool_result["python_ok"] = False
+                                                            tool_result["python_error"] = str(exc)
 
-                                                    try:
-                                                        append_saved_run_index(
-                                                            conversation_id=str(conv_id),
-                                                            event={
-                                                                "kind": "integration_http",
-                                                                "tool_name": tool_name,
-                                                                "req_id": req_id,
-                                                                "input_json_path": saved_input_json_path,
-                                                                "schema_json_path": saved_schema_json_path,
-                                                                "fields_required": fields_required,
-                                                                "why_api_was_called": why_api_was_called,
-                                                                "codex_output_dir": tool_result.get("codex_output_dir"),
-                                                                "codex_ok": tool_result.get("codex_ok"),
-                                                            },
+                                                    if not did_postprocess:
+                                                        codex_model = (
+                                                            (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                            or "gpt-5.1-codex-mini"
                                                         )
-                                                    except Exception:
-                                                        pass
+                                                        progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                                        def _progress(s: str) -> None:
+                                                            try:
+                                                                progress_q.put_nowait(str(s))
+                                                            except Exception:
+                                                                return
+
+                                                        agent_task = asyncio.create_task(
+                                                            asyncio.to_thread(
+                                                                run_codex_http_agent_one_shot,
+                                                                api_key=api_key or "",
+                                                                model=codex_model,
+                                                                response_json=response_json,
+                                                                fields_required=fields_required_for_codex,
+                                                                why_api_was_called=why_api_was_called,
+                                                                response_schema_json=getattr(tool_cfg, "response_schema_json", "")
+                                                                or "",
+                                                                conversation_id=str(conv_id) if conv_id is not None else None,
+                                                                req_id=req_id,
+                                                                tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
+                                                                progress_fn=_progress,
+                                                            )
+                                                        )
+                                                        if wait_reply:
+                                                            await _public_send_interim(
+                                                                ws, req_id=req_id, kind="wait", text=wait_reply
+                                                            )
+                                                        last_wait = time.time()
+                                                        last_progress = last_wait
+                                                        wait_interval_s = 15.0
+                                                        while not agent_task.done():
+                                                            try:
+                                                                while True:
+                                                                    p = progress_q.get_nowait()
+                                                                    if p:
+                                                                        await _public_send_interim(
+                                                                            ws,
+                                                                            req_id=req_id,
+                                                                            kind="progress",
+                                                                            text=p,
+                                                                        )
+                                                                        last_progress = time.time()
+                                                            except queue.Empty:
+                                                                pass
+                                                            now = time.time()
+                                                            if (
+                                                                wait_reply
+                                                                and (now - last_wait) >= wait_interval_s
+                                                                and (now - last_progress) >= wait_interval_s
+                                                            ):
+                                                                await _public_send_interim(
+                                                                    ws, req_id=req_id, kind="wait", text=wait_reply
+                                                                )
+                                                                last_wait = now
+                                                            await asyncio.sleep(0.2)
+                                                        try:
+                                                            agent_res = await agent_task
+                                                            tool_result["postprocess_mode"] = "codex"
+                                                            tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
+                                                            tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
+                                                            tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
+                                                            tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
+                                                            tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
+                                                            tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
+                                                            tool_result["codex_continue_reason"] = getattr(
+                                                                agent_res, "continue_reason", ""
+                                                            )
+                                                            tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                            saved_input_json_path = getattr(agent_res, "input_json_path", "")
+                                                            saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
+                                                            err = getattr(agent_res, "error", None)
+                                                            if err:
+                                                                tool_result["codex_error"] = str(err)
+                                                        except Exception as exc:
+                                                            tool_result["codex_ok"] = False
+                                                            tool_result["codex_error"] = str(exc)
+                                                            saved_input_json_path = ""
+                                                            saved_schema_json_path = ""
+
+                                                        try:
+                                                            append_saved_run_index(
+                                                                conversation_id=str(conv_id),
+                                                                event={
+                                                                    "kind": "integration_http",
+                                                                    "tool_name": tool_name,
+                                                                    "req_id": req_id,
+                                                                    "input_json_path": saved_input_json_path,
+                                                                    "schema_json_path": saved_schema_json_path,
+                                                                    "fields_required": fields_required,
+                                                                    "why_api_was_called": why_api_was_called,
+                                                                    "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                                    "codex_ok": tool_result.get("codex_ok"),
+                                                                },
+                                                            )
+                                                        except Exception:
+                                                            pass
 
                                     add_message_with_metrics(
                                         session,
@@ -5488,7 +5718,7 @@ def create_app() -> FastAPI:
                                             await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
                                         while True:
                                             try:
-                                                response_json = await asyncio.wait_for(task, timeout=60.0)
+                                                response_json = await asyncio.wait_for(asyncio.shield(task), timeout=60.0)
                                                 break
                                             except asyncio.TimeoutError:
                                                 if wait_reply:
@@ -5545,110 +5775,201 @@ def create_app() -> FastAPI:
                                             except Exception:
                                                 static_preview = ""
                                         if (not static_preview) and bool(getattr(tool_cfg, "use_codex_response", False)):
-                                            fields_required = str(
-                                                patch.get("fields_required") or patch.get("what_to_search_for") or ""
-                                            ).strip()
-                                            why_api_was_called = str(
-                                                patch.get("why_api_was_called") or patch.get("why_to_search_for") or ""
-                                            ).strip()
+                                            fields_required = str(patch.get("fields_required") or "").strip()
+                                            what_to_search_for = str(patch.get("what_to_search_for") or "").strip()
+                                            if not fields_required:
+                                                fields_required = what_to_search_for
+                                            why_api_was_called = str(patch.get("why_api_was_called") or "").strip()
+                                            if not why_api_was_called:
+                                                why_api_was_called = str(patch.get("why_to_search_for") or "").strip()
                                             if not fields_required or not why_api_was_called:
                                                 tool_result["codex_ok"] = False
                                                 tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
                                             else:
-                                                codex_model = (
-                                                    (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
-                                                    or "gpt-5.1-codex-mini"
-                                                )
-                                                progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                                def _progress(s: str) -> None:
-                                                    try:
-                                                        progress_q.put_nowait(str(s))
-                                                    except Exception:
-                                                        return
-
-                                                agent_task = asyncio.create_task(
-                                                    asyncio.to_thread(
-                                                        run_codex_http_agent_one_shot,
-                                                        api_key=api_key or "",
-                                                        model=codex_model,
-                                                        response_json=response_json,
-                                                        fields_required=fields_required,
-                                                        why_api_was_called=why_api_was_called,
-                                                        response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
-                                                        conversation_id=str(conv_id) if conv_id is not None else None,
-                                                        req_id=req_id,
-                                                        tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
-                                                        progress_fn=_progress,
+                                                fields_required_for_codex = fields_required
+                                                if what_to_search_for and (what_to_search_for not in fields_required_for_codex):
+                                                    fields_required_for_codex = (
+                                                        f"{fields_required_for_codex}\n\n(what_to_search_for) {what_to_search_for}"
                                                     )
-                                                )
-                                                if wait_reply:
-                                                    await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                                last_wait = time.time()
-                                                last_progress = last_wait
-                                                wait_interval_s = 15.0
-                                                while not agent_task.done():
-                                                    try:
-                                                        while True:
-                                                            p = progress_q.get_nowait()
-                                                            if p:
-                                                                await _public_send_interim(
-                                                                    ws, req_id=req_id, kind="progress", text=p
-                                                                )
-                                                                last_progress = time.time()
-                                                    except queue.Empty:
-                                                        pass
-                                                    now = time.time()
-                                                    if (
-                                                        wait_reply
-                                                        and (now - last_wait) >= wait_interval_s
-                                                        and (now - last_progress) >= wait_interval_s
-                                                    ):
+                                                did_postprocess = False
+                                                postprocess_python = str(getattr(tool_cfg, "postprocess_python", "") or "").strip()
+                                                if postprocess_python:
+                                                    py_task = asyncio.create_task(
+                                                        asyncio.to_thread(
+                                                            run_python_postprocessor,
+                                                            python_code=postprocess_python,
+                                                            payload={
+                                                                "response_json": response_json,
+                                                                "meta": new_meta or meta_current,
+                                                                "args": patch,
+                                                                "fields_required": fields_required,
+                                                                "why_api_was_called": why_api_was_called,
+                                                            },
+                                                            timeout_s=60,
+                                                        )
+                                                    )
+                                                    if wait_reply:
                                                         await _public_send_interim(
                                                             ws, req_id=req_id, kind="wait", text=wait_reply
                                                         )
-                                                        last_wait = now
-                                                    await asyncio.sleep(0.2)
-                                                try:
-                                                    agent_res = await agent_task
-                                                    tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
-                                                    tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
-                                                    tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
-                                                    tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
-                                                    tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
-                                                    tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
-                                                    tool_result["codex_continue_reason"] = getattr(
-                                                        agent_res, "continue_reason", ""
-                                                    )
-                                                    tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
-                                                    saved_input_json_path = getattr(agent_res, "input_json_path", "")
-                                                    saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
-                                                    err = getattr(agent_res, "error", None)
-                                                    if err:
-                                                        tool_result["codex_error"] = str(err)
-                                                except Exception as exc:
-                                                    tool_result["codex_ok"] = False
-                                                    tool_result["codex_error"] = str(exc)
-                                                    saved_input_json_path = ""
-                                                    saved_schema_json_path = ""
+                                                    last_wait = time.time()
+                                                    wait_interval_s = 15.0
+                                                    while not py_task.done():
+                                                        now = time.time()
+                                                        if wait_reply and (now - last_wait) >= wait_interval_s:
+                                                            await _public_send_interim(
+                                                                ws, req_id=req_id, kind="wait", text=wait_reply
+                                                            )
+                                                            last_wait = now
+                                                        await asyncio.sleep(0.2)
+                                                    try:
+                                                        py_res = await py_task
+                                                        tool_result["python_ok"] = bool(getattr(py_res, "ok", False))
+                                                        tool_result["python_duration_ms"] = int(
+                                                            getattr(py_res, "duration_ms", 0) or 0
+                                                        )
+                                                        if getattr(py_res, "error", None):
+                                                            tool_result["python_error"] = str(getattr(py_res, "error"))
+                                                        if getattr(py_res, "stderr", None):
+                                                            tool_result["python_stderr"] = str(getattr(py_res, "stderr"))
+                                                        if py_res.ok:
+                                                            did_postprocess = True
+                                                            tool_result["postprocess_mode"] = "python"
+                                                            tool_result["codex_ok"] = True
+                                                            tool_result["codex_result_text"] = str(
+                                                                getattr(py_res, "result_text", "") or ""
+                                                            )
+                                                            mp = getattr(py_res, "metadata_patch", None)
+                                                            if isinstance(mp, dict) and mp:
+                                                                try:
+                                                                    meta_current = merge_conversation_metadata(
+                                                                        session,
+                                                                        conversation_id=conv_id,
+                                                                        patch=mp,
+                                                                    )
+                                                                    tool_result["python_metadata_patch"] = mp
+                                                                except Exception:
+                                                                    pass
+                                                            try:
+                                                                append_saved_run_index(
+                                                                    conversation_id=str(conv_id),
+                                                                    event={
+                                                                        "kind": "integration_python_postprocess",
+                                                                        "tool_name": tool_name,
+                                                                        "req_id": req_id,
+                                                                        "python_ok": tool_result.get("python_ok"),
+                                                                        "python_duration_ms": tool_result.get(
+                                                                            "python_duration_ms"
+                                                                        ),
+                                                                    },
+                                                                )
+                                                            except Exception:
+                                                                pass
+                                                    except Exception as exc:
+                                                        tool_result["python_ok"] = False
+                                                        tool_result["python_error"] = str(exc)
 
-                                                try:
-                                                    append_saved_run_index(
-                                                        conversation_id=str(conv_id),
-                                                        event={
-                                                            "kind": "integration_http",
-                                                            "tool_name": tool_name,
-                                                            "req_id": req_id,
-                                                            "input_json_path": saved_input_json_path,
-                                                            "schema_json_path": saved_schema_json_path,
-                                                            "fields_required": fields_required,
-                                                            "why_api_was_called": why_api_was_called,
-                                                            "codex_output_dir": tool_result.get("codex_output_dir"),
-                                                            "codex_ok": tool_result.get("codex_ok"),
-                                                        },
+                                                if not did_postprocess:
+                                                    codex_model = (
+                                                        (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                                        or "gpt-5.1-codex-mini"
                                                     )
-                                                except Exception:
-                                                    pass
+                                                    progress_q: "queue.Queue[str]" = queue.Queue()
+
+                                                    def _progress(s: str) -> None:
+                                                        try:
+                                                            progress_q.put_nowait(str(s))
+                                                        except Exception:
+                                                            return
+
+                                                    agent_task = asyncio.create_task(
+                                                        asyncio.to_thread(
+                                                            run_codex_http_agent_one_shot,
+                                                            api_key=api_key or "",
+                                                            model=codex_model,
+                                                            response_json=response_json,
+                                                            fields_required=fields_required_for_codex,
+                                                            why_api_was_called=why_api_was_called,
+                                                            response_schema_json=getattr(tool_cfg, "response_schema_json", "")
+                                                            or "",
+                                                            conversation_id=str(conv_id) if conv_id is not None else None,
+                                                            req_id=req_id,
+                                                            tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
+                                                            progress_fn=_progress,
+                                                        )
+                                                    )
+                                                    if wait_reply:
+                                                        await _public_send_interim(
+                                                            ws, req_id=req_id, kind="wait", text=wait_reply
+                                                        )
+                                                    last_wait = time.time()
+                                                    last_progress = last_wait
+                                                    wait_interval_s = 15.0
+                                                    while not agent_task.done():
+                                                        try:
+                                                            while True:
+                                                                p = progress_q.get_nowait()
+                                                                if p:
+                                                                    await _public_send_interim(
+                                                                        ws, req_id=req_id, kind="progress", text=p
+                                                                    )
+                                                                    last_progress = time.time()
+                                                        except queue.Empty:
+                                                            pass
+                                                        now = time.time()
+                                                        if (
+                                                            wait_reply
+                                                            and (now - last_wait) >= wait_interval_s
+                                                            and (now - last_progress) >= wait_interval_s
+                                                        ):
+                                                            await _public_send_interim(
+                                                                ws, req_id=req_id, kind="wait", text=wait_reply
+                                                            )
+                                                            last_wait = now
+                                                        await asyncio.sleep(0.2)
+                                                    try:
+                                                        agent_res = await agent_task
+                                                        tool_result["postprocess_mode"] = "codex"
+                                                        tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
+                                                        tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
+                                                        tool_result["codex_output_file"] = getattr(
+                                                            agent_res, "result_text_path", ""
+                                                        )
+                                                        tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
+                                                        tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
+                                                        tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
+                                                        tool_result["codex_continue_reason"] = getattr(
+                                                            agent_res, "continue_reason", ""
+                                                        )
+                                                        tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                                        saved_input_json_path = getattr(agent_res, "input_json_path", "")
+                                                        saved_schema_json_path = getattr(agent_res, "schema_json_path", "")
+                                                        err = getattr(agent_res, "error", None)
+                                                        if err:
+                                                            tool_result["codex_error"] = str(err)
+                                                    except Exception as exc:
+                                                        tool_result["codex_ok"] = False
+                                                        tool_result["codex_error"] = str(exc)
+                                                        saved_input_json_path = ""
+                                                        saved_schema_json_path = ""
+
+                                                    try:
+                                                        append_saved_run_index(
+                                                            conversation_id=str(conv_id),
+                                                            event={
+                                                                "kind": "integration_http",
+                                                                "tool_name": tool_name,
+                                                                "req_id": req_id,
+                                                                "input_json_path": saved_input_json_path,
+                                                                "schema_json_path": saved_schema_json_path,
+                                                                "fields_required": fields_required,
+                                                                "why_api_was_called": why_api_was_called,
+                                                                "codex_output_dir": tool_result.get("codex_output_dir"),
+                                                                "codex_ok": tool_result.get("codex_ok"),
+                                                            },
+                                                        )
+                                                    except Exception:
+                                                        pass
 
                                 add_message_with_metrics(
                                     session,
@@ -5677,8 +5998,19 @@ def create_app() -> FastAPI:
                                         final = static_text
                                     else:
                                         if bool(getattr(tool_cfg, "use_codex_response", False)):
-                                            needs_followup_llm = True
-                                            final = ""
+                                            if bool(getattr(tool_cfg, "return_result_directly", False)) and isinstance(
+                                                tool_result, dict
+                                            ):
+                                                direct = str(tool_result.get("codex_result_text") or "").strip()
+                                                if direct:
+                                                    needs_followup_llm = False
+                                                    final = direct
+                                                else:
+                                                    needs_followup_llm = True
+                                                    final = ""
+                                            else:
+                                                needs_followup_llm = True
+                                                final = ""
                                         else:
                                             needs_followup_llm = _should_followup_llm_for_tool(
                                                 tool=tool_cfg, static_rendered=static_text
@@ -5915,6 +6247,8 @@ def create_app() -> FastAPI:
             "parameters_schema_json": t.parameters_schema_json,
             "response_schema_json": getattr(t, "response_schema_json", "") or "",
             "codex_prompt": getattr(t, "codex_prompt", "") or "",
+            "postprocess_python": getattr(t, "postprocess_python", "") or "",
+            "return_result_directly": bool(getattr(t, "return_result_directly", False)),
             "response_mapper_json": t.response_mapper_json,
             "pagination_json": getattr(t, "pagination_json", "") or "",
             "static_reply_template": t.static_reply_template,
@@ -6069,6 +6403,8 @@ def create_app() -> FastAPI:
             parameters_schema_json=payload.parameters_schema_json or "",
             response_schema_json=payload.response_schema_json or "",
             codex_prompt=(payload.codex_prompt or ""),
+            postprocess_python=(payload.postprocess_python or ""),
+            return_result_directly=bool(payload.return_result_directly),
             response_mapper_json=payload.response_mapper_json or "{}",
             pagination_json=payload.pagination_json or "",
             static_reply_template=payload.static_reply_template or "",
@@ -6105,6 +6441,10 @@ def create_app() -> FastAPI:
             patch["response_schema_json"] = patch["response_schema_json"] or ""
         if "codex_prompt" in patch:
             patch["codex_prompt"] = patch["codex_prompt"] or ""
+        if "postprocess_python" in patch:
+            patch["postprocess_python"] = patch["postprocess_python"] or ""
+        if "return_result_directly" in patch and patch["return_result_directly"] is not None:
+            patch["return_result_directly"] = bool(patch["return_result_directly"])
         if "pagination_json" in patch:
             patch["pagination_json"] = patch["pagination_json"] or ""
         tool = update_integration_tool(session, tool_id, patch)

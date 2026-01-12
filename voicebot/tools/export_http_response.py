@@ -49,9 +49,8 @@ def export_http_response_tool_def() -> dict[str, Any]:
                     "description": "Short filler message to say while exporting (e.g. 'Got it—preparing a download.').",
                 },
             },
-            "required": ["source_tool_name", "export_request"],
+            "required": ["source_tool_name", "export_request", "wait_reply"],
             "additionalProperties": True,
         },
         "strict": False,
     }
-

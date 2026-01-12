@@ -39,9 +39,8 @@ def recall_http_response_tool_def() -> dict[str, Any]:
                     "description": "Short filler message to say while recalling (e.g. 'Got it—checking that now.').",
                 },
             },
-            "required": ["source_tool_name", "fields_required", "why_api_was_called"],
+            "required": ["source_tool_name", "fields_required", "why_api_was_called", "wait_reply"],
             "additionalProperties": True,
         },
         "strict": False,
     }
-

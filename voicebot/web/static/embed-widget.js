@@ -45,14 +45,15 @@
     injectStyles()
     var botId = String(opts.botId || '')
     var apiKey = String(opts.apiKey || '')
-    var userConversationId = String(opts.userConversationId || '')
+    // Default to a new conversation per page load (no cross-tab persistence).
+    // If callers explicitly provide a stable id, we still accept it.
+    var userConversationId = String(opts.userConversationId || '') || uuid()
     var baseOrigin = String(opts.baseOrigin || window.location.origin)
     var title = String(opts.title || 'Intelligravex Bot')
     var target = opts.target || null
 
     if (!botId) throw new Error('botId is required')
     if (!apiKey) throw new Error('apiKey is required')
-    if (!userConversationId) throw new Error('userConversationId is required')
 
     var root = document.createElement('div')
     root.className = 'igxvb'

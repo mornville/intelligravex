@@ -139,6 +139,8 @@ export type IntegrationTool = {
   parameters_schema_json?: string
   response_schema_json?: string
   codex_prompt?: string
+  postprocess_python?: string
+  return_result_directly?: boolean
   response_mapper_json: string
   pagination_json?: string
   static_reply_template: string

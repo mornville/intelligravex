@@ -29,9 +29,8 @@ def give_command_to_data_agent_tool_def() -> dict[str, Any]:
                     "description": "Short filler message to say while the Data Agent runs.",
                 },
             },
-            "required": ["what_to_do"],
+            "required": ["what_to_do", "wait_reply"],
             "additionalProperties": True,
         },
         "strict": False,
     }
-

@@ -212,8 +212,8 @@ def _call_codex_json(
         raise RuntimeError(f"openai sdk not installed: {exc}") from exc
 
     client = OpenAI(api_key=api_key)
-    if progress_fn:
-        progress_fn(f"Codex: calling model {model}…")
+    # Progress messaging should be handled by the caller (stage-specific). Avoid emitting a generic
+    # "Thinking…" here which can overwrite more helpful UI updates.
     resp = client.responses.create(
         model=model,
         input=_to_responses_input(messages),
@@ -295,7 +295,7 @@ def run_codex_http_agent(
             return
 
     if progress_fn:
-        progress_fn("Codex agent: saving HTTP response…")
+        progress_fn("Got results—organizing them…")
     if not (input_json_path or "").strip():
         _write_text(input_path, json.dumps(response_json, ensure_ascii=False, indent=2))
     schema_obj: Any = None
@@ -321,7 +321,7 @@ def run_codex_http_agent(
 
     for cycle in range(1, max(1, int(max_cycles)) + 1):
         if progress_fn:
-            progress_fn(f"Codex agent: cycle {cycle}…")
+            progress_fn("Working on it…")
 
         # 1) Extraction script
         extract_messages: list[dict[str, str]] = [
@@ -370,9 +370,9 @@ def run_codex_http_agent(
         for attempt in range(1, max(1, int(max_attempts_per_phase)) + 1):
             if progress_fn:
                 if attempt == 1:
-                    progress_fn("Codex agent: requesting extraction script…")
+                    progress_fn("Pulling out the key details…")
                 else:
-                    progress_fn(f"Codex agent: retrying extraction (attempt {attempt})…")
+                    progress_fn("Still working—retrying…")
             if last_extract_error:
                 extract_messages = list(extract_messages) + [
                     {"role": "user", "content": f"PREVIOUS_EXTRACTION_ERROR:\n{last_extract_error[:3000]}\n"},
@@ -389,7 +389,7 @@ def run_codex_http_agent(
                 model=m,
                 messages=extract_messages,
                 schema_name="codex_http_extract",
-                progress_fn=progress_fn,
+                progress_fn=None,
             )
             _debug(
                 {
@@ -410,7 +410,7 @@ def run_codex_http_agent(
             extract_py = os.path.join(out_dir, f"extract_cycle_{cycle}_attempt_{attempt}.py")
             _write_text(extract_py, extract_script)
             if progress_fn:
-                progress_fn("Codex agent: running extraction script…")
+                progress_fn("Pulling out the key details…")
             rc, out, err = _run_python_script(
                 script_path=extract_py,
                 cwd=out_dir,
@@ -509,9 +509,9 @@ def run_codex_http_agent(
         for attempt in range(1, max(1, int(max_attempts_per_phase)) + 1):
             if progress_fn:
                 if attempt == 1:
-                    progress_fn("Codex agent: requesting validation script…")
+                    progress_fn("Checking everything looks right…")
                 else:
-                    progress_fn(f"Codex agent: retrying validation (attempt {attempt})…")
+                    progress_fn("Double-checking again…")
             if last_validate_error:
                 validate_messages = list(validate_messages) + [
                     {"role": "user", "content": f"PREVIOUS_VALIDATION_ERROR:\n{last_validate_error[:3000]}\n"},
@@ -528,7 +528,7 @@ def run_codex_http_agent(
                 model=m,
                 messages=validate_messages,
                 schema_name="codex_http_validate",
-                progress_fn=progress_fn,
+                progress_fn=None,
             )
             _debug(
                 {
@@ -549,7 +549,7 @@ def run_codex_http_agent(
             validate_py = os.path.join(out_dir, f"validate_cycle_{cycle}_attempt_{attempt}.py")
             _write_text(validate_py, validate_script)
             if progress_fn:
-                progress_fn("Codex agent: running validation script…")
+                progress_fn("Checking everything looks right…")
             rc2, out2, err2 = _run_python_script(
                 script_path=validate_py,
                 cwd=out_dir,
@@ -609,7 +609,7 @@ def run_codex_http_agent(
                 error=last_validate_error,
             )
         if progress_fn and last_result_text:
-            progress_fn("Codex agent: summary ready.")
+            progress_fn("Done—preparing the reply…")
 
         # If the script explicitly told us to stop, honor it (this is still a Codex decision).
         if isinstance(last_status, dict) and str(last_status.get("next_step") or "").upper() == "STOP":
@@ -658,12 +658,14 @@ def run_codex_http_agent(
                 ),
             },
         ]
+        if progress_fn:
+            progress_fn("Done—preparing the reply…")
         step3 = _call_codex_json(
             api_key=api_key,
             model=m,
             messages=decide_messages,
             schema_name="codex_http_decide",
-            progress_fn=progress_fn,
+            progress_fn=None,
         )
         _debug(
             {
@@ -762,7 +764,7 @@ def run_codex_http_agent_one_shot(
             return
 
     if progress_fn:
-        progress_fn("Codex agent: saving HTTP response…")
+        progress_fn("Got results—organizing them…")
     _write_text(input_path, json.dumps(response_json, ensure_ascii=False, indent=2))
 
     provided_schema = _coerce_json_schema(response_schema_json)
@@ -818,7 +820,7 @@ def run_codex_http_agent_one_shot(
     ]
 
     if progress_fn:
-        progress_fn(f"Codex: calling model {m}…")
+        progress_fn("Thinking…")
     step = _call_codex_json(
         api_key=api_key,
         model=m,
@@ -851,7 +853,7 @@ def run_codex_http_agent_one_shot(
     py_path = os.path.join(out_dir, "one_shot.py")
     _write_text(py_path, script)
     if progress_fn:
-        progress_fn("Codex agent: running script…")
+        progress_fn("Formatting the answer…")
     rc, out, err = _run_python_script(
         script_path=py_path,
         cwd=out_dir,
@@ -973,7 +975,7 @@ def run_codex_http_agent_one_shot_from_paths(
             return
 
     if progress_fn:
-        progress_fn("Recall agent: loading saved schema…")
+        progress_fn("Reviewing previous results…")
 
     schema_obj: Any = None
     schema_source = "derived_tree"
@@ -1045,7 +1047,7 @@ def run_codex_http_agent_one_shot_from_paths(
     ]
 
     if progress_fn:
-        progress_fn(f"Codex: calling model {m}…")
+        progress_fn("Thinking…")
     step = _call_codex_json(
         api_key=api_key,
         model=m,
@@ -1078,7 +1080,7 @@ def run_codex_http_agent_one_shot_from_paths(
     py_path = os.path.join(out_dir, "one_shot.py")
     _write_text(py_path, script)
     if progress_fn:
-        progress_fn("Recall agent: running script…")
+        progress_fn("Updating the answer…")
     rc, out, err = _run_python_script(
         script_path=py_path,
         cwd=out_dir,
@@ -1288,7 +1290,7 @@ def run_codex_export_from_paths(
     ]
 
     if progress_fn:
-        progress_fn(f"Codex: calling model {m}…")
+        progress_fn("Preparing your download…")
     step = _call_codex_json(
         api_key=api_key,
         model=m,
@@ -1315,7 +1317,7 @@ def run_codex_export_from_paths(
     py_path = os.path.join(out_dir, "export.py")
     _write_text(py_path, script)
     if progress_fn:
-        progress_fn("Export agent: running script…")
+        progress_fn("Generating the file…")
     rc, out, err = _run_python_script(
         script_path=py_path,
         cwd=out_dir,

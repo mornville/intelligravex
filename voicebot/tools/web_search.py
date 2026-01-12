@@ -55,7 +55,7 @@ def web_search_tool_def() -> dict[str, Any]:
                     "default": 10,
                 },
             },
-            "required": ["search_term", "vector_search_queries", "why"],
+            "required": ["search_term", "vector_search_queries", "why", "wait_reply"],
             "additionalProperties": True,
         },
         "strict": False,
