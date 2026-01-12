@@ -37,7 +37,7 @@ def run_python_postprocessor(
     python_code: str,
     payload: dict[str, Any],
     timeout_s: int = 60,
-    max_output_chars: int = 50_000,
+    max_output_chars: int = 500_000,
 ) -> PythonPostprocessResult:
     code = (python_code or "").strip("\n")
     code = textwrap.dedent(code).strip()
