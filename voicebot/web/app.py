@@ -6,6 +6,7 @@ import datetime as dt
 import html
 import json
 import logging
+import mimetypes
 import os
 import queue
 import re
@@ -15,6 +16,7 @@ import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional, Tuple
+from urllib.parse import quote as _url_quote
 from uuid import UUID
 
 import httpx
@@ -5091,6 +5093,41 @@ def create_app() -> FastAPI:
             return True
         return str(bot_id) in allowset
 
+    def _require_public_conversation_access(
+        *,
+        session: Session,
+        request: Request,
+        conversation_id: UUID,
+        key: str,
+    ) -> tuple[Any, Any, Any]:
+        """
+        Returns (client_key, conversation, bot) for a public request.
+        Enforces:
+        - key is valid
+        - origin is allowed (if present)
+        - conversation is owned by this key
+        - bot is allowed for this key
+        """
+        key_secret = (key or "").strip()
+        if not key_secret:
+            raise HTTPException(status_code=401, detail="Missing key")
+        ck = verify_client_key(session, secret=key_secret)
+        if not ck:
+            raise HTTPException(status_code=401, detail="Invalid key")
+        origin = request.headers.get("origin")
+        if origin and (not _origin_allowed(ck, origin)):
+            raise HTTPException(status_code=403, detail="Origin not allowed")
+        try:
+            conv = get_conversation(session, conversation_id)
+        except Exception:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if conv.client_key_id != ck.id:
+            raise HTTPException(status_code=403, detail="Conversation not accessible with this key")
+        if not _bot_allowed(ck, conv.bot_id):
+            raise HTTPException(status_code=403, detail="Bot not allowed for this key")
+        bot = get_bot(session, conv.bot_id)
+        return ck, conv, bot
+
     def _conversation_messages_payload(
         *,
         session: Session,
@@ -5343,6 +5380,286 @@ def create_app() -> FastAPI:
             payload=payload,
         )
         return HTMLResponse(content=page)
+
+    def _is_path_within_root(root: Path, child: Path) -> bool:
+        root_abs = root.resolve()
+        child_abs = child.resolve()
+        return child_abs == root_abs or root_abs in child_abs.parents
+
+    def _data_agent_workspace_dir_for_conversation(session: Session, *, conversation_id: UUID) -> str:
+        meta = _get_conversation_meta(session, conversation_id=conversation_id)
+        da = _data_agent_meta(meta)
+        return str(da.get("workspace_dir") or "").strip() or default_workspace_dir_for_conversation(conversation_id)
+
+    def _should_hide_data_agent_path(rel: str, *, include_hidden: bool) -> bool:
+        # Hide secrets/internal state from public clients.
+        r = (rel or "").lstrip("/").strip()
+        if not r:
+            return False
+        parts = [p for p in r.split("/") if p]
+        if not parts:
+            return False
+        # Never expose Codex runtime directory.
+        if parts[0] == ".codex":
+            return True
+        # Hide dotfiles/dirs unless explicitly requested.
+        if (not include_hidden) and any(p.startswith(".") for p in parts):
+            return True
+        # Never expose auth or potential credential/config files.
+        deny = {
+            "auth.json",
+            "AGENTS.md",
+            "api_spec.json",
+            "output_schema.json",
+        }
+        if parts[-1] in deny:
+            return True
+        return False
+
+    @app.get("/conversations/{conversation_id}/files")
+    def public_conversation_files(
+        conversation_id: UUID,
+        request: Request,
+        key: str = Query("", description="Client key secret (igx_...)"),
+        path: str = Query("", description="Directory path relative to the data-agent workspace"),
+        recursive: bool = Query(False, description="List files recursively"),
+        include_hidden: bool = Query(False, description="Include dotfiles (still blocks secrets like auth.json)"),
+        format: str = Query("html", description="html|json"),
+        session: Session = Depends(get_session),
+    ) -> Response:
+        ck, conv, bot = _require_public_conversation_access(
+            session=session, request=request, conversation_id=conversation_id, key=key
+        )
+        workspace_dir = _data_agent_workspace_dir_for_conversation(session, conversation_id=conversation_id)
+        root = Path(workspace_dir).resolve()
+        req_rel = (path or "").lstrip("/").strip()
+        target = (root / req_rel).resolve()
+        if not _is_path_within_root(root, target):
+            raise HTTPException(status_code=400, detail="Invalid path")
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Path not found")
+        if req_rel and _should_hide_data_agent_path(req_rel, include_hidden=bool(include_hidden)):
+            raise HTTPException(status_code=403, detail="Path not allowed")
+
+        items: list[dict[str, Any]] = []
+        max_items = 2000
+
+        def _add_item(p: Path) -> None:
+            nonlocal items
+            try:
+                rel = str(p.relative_to(root)).replace(os.sep, "/")
+            except Exception:
+                return
+            if _should_hide_data_agent_path(rel, include_hidden=bool(include_hidden)):
+                return
+            try:
+                st = p.stat()
+            except Exception:
+                return
+            is_dir = p.is_dir()
+            download_url = None
+            if not is_dir:
+                download_url = (
+                    f"/conversations/{conversation_id}/files/download?"
+                    f"key={_url_quote((key or '').strip())}&path={_url_quote(rel)}"
+                )
+            items.append(
+                {
+                    "path": rel,
+                    "name": p.name,
+                    "is_dir": bool(is_dir),
+                    "size_bytes": int(st.st_size) if not is_dir else None,
+                    "mtime": dt.datetime.fromtimestamp(st.st_mtime, tz=dt.timezone.utc).isoformat(),
+                    "download_url": download_url,
+                }
+            )
+
+        if target.is_file():
+            _add_item(target)
+        else:
+            _add_item(target)
+            if recursive:
+                for p in sorted(target.rglob("*")):
+                    if len(items) >= max_items:
+                        break
+                    _add_item(p)
+            else:
+                for p in sorted(target.iterdir()):
+                    if len(items) >= max_items:
+                        break
+                    _add_item(p)
+
+        payload = {
+            "conversation_id": str(conversation_id),
+            "bot_id": str(conv.bot_id),
+            "bot_name": bot.name,
+            "external_id": conv.external_id,
+            "workspace_dir": str(root),
+            "path": req_rel,
+            "recursive": bool(recursive),
+            "items": items,
+        }
+
+        fmt = (format or "").strip().lower()
+        if fmt == "json":
+            return Response(content=json.dumps(payload, ensure_ascii=False), media_type="application/json")
+
+        # HTML table UI
+        def _fmt_size(sz: Optional[int]) -> str:
+            if sz is None:
+                return ""
+            n = float(sz)
+            for unit in ["B", "KB", "MB", "GB"]:
+                if n < 1024.0:
+                    return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+                n /= 1024.0
+            return f"{n:.1f} TB"
+
+        def _q(**params: str) -> str:
+            parts = []
+            for k, v in params.items():
+                parts.append(f"{k}={v}")
+            return "&".join(parts)
+
+        base_params = {"key": _url_quote((key or "").strip())}
+        cur_path_q = _url_quote(req_rel)
+        json_href = f"/conversations/{conversation_id}/files?{_q(**base_params, path=cur_path_q, recursive=('1' if recursive else '0'), include_hidden=('1' if include_hidden else '0'), format='json')}"
+        rec_on = f"/conversations/{conversation_id}/files?{_q(**base_params, path=cur_path_q, recursive='1', include_hidden=('1' if include_hidden else '0'))}"
+        rec_off = f"/conversations/{conversation_id}/files?{_q(**base_params, path=cur_path_q, recursive='0', include_hidden=('1' if include_hidden else '0'))}"
+        hidden_on = f"/conversations/{conversation_id}/files?{_q(**base_params, path=cur_path_q, recursive=('1' if recursive else '0'), include_hidden='1')}"
+        hidden_off = f"/conversations/{conversation_id}/files?{_q(**base_params, path=cur_path_q, recursive=('1' if recursive else '0'), include_hidden='0')}"
+        transcript_href = f"/conversations/{conversation_id}?{_q(**base_params)}"
+
+        rows: list[str] = []
+        for it in items:
+            rel = str(it.get("path") or "")
+            is_dir = bool(it.get("is_dir"))
+            mtime = str(it.get("mtime") or "")
+            size = _fmt_size(it.get("size_bytes"))  # type: ignore[arg-type]
+            dl = str(it.get("download_url") or "")
+            name = rel
+            href = ""
+            if is_dir:
+                href = f"/conversations/{conversation_id}/files?{_q(**base_params, path=_url_quote(rel), recursive='0', include_hidden=('1' if include_hidden else '0'))}"
+            elif dl:
+                href = dl
+            link = f"<a href='{html.escape(href)}'>{html.escape(name)}</a>" if href else html.escape(name)
+            kind = "dir" if is_dir else "file"
+            rows.append(
+                "<tr>"
+                f"<td class='c-kind'>{html.escape(kind)}</td>"
+                f"<td class='c-path'>{link}</td>"
+                f"<td class='c-size'>{html.escape(size)}</td>"
+                f"<td class='c-time'>{html.escape(mtime)}</td>"
+                "</tr>"
+            )
+
+        page = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conversation Files</title>
+  <style>
+    :root {{
+      --bg: #0b1020;
+      --panel: #111936;
+      --border: rgba(255,255,255,0.12);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.70);
+      --link: #7dd3fc;
+      --chip: rgba(255,255,255,0.08);
+    }}
+    body {{ margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background: var(--bg); color: var(--text); }}
+    .wrap {{ max-width: 1100px; margin: 0 auto; padding: 20px; }}
+    .header {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }}
+    h1 {{ font-size: 18px; margin: 0 0 6px; }}
+    .sub {{ color: var(--muted); font-size: 13px; }}
+    .actions {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }}
+    a.btn {{ display: inline-flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--chip); color: var(--text); text-decoration: none; font-size: 13px; }}
+    a.btn:hover {{ border-color: rgba(255,255,255,0.25); }}
+    a.btn.primary {{ border-color: rgba(125, 211, 252, 0.6); color: var(--link); }}
+    .panel {{ margin-top: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    thead th {{ position: sticky; top: 0; background: rgba(17,25,54,0.92); backdrop-filter: blur(10px); text-align: left; font-size: 12px; color: var(--muted); padding: 10px; border-bottom: 1px solid var(--border); }}
+    tbody td {{ vertical-align: top; padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.06); }}
+    .c-kind {{ width: 80px; white-space: nowrap; color: var(--muted); font-size: 12px; }}
+    .c-size {{ width: 110px; white-space: nowrap; color: var(--muted); font-size: 12px; }}
+    .c-time {{ width: 260px; white-space: nowrap; color: var(--muted); font-size: 12px; }}
+    .c-path a {{ color: var(--link); text-decoration: none; }}
+    .c-path a:hover {{ text-decoration: underline; }}
+    .footer {{ margin-top: 12px; font-size: 12px; color: var(--muted); }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div>
+        <h1>Files for conversation {html.escape(str(conversation_id))}</h1>
+        <div class="sub">Path: /{html.escape(req_rel)} • Items: {len(items)} (max {max_items})</div>
+      </div>
+      <div class="actions">
+        <a class="btn" href="{html.escape(transcript_href)}">Transcript</a>
+        <a class="btn primary" href="{html.escape(rec_on)}">Recursive on</a>
+        <a class="btn" href="{html.escape(rec_off)}">Recursive off</a>
+        <a class="btn" href="{html.escape(hidden_on)}">Show hidden</a>
+        <a class="btn" href="{html.escape(hidden_off)}">Hide hidden</a>
+        <a class="btn" href="{html.escape(json_href)}">JSON</a>
+      </div>
+    </div>
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Path</th>
+            <th>Size</th>
+            <th>Modified (UTC)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rows)}
+        </tbody>
+      </table>
+    </div>
+    <div class="footer">
+      Hidden/secrets are filtered (e.g. <code>auth.json</code>, <code>AGENTS.md</code>, <code>.codex/</code>).
+    </div>
+  </div>
+</body>
+</html>
+"""
+        return HTMLResponse(content=page)
+
+    @app.get("/conversations/{conversation_id}/files/download")
+    def public_conversation_file_download(
+        conversation_id: UUID,
+        request: Request,
+        key: str = Query("", description="Client key secret (igx_...)"),
+        path: str = Query(..., description="File path relative to the data-agent workspace"),
+        session: Session = Depends(get_session),
+    ) -> FileResponse:
+        _ck, _conv, _bot = _require_public_conversation_access(
+            session=session, request=request, conversation_id=conversation_id, key=key
+        )
+        workspace_dir = _data_agent_workspace_dir_for_conversation(session, conversation_id=conversation_id)
+        root = Path(workspace_dir).resolve()
+        req_rel = (path or "").lstrip("/").strip()
+        if not req_rel:
+            raise HTTPException(status_code=400, detail="Missing path")
+        if _should_hide_data_agent_path(req_rel, include_hidden=False):
+            raise HTTPException(status_code=403, detail="Path not allowed")
+        target = (root / req_rel).resolve()
+        if not _is_path_within_root(root, target):
+            raise HTTPException(status_code=400, detail="Invalid path")
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        mt, _ = mimetypes.guess_type(str(target))
+        return FileResponse(
+            path=str(target),
+            media_type=mt or "application/octet-stream",
+            filename=target.name,
+        )
 
     async def _public_send_done(ws: WebSocket, *, req_id: str, text: str, metrics: dict) -> None:
         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": text, "metrics": metrics})
