@@ -1176,6 +1176,12 @@ def create_app() -> FastAPI:
                 return
 
             # Prewarm: run a quick init task to create/resume a Codex session and ensure it reads the context files.
+            logger.info(
+                "Data Agent prewarm: begin conv=%s container_id=%s session_id=%s",
+                conversation_id,
+                container_id,
+                session_id or "",
+            )
             with Session(engine) as session:
                 bot = get_bot(session, bot_id)
                 meta = _get_conversation_meta(session, conversation_id=conversation_id)
@@ -1241,6 +1247,14 @@ def create_app() -> FastAPI:
                             "data_agent.workspace_dir": workspace_dir,
                         },
                     )
+                logger.info(
+                    "Data Agent prewarm: done conv=%s ok=%s ready=%s session_id=%s error=%s",
+                    conversation_id,
+                    bool(res.ok),
+                    bool(res.ok),
+                    str(res.session_id or ""),
+                    str(res.error or ""),
+                )
             except Exception as exc:
                 with Session(engine) as session:
                     merge_conversation_metadata(
@@ -1253,6 +1267,11 @@ def create_app() -> FastAPI:
                             "data_agent.init_error": str(exc),
                         },
                     )
+                logger.info(
+                    "Data Agent prewarm: failed conv=%s error=%s",
+                    conversation_id,
+                    str(exc),
+                )
         except Exception:
             logger.exception("Data Agent kickoff failed conv=%s bot=%s", conversation_id, bot_id)
             return
@@ -5109,6 +5128,7 @@ def create_app() -> FastAPI:
             return
 
         origin = ws.headers.get("origin")
+        conv_id: Optional[UUID] = None
         with Session(engine) as session:
             ck = verify_client_key(session, secret=key_secret)
             if not ck:
@@ -5123,8 +5143,23 @@ def create_app() -> FastAPI:
                 await _ws_send_json(ws, {"type": "error", "error": "Bot not allowed for this key"})
                 await ws.close(code=4403)
                 return
+            # Create (or load) the conversation immediately on connect so we can prewarm the Data Agent
+            # as soon as the conversation exists (before the first user message).
+            try:
+                bot = get_bot(session, bot_id)
+                conv = get_or_create_conversation_by_external_id(
+                    session,
+                    bot_id=bot.id,
+                    test_flag=False,
+                    client_key_id=ck.id,
+                    external_id=external_id,
+                )
+                conv_id = conv.id
+            except Exception:
+                conv_id = None
 
-        conv_id: Optional[UUID] = None
+        if conv_id is not None:
+            asyncio.create_task(_kickoff_data_agent_container_if_enabled(bot_id=bot_id, conversation_id=conv_id))
 
         try:
             while True:
