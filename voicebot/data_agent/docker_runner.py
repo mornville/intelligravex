@@ -358,6 +358,14 @@ def ensure_conversation_container(
         logger.warning("Data Agent container exists but is not running; recreating conv=%s container_id=%s", conversation_id, existing_id)
 
     Path(workspace_dir).mkdir(parents=True, exist_ok=True)
+    # Back-compat cleanup: older versions wrote API spec to API_SPEC.md.
+    # Keep the workspace consistent with the new api_spec.json naming.
+    try:
+        legacy = Path(workspace_dir) / "API_SPEC.md"
+        if legacy.exists():
+            legacy.unlink()
+    except Exception:
+        pass
     logger.info("Starting Data Agent container for conversation %s (workspace=%s)", conversation_id, workspace_dir)
 
     p = _run(
@@ -464,11 +472,18 @@ def run_data_agent(
 
     # Files visible to Codex.
     api_spec_path = ws / "api_spec.json"
+    legacy_api_spec_path = ws / "API_SPEC.md"
     auth_path = ws / "auth.json"
     agents_path = ws / "AGENTS.md"
     ctx_path = ws / "conversation_context.json"
 
     _write_text(api_spec_path, api_spec_text or "")
+    # Remove legacy file if present to avoid confusion when inspecting the workspace.
+    try:
+        if legacy_api_spec_path.exists():
+            legacy_api_spec_path.unlink()
+    except Exception:
+        pass
     _write_text(auth_path, (auth_json or "{}").strip() or "{}")
     sys_prompt = (system_prompt or "").strip() or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
     _write_text(agents_path, sys_prompt + "\n")
