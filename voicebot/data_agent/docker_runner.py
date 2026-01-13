@@ -393,6 +393,18 @@ def ensure_conversation_container(
         timeout_s=30.0,
     )
     if p.returncode != 0:
+        # If another concurrent kickoff created the container after we checked, docker run may fail
+        # with a name conflict. In that case, reuse the existing container instead of failing.
+        stderr = (p.stderr or "")
+        if "Conflict. The container name" in stderr and name in stderr:
+            existing_id = _get_existing_container_id(name)
+            if existing_id and _ensure_container_running(existing_id):
+                logger.warning(
+                    "Data Agent container name conflict; reusing existing container %s for conversation %s",
+                    existing_id,
+                    conversation_id,
+                )
+                return existing_id
         logger.error(
             "Failed to start Data Agent container rc=%s stdout_tail=%s stderr_tail=%s",
             p.returncode,
