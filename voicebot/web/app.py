@@ -469,6 +469,7 @@ class BotCreateRequest(BaseModel):
     data_agent_auth_json: str = "{}"
     data_agent_system_prompt: str = ""
     data_agent_return_result_directly: bool = False
+    data_agent_prewarm_on_start: bool = False
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
@@ -501,6 +502,7 @@ class BotUpdateRequest(BaseModel):
     data_agent_auth_json: Optional[str] = None
     data_agent_system_prompt: Optional[str] = None
     data_agent_return_result_directly: Optional[bool] = None
+    data_agent_prewarm_on_start: Optional[bool] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     tts_language: Optional[str] = None
@@ -1113,7 +1115,7 @@ def create_app() -> FastAPI:
 
     async def _kickoff_data_agent_container_if_enabled(*, bot_id: UUID, conversation_id: UUID) -> None:
         """
-        Best-effort: start the per-conversation Data Agent runtime at conversation start.
+        Best-effort: start (and optionally prewarm) the per-conversation Data Agent runtime at conversation start.
 
         NOTE: This uses Docker locally. For Kubernetes, this should be replaced with a Pod/Job-based runner.
         """
@@ -1122,38 +1124,135 @@ def create_app() -> FastAPI:
                 bot = get_bot(session, bot_id)
                 if not bool(getattr(bot, "enable_data_agent", False)):
                     return
+
+                prewarm = bool(getattr(bot, "data_agent_prewarm_on_start", False))
                 meta = _get_conversation_meta(session, conversation_id=conversation_id)
                 da = _data_agent_meta(meta)
-                if str(da.get("container_id") or "").strip():
-                    logger.info("Data Agent kickoff: already started conv=%s container_id=%s", conversation_id, da.get("container_id"))
+                if prewarm and (bool(da.get("ready", False)) or bool(da.get("prewarm_in_progress", False))):
                     return
+                if (not prewarm) and str(da.get("container_id") or "").strip():
+                    return
+
                 api_key = _get_openai_api_key_for_bot(session, bot=bot)
                 if not api_key:
                     logger.warning("Data Agent kickoff: missing OpenAI key conv=%s bot=%s", conversation_id, bot_id)
                     merge_conversation_metadata(
                         session,
                         conversation_id=conversation_id,
-                        patch={"data_agent.init_error": "No OpenAI API key configured for this bot."},
+                        patch={
+                            "data_agent.init_error": "No OpenAI API key configured for this bot.",
+                            "data_agent.ready": False,
+                        },
                     )
                     return
-                workspace_dir = str(da.get("workspace_dir") or "").strip() or default_workspace_dir_for_conversation(conversation_id)
-            logger.info("Data Agent kickoff: starting conv=%s workspace=%s", conversation_id, workspace_dir)
-            container_id = await asyncio.to_thread(
-                ensure_conversation_container,
-                conversation_id=conversation_id,
-                workspace_dir=workspace_dir,
-                openai_api_key=api_key,
-            )
+
+                workspace_dir = (
+                    str(da.get("workspace_dir") or "").strip()
+                    or default_workspace_dir_for_conversation(conversation_id)
+                )
+                container_id = str(da.get("container_id") or "").strip()
+                session_id = str(da.get("session_id") or "").strip()
+
+            if not container_id:
+                logger.info("Data Agent kickoff: starting container conv=%s workspace=%s", conversation_id, workspace_dir)
+                container_id = await asyncio.to_thread(
+                    ensure_conversation_container,
+                    conversation_id=conversation_id,
+                    workspace_dir=workspace_dir,
+                    openai_api_key=api_key,
+                )
+                with Session(engine) as session:
+                    merge_conversation_metadata(
+                        session,
+                        conversation_id=conversation_id,
+                        patch={
+                            "data_agent.container_id": container_id,
+                            "data_agent.workspace_dir": workspace_dir,
+                            "data_agent.session_id": session_id,
+                        },
+                    )
+
+            if not prewarm:
+                return
+
+            # Prewarm: run a quick init task to create/resume a Codex session and ensure it reads the context files.
             with Session(engine) as session:
+                bot = get_bot(session, bot_id)
+                meta = _get_conversation_meta(session, conversation_id=conversation_id)
+                da = _data_agent_meta(meta)
+                if bool(da.get("ready", False)) or bool(da.get("prewarm_in_progress", False)):
+                    return
+
                 merge_conversation_metadata(
                     session,
                     conversation_id=conversation_id,
                     patch={
-                        "data_agent.container_id": container_id,
-                        "data_agent.workspace_dir": workspace_dir,
+                        "data_agent.ready": False,
+                        "data_agent.init_error": "",
+                        "data_agent.prewarm_in_progress": True,
+                        "data_agent.prewarm_started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                     },
                 )
-            logger.info("Data Agent kickoff: started conv=%s container_id=%s", conversation_id, container_id)
+
+                ctx = _build_data_agent_conversation_context(
+                    session,
+                    bot=bot,
+                    conversation_id=conversation_id,
+                    meta=meta,
+                )
+                api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
+                auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+                sys_prompt = (
+                    (getattr(bot, "data_agent_system_prompt", "") or "").strip()
+                    or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
+                )
+
+            init_task = (
+                "INIT / PREWARM:\n"
+                "- Open and read: api_spec.json, auth.json, conversation_context.json.\n"
+                "- Do NOT call external APIs.\n"
+                "- Output ok=true and result_text='READY'."
+            )
+            try:
+                res = await asyncio.to_thread(
+                    run_data_agent,
+                    conversation_id=conversation_id,
+                    container_id=container_id,
+                    session_id=session_id,
+                    workspace_dir=workspace_dir,
+                    api_spec_text=api_spec_text,
+                    auth_json=auth_json,
+                    system_prompt=sys_prompt,
+                    conversation_context=ctx,
+                    what_to_do=init_task,
+                    timeout_s=180.0,
+                )
+                with Session(engine) as session:
+                    merge_conversation_metadata(
+                        session,
+                        conversation_id=conversation_id,
+                        patch={
+                            "data_agent.prewarm_in_progress": False,
+                            "data_agent.prewarm_finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                            "data_agent.ready": bool(res.ok),
+                            "data_agent.init_error": str(res.error or ""),
+                            "data_agent.session_id": str(res.session_id or ""),
+                            "data_agent.container_id": str(res.container_id or container_id),
+                            "data_agent.workspace_dir": workspace_dir,
+                        },
+                    )
+            except Exception as exc:
+                with Session(engine) as session:
+                    merge_conversation_metadata(
+                        session,
+                        conversation_id=conversation_id,
+                        patch={
+                            "data_agent.prewarm_in_progress": False,
+                            "data_agent.prewarm_finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                            "data_agent.ready": False,
+                            "data_agent.init_error": str(exc),
+                        },
+                    )
         except Exception:
             logger.exception("Data Agent kickoff failed conv=%s bot=%s", conversation_id, bot_id)
             return
@@ -5058,6 +5157,9 @@ def create_app() -> FastAPI:
                             {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
                         )
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                        asyncio.create_task(
+                            _kickoff_data_agent_container_if_enabled(bot_id=bot_id, conversation_id=conv_id)
+                        )
 
                         if len(list_messages(session, conversation_id=conv_id)) == 0:
                             need_llm = not (
@@ -5099,6 +5201,9 @@ def create_app() -> FastAPI:
                         conv_id = conv.id
                         await _ws_send_json(
                             ws, {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)}
+                        )
+                        asyncio.create_task(
+                            _kickoff_data_agent_container_if_enabled(bot_id=bot_id, conversation_id=conv_id)
                         )
 
                         if bot.openai_key_id:
@@ -6232,6 +6337,7 @@ def create_app() -> FastAPI:
             "data_agent_auth_json": getattr(bot, "data_agent_auth_json", "") or "{}",
             "data_agent_system_prompt": getattr(bot, "data_agent_system_prompt", "") or "",
             "data_agent_return_result_directly": bool(getattr(bot, "data_agent_return_result_directly", False)),
+            "data_agent_prewarm_on_start": bool(getattr(bot, "data_agent_prewarm_on_start", False)),
             "disabled_tools": sorted(disabled),
             "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
@@ -6319,6 +6425,7 @@ def create_app() -> FastAPI:
             data_agent_auth_json=(payload.data_agent_auth_json or "{}"),
             data_agent_system_prompt=(payload.data_agent_system_prompt or ""),
             data_agent_return_result_directly=bool(getattr(payload, "data_agent_return_result_directly", False)),
+            data_agent_prewarm_on_start=bool(getattr(payload, "data_agent_prewarm_on_start", False)),
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,

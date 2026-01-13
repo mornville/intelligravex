@@ -434,6 +434,17 @@ Rules:
                   {bot.enable_data_agent ? (
                     <>
                       <div className="formRow">
+                        <label>Prewarm Data Agent on conversation start</label>
+                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(bot.data_agent_prewarm_on_start)}
+                            onChange={(e) => void save({ data_agent_prewarm_on_start: e.target.checked })}
+                          />
+                          <span className="muted">Starts the container + initializes a Codex session in the background.</span>
+                        </label>
+                      </div>
+                      <div className="formRow">
                         <label>Return Data Agent result directly</label>
                         <label className="row gap" style={{ justifyContent: 'flex-start' }}>
                           <input

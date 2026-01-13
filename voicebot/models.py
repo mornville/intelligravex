@@ -33,6 +33,7 @@ class Bot(SQLModel, table=True):
     data_agent_auth_json: str = Field(default="{}")
     data_agent_system_prompt: str = Field(default="")
     data_agent_return_result_directly: bool = Field(default=False)
+    data_agent_prewarm_on_start: bool = Field(default=False)
     # List of tool names disabled for this bot (JSON list stored as text).
     # Applies to system tools (e.g. web_search, recall_http_response) and integration tools by name.
     disabled_tools_json: str = "[]"
