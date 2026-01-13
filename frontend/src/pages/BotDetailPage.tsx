@@ -434,6 +434,17 @@ Rules:
                   {bot.enable_data_agent ? (
                     <>
                       <div className="formRow">
+                        <label>Return Data Agent result directly</label>
+                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(bot.data_agent_return_result_directly)}
+                            onChange={(e) => void save({ data_agent_return_result_directly: e.target.checked })}
+                          />
+                          <span className="muted">Skip LLM rewrite; show Data Agent result_text as-is.</span>
+                        </label>
+                      </div>
+                      <div className="formRow">
                         <label>Data Agent API spec</label>
                         <textarea
                           value={bot.data_agent_api_spec_text || ''}

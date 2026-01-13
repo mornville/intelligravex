@@ -12,6 +12,7 @@ export type Bot = {
   data_agent_api_spec_text?: string
   data_agent_auth_json?: string
   data_agent_system_prompt?: string
+  data_agent_return_result_directly?: boolean
   openai_key_id: UUID | null
   system_prompt: string
   language: string

@@ -468,6 +468,7 @@ class BotCreateRequest(BaseModel):
     data_agent_api_spec_text: str = ""
     data_agent_auth_json: str = "{}"
     data_agent_system_prompt: str = ""
+    data_agent_return_result_directly: bool = False
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
@@ -499,6 +500,7 @@ class BotUpdateRequest(BaseModel):
     data_agent_api_spec_text: Optional[str] = None
     data_agent_auth_json: Optional[str] = None
     data_agent_system_prompt: Optional[str] = None
+    data_agent_return_result_directly: Optional[bool] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     tts_language: Optional[str] = None
@@ -2635,9 +2637,17 @@ def create_app() -> FastAPI:
                                                         "data_agent_debug_file": da_res.debug_file,
                                                         "error": da_res.error,
                                                     }
-                                                    needs_followup_llm = True
-                                                    rendered_reply = ""
                                                     tool_failed = not bool(da_res.ok)
+                                                    if (
+                                                        bool(getattr(bot, "data_agent_return_result_directly", False))
+                                                        and bool(da_res.ok)
+                                                        and str(da_res.result_text or "").strip()
+                                                    ):
+                                                        needs_followup_llm = False
+                                                        rendered_reply = str(da_res.result_text or "").strip()
+                                                    else:
+                                                        needs_followup_llm = True
+                                                        rendered_reply = ""
                                                 except Exception as exc:
                                                     logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
                                                     tool_result = {
@@ -4218,9 +4228,17 @@ def create_app() -> FastAPI:
                                                         "data_agent_debug_file": da_res.debug_file,
                                                         "error": da_res.error,
                                                     }
-                                                    needs_followup_llm = True
-                                                    rendered_reply = ""
                                                     tool_failed = not bool(da_res.ok)
+                                                    if (
+                                                        bool(getattr(bot2, "data_agent_return_result_directly", False))
+                                                        and bool(da_res.ok)
+                                                        and str(da_res.result_text or "").strip()
+                                                    ):
+                                                        needs_followup_llm = False
+                                                        rendered_reply = str(da_res.result_text or "").strip()
+                                                    else:
+                                                        needs_followup_llm = True
+                                                        rendered_reply = ""
                                                 except Exception as exc:
                                                     logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
                                                     tool_result = {
@@ -5375,8 +5393,16 @@ def create_app() -> FastAPI:
                                                     "error": da_res.error,
                                                 }
                                                 tool_failed = not bool(da_res.ok)
-                                                needs_followup_llm = True
-                                                final = ""
+                                                if (
+                                                    bool(getattr(bot, "data_agent_return_result_directly", False))
+                                                    and bool(da_res.ok)
+                                                    and str(da_res.result_text or "").strip()
+                                                ):
+                                                    needs_followup_llm = False
+                                                    final = str(da_res.result_text or "").strip()
+                                                else:
+                                                    needs_followup_llm = True
+                                                    final = ""
                                             except Exception as exc:
                                                 logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
                                                 tool_result = {"ok": False, "error": {"message": str(exc)}}
@@ -6205,6 +6231,7 @@ def create_app() -> FastAPI:
             "data_agent_api_spec_text": getattr(bot, "data_agent_api_spec_text", "") or "",
             "data_agent_auth_json": getattr(bot, "data_agent_auth_json", "") or "{}",
             "data_agent_system_prompt": getattr(bot, "data_agent_system_prompt", "") or "",
+            "data_agent_return_result_directly": bool(getattr(bot, "data_agent_return_result_directly", False)),
             "disabled_tools": sorted(disabled),
             "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
@@ -6291,6 +6318,7 @@ def create_app() -> FastAPI:
             data_agent_api_spec_text=(payload.data_agent_api_spec_text or ""),
             data_agent_auth_json=(payload.data_agent_auth_json or "{}"),
             data_agent_system_prompt=(payload.data_agent_system_prompt or ""),
+            data_agent_return_result_directly=bool(getattr(payload, "data_agent_return_result_directly", False)),
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,
