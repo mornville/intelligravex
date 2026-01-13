@@ -463,7 +463,7 @@ def run_data_agent(
     run_tag = _utc_run_tag()
 
     # Files visible to Codex.
-    api_spec_path = ws / "API_SPEC.md"
+    api_spec_path = ws / "api_spec.json"
     auth_path = ws / "auth.json"
     agents_path = ws / "AGENTS.md"
     ctx_path = ws / "conversation_context.json"

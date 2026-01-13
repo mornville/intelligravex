@@ -439,7 +439,7 @@ Rules:
                           value={bot.data_agent_api_spec_text || ''}
                           onChange={(e) => setBot((p) => (p ? { ...p, data_agent_api_spec_text: e.target.value } : p))}
                           rows={8}
-                          placeholder="Paste API spec docs here. The Data Agent will use only the APIs listed here."
+                          placeholder="Paste API spec JSON here (saved as api_spec.json in the agent workspace). The Data Agent will use only the APIs listed here."
                         />
                         <div className="row">
                           <button className="btn" onClick={() => void save({ data_agent_api_spec_text: bot.data_agent_api_spec_text || '' })}>
