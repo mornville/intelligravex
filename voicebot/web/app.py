@@ -1038,6 +1038,39 @@ def create_app() -> FastAPI:
             pass
         return messages
 
+    def _build_history_budgeted_threadsafe(
+        *,
+        bot_id: UUID,
+        conversation_id: Optional[UUID],
+        api_key: Optional[str],
+        status_cb: Optional[Callable[[str], None]] = None,
+    ) -> list[Message]:
+        # NOTE: SQLModel sessions are not thread-safe; callers can use this via asyncio.to_thread().
+        with Session(engine) as session:
+            bot = get_bot(session, bot_id)
+            return _build_history_budgeted(
+                session=session,
+                bot=bot,
+                conversation_id=conversation_id,
+                api_key=api_key,
+                status_cb=status_cb,
+            )
+
+    async def _build_history_budgeted_async(
+        *,
+        bot_id: UUID,
+        conversation_id: Optional[UUID],
+        api_key: Optional[str],
+        status_cb: Optional[Callable[[str], None]] = None,
+    ) -> list[Message]:
+        return await asyncio.to_thread(
+            _build_history_budgeted_threadsafe,
+            bot_id=bot_id,
+            conversation_id=conversation_id,
+            api_key=api_key,
+            status_cb=status_cb,
+        )
+
     def _get_conversation_meta(session: Session, *, conversation_id: UUID) -> dict:
         conv = get_conversation(session, conversation_id)
         meta = safe_json_loads(conv.metadata_json or "{}") or {}
@@ -1622,12 +1655,14 @@ def create_app() -> FastAPI:
                 t0 = time.time()
                 first = None
                 parts: list[str] = []
-                for d in llm.stream_text(messages=msgs):
+                async for d in _aiter_from_blocking_iterator(lambda: llm.stream_text(messages=msgs)):
+                    d = str(d or "")
                     if first is None:
                         first = time.time()
-                    parts.append(d)
-                    await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
-                    sent_greeting_delta = True
+                    if d:
+                        parts.append(d)
+                        await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+                        sent_greeting_delta = True
                 t1 = time.time()
                 greeting_text = "".join(parts).strip()
                 if first is not None:
@@ -2008,6 +2043,37 @@ def create_app() -> FastAPI:
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False))
 
+    _ASYNC_STREAM_DONE = object()
+
+    async def _aiter_from_blocking_iterator(iterator_fn):
+        """
+        Runs a blocking iterator in a background thread and yields items asynchronously.
+
+        This prevents the asyncio event loop from being blocked by network I/O (e.g. OpenAI SDK streaming).
+        """
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue = asyncio.Queue()
+
+        def _runner() -> None:
+            try:
+                for item in iterator_fn():
+                    loop.call_soon_threadsafe(q.put_nowait, item)
+            except BaseException as exc:
+                loop.call_soon_threadsafe(q.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(q.put_nowait, _ASYNC_STREAM_DONE)
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+
+        while True:
+            item = await q.get()
+            if item is _ASYNC_STREAM_DONE:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+
     async def _stream_llm_reply(
         *,
         ws: WebSocket,
@@ -2018,7 +2084,8 @@ def create_app() -> FastAPI:
         t0 = time.time()
         first: Optional[float] = None
         parts: list[str] = []
-        for d in llm.stream_text(messages=messages):
+        async for d in _aiter_from_blocking_iterator(lambda: llm.stream_text(messages=messages)):
+            d = str(d or "")
             if first is None:
                 first = time.time()
             if d:
@@ -2316,9 +2383,8 @@ def create_app() -> FastAPI:
                                         _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
                                     )
 
-                                history = _build_history_budgeted(
-                                    session=session,
-                                    bot=bot,
+                                history = await _build_history_budgeted_async(
+                                    bot_id=bot.id,
                                     conversation_id=conv_id,
                                     api_key=api_key,
                                     status_cb=_status_cb,
@@ -3603,9 +3669,8 @@ def create_app() -> FastAPI:
                                 await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                                 with Session(engine) as session:
                                     followup_bot = get_bot(session, bot_id)
-                                    followup_history = _build_history_budgeted(
-                                        session=session,
-                                        bot=followup_bot,
+                                    followup_history = await _build_history_budgeted_async(
+                                        bot_id=followup_bot.id,
                                         conversation_id=conv_id,
                                         api_key=api_key,
                                         status_cb=None,
@@ -3870,9 +3935,8 @@ def create_app() -> FastAPI:
                                     _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
                                 )
 
-                            history = _build_history_budgeted(
-                                session=session,
-                                bot=bot,
+                            history = await _build_history_budgeted_async(
+                                bot_id=bot.id,
                                 conversation_id=conv_id,
                                 api_key=api_key,
                                 status_cb=_status_cb,
@@ -4840,9 +4904,8 @@ def create_app() -> FastAPI:
                                 await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                                 with Session(engine) as session:
                                     bot2 = get_bot(session, bot_id)
-                                    followup_history = _build_history_budgeted(
-                                        session=session,
-                                        bot=bot2,
+                                    followup_history = await _build_history_budgeted_async(
+                                        bot_id=bot2.id,
                                         conversation_id=conv_id,
                                         api_key=api_key,
                                         status_cb=None,
@@ -5063,12 +5126,14 @@ def create_app() -> FastAPI:
             t0 = time.time()
             first = None
             parts: list[str] = []
-            for d in llm.stream_text(messages=msgs):
+            async for d in _aiter_from_blocking_iterator(lambda: llm.stream_text(messages=msgs)):
+                d = str(d or "")
                 if first is None:
                     first = time.time()
-                parts.append(d)
-                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
-                sent_delta = True
+                if d:
+                    parts.append(d)
+                    await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": d})
+                    sent_delta = True
             t1 = time.time()
             greeting_text = "".join(parts).strip() or greeting_text
             if first is not None:
@@ -5258,9 +5323,8 @@ def create_app() -> FastAPI:
                                 _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
                             )
 
-                        history = _build_history_budgeted(
-                            session=session,
-                            bot=bot,
+                        history = await _build_history_budgeted_async(
+                            bot_id=bot.id,
                             conversation_id=conv_id,
                             api_key=api_key,
                             status_cb=_status_cb,
@@ -5274,7 +5338,9 @@ def create_app() -> FastAPI:
                         full_text_parts: list[str] = []
                         tool_calls: list[ToolCall] = []
 
-                        for ev in llm.stream_text_or_tool(messages=history, tools=tools_defs):
+                        async for ev in _aiter_from_blocking_iterator(
+                            lambda: llm.stream_text_or_tool(messages=history, tools=tools_defs)
+                        ):
                             if isinstance(ev, ToolCall):
                                 tool_calls.append(ev)
                                 continue
@@ -6192,9 +6258,8 @@ def create_app() -> FastAPI:
                                     final = candidate or final
 
                             if needs_followup_llm:
-                                followup_history = _build_history_budgeted(
-                                    session=session,
-                                    bot=bot,
+                                followup_history = await _build_history_budgeted_async(
+                                    bot_id=bot.id,
                                     conversation_id=conv_id,
                                     api_key=api_key,
                                     status_cb=None,
