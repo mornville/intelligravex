@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -430,6 +431,101 @@ def _write_json(path: Path, obj: Any) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _setup_ssh_from_auth(ws: Path, auth_json: str) -> None:
+    try:
+        auth_obj = json.loads((auth_json or "").strip() or "{}")
+    except Exception:
+        return
+    if not isinstance(auth_obj, dict):
+        return
+
+    key = str(auth_obj.get("ssh_private_key") or auth_obj.get("ssh_key") or auth_obj.get("ssh_private_key_pem") or "")
+    if not key:
+        key_path = str(auth_obj.get("ssh_private_key_path") or auth_obj.get("ssh_key_path") or "").strip()
+        if key_path:
+            try:
+                key = Path(key_path).read_text(encoding="utf-8")
+            except Exception:
+                key = ""
+    if not key:
+        key_b64 = str(auth_obj.get("ssh_private_key_b64") or auth_obj.get("ssh_private_key_base64") or "")
+        if key_b64:
+            try:
+                key = base64.b64decode(key_b64).decode("utf-8", errors="ignore")
+            except Exception:
+                key = ""
+    if not key.strip():
+        return
+
+    ssh_dir = ws / ".ssh"
+    ssh_dir.mkdir(parents=True, exist_ok=True)
+    key_name = str(auth_obj.get("ssh_key_filename") or "id_ed25519").strip() or "id_ed25519"
+    key_path = ssh_dir / key_name
+    _write_text(key_path, key.strip() + "\n")
+    try:
+        os.chmod(ssh_dir, 0o700)
+        os.chmod(key_path, 0o600)
+    except Exception:
+        pass
+
+    pub_key = str(auth_obj.get("ssh_public_key") or "")
+    if not pub_key:
+        pub_key_path = str(auth_obj.get("ssh_public_key_path") or "").strip()
+        if pub_key_path:
+            try:
+                pub_key = Path(pub_key_path).read_text(encoding="utf-8")
+            except Exception:
+                pub_key = ""
+    if pub_key.strip():
+        _write_text(ssh_dir / f"{key_name}.pub", pub_key.strip() + "\n")
+
+    known_hosts = str(auth_obj.get("ssh_known_hosts") or auth_obj.get("known_hosts") or "").strip()
+    if not known_hosts:
+        known_hosts_path = str(auth_obj.get("ssh_known_hosts_path") or "").strip()
+        if known_hosts_path:
+            try:
+                known_hosts = Path(known_hosts_path).read_text(encoding="utf-8").strip()
+            except Exception:
+                known_hosts = ""
+    if known_hosts:
+        _write_text(ssh_dir / "known_hosts", known_hosts + "\n")
+
+    passphrase = str(
+        auth_obj.get("ssh_key_passphrase")
+        or auth_obj.get("ssh_private_key_passphrase")
+        or auth_obj.get("ssh_passphrase")
+        or ""
+    )
+    passphrase = passphrase.strip()
+    if passphrase:
+        pass_path = ssh_dir / "passphrase"
+        _write_text(pass_path, passphrase)
+        askpass_path = ssh_dir / "askpass.sh"
+        _write_text(askpass_path, "#!/bin/sh\ncat /work/.ssh/passphrase\n")
+        try:
+            os.chmod(pass_path, 0o600)
+            os.chmod(askpass_path, 0o700)
+        except Exception:
+            pass
+
+    ssh_user = str(auth_obj.get("ssh_user") or auth_obj.get("git_ssh_user") or "git").strip() or "git"
+    ssh_host = str(auth_obj.get("ssh_host") or auth_obj.get("git_host") or "github.com").strip() or "github.com"
+    strict = str(auth_obj.get("ssh_strict_host_key_checking") or "").strip().lower()
+    if not strict:
+        strict = "yes" if known_hosts else "accept-new"
+
+    config = (
+        f"Host {ssh_host}\n"
+        f"  HostName {ssh_host}\n"
+        f"  User {ssh_user}\n"
+        f"  IdentityFile /work/.ssh/{key_name}\n"
+        "  IdentitiesOnly yes\n"
+        f"  StrictHostKeyChecking {strict}\n"
+        "  UserKnownHostsFile /work/.ssh/known_hosts\n"
+    )
+    _write_text(ssh_dir / "config", config)
+
+
 def _append_jsonl(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -497,6 +593,7 @@ def run_data_agent(
     except Exception:
         pass
     _write_text(auth_path, (auth_json or "{}").strip() or "{}")
+    _setup_ssh_from_auth(ws, auth_json or "{}")
     sys_prompt = (system_prompt or "").strip() or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
     _write_text(agents_path, sys_prompt + "\n")
     _write_json(ctx_path, conversation_context or {})
@@ -562,6 +659,17 @@ def run_data_agent(
     cmd.append(prompt)
     # Use a shell to avoid PATH issues in minimal images, but keep args safely quoted.
     cmd_str = " ".join(shlex.quote(x) for x in cmd)
+    env_prefix: list[str] = []
+    ssh_config = ws / ".ssh" / "config"
+    if ssh_config.exists():
+        env_prefix.append('GIT_SSH_COMMAND="ssh -F /work/.ssh/config"')
+    askpass = ws / ".ssh" / "askpass.sh"
+    if askpass.exists():
+        env_prefix.append("SSH_ASKPASS=/work/.ssh/askpass.sh")
+        env_prefix.append("SSH_ASKPASS_REQUIRE=force")
+        env_prefix.append("DISPLAY=1")
+    if env_prefix:
+        cmd_str = f"{' '.join(env_prefix)} {cmd_str}"
 
     logger.info(
         "Data Agent run: conv=%s container=%s session_id=%s timeout_s=%s",
