@@ -98,6 +98,7 @@ export default function ConversationsPage() {
                 <th>Bot</th>
                 <th>test</th>
                 <th style={{ textAlign: 'right' }}>Cost</th>
+                <th style={{ textAlign: 'right' }}>Resume</th>
               </tr>
             </thead>
             <tbody>
@@ -113,6 +114,11 @@ export default function ConversationsPage() {
                   <td>{c.test_flag ? 'true' : 'false'}</td>
                   <td className="mono" style={{ textAlign: 'right' }}>
                     {fmtUsd(c.cost_usd_est)}
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    <Link className="btn ghost" to={`/bots/${c.bot_id}?conversation_id=${c.id}`}>
+                      Continue
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -135,4 +141,3 @@ export default function ConversationsPage() {
     </div>
   )
 }
-

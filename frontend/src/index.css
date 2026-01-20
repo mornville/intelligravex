@@ -380,6 +380,40 @@ label {
   width: auto;
 }
 
+.authWrap {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+
+.authCard {
+  width: min(420px, 92vw);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(15, 18, 32, 0.95), rgba(12, 16, 28, 0.85));
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  padding: 20px;
+}
+
+.authTitle {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.authSubtitle {
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.authNote {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;

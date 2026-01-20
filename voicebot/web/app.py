@@ -592,6 +592,46 @@ def create_app() -> FastAPI:
         base = base.rstrip("/")
         return f"{base}/api/downloads/{token}"
 
+    basic_user = (settings.basic_auth_user or "").strip()
+    basic_pass = (settings.basic_auth_pass or "").strip()
+    basic_auth_enabled = bool(basic_user and basic_pass)
+
+    def _basic_auth_ok(auth_header: str) -> bool:
+        if not basic_auth_enabled:
+            return True
+        if not auth_header:
+            return False
+        if not auth_header.lower().startswith("basic "):
+            return False
+        token = auth_header.split(" ", 1)[1].strip()
+        try:
+            decoded = base64.b64decode(token).decode("utf-8")
+        except Exception:
+            return False
+        user, sep, pwd = decoded.partition(":")
+        if not sep:
+            return False
+        return secrets.compare_digest(user, basic_user) and secrets.compare_digest(pwd, basic_pass)
+
+    def _ws_auth_header(ws: WebSocket) -> str:
+        header = (ws.headers.get("authorization") or "").strip()
+        if header:
+            return header
+        token = (ws.query_params.get("auth") or "").strip()
+        if not token:
+            return ""
+        if token.lower().startswith("basic "):
+            return token
+        return f"Basic {token}"
+
+    @app.middleware("http")
+    async def _basic_auth_middleware(request: Request, call_next):  # type: ignore[override]
+        if not basic_auth_enabled or request.method == "OPTIONS":
+            return await call_next(request)
+        if _basic_auth_ok(request.headers.get("authorization", "")):
+            return await call_next(request)
+        return Response(status_code=401, headers={"WWW-Authenticate": "Basic"})
+
     cors_raw = (os.environ.get("VOICEBOT_CORS_ORIGINS") or "").strip()
     cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()] if cors_raw else []
     cors_origin_regex: str | None = None
@@ -1080,6 +1120,27 @@ def create_app() -> FastAPI:
         return meta if isinstance(meta, dict) else {}
 
     def _get_openai_api_key_for_bot(session: Session, *, bot: Bot) -> str:
+        def _read_openai_key_from_env_file() -> str:
+            # Prefer python-dotenv if available; fall back to a minimal parser.
+            try:
+                from dotenv import dotenv_values
+            except Exception:
+                dotenv_values = None
+            if dotenv_values is not None:
+                try:
+                    v = dotenv_values(".env").get("OPENAI_API_KEY") or ""
+                    return str(v).strip()
+                except Exception:
+                    pass
+            try:
+                with open(".env", "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith("OPENAI_API_KEY="):
+                            return line.split("=", 1)[1].strip().strip('"').strip("'")
+            except Exception:
+                pass
+            return ""
+
         # Prefer the per-bot stored key, fall back to env.
         try:
             crypto = require_crypto()
@@ -1093,6 +1154,8 @@ def create_app() -> FastAPI:
                 key = ""
         if not key:
             key = os.environ.get("OPENAI_API_KEY") or ""
+        if not key:
+            key = _read_openai_key_from_env_file()
         return (key or "").strip()
 
     def _data_agent_meta(meta: dict) -> dict:
@@ -1628,11 +1691,7 @@ def create_app() -> FastAPI:
                 speak and (bot.tts_vendor or "xtts_local").strip().lower() == "openai_tts"
             )
             if needs_openai_key:
-                if bot.openai_key_id:
-                    crypto = require_crypto()
-                    api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-                else:
-                    api_key = os.environ.get("OPENAI_API_KEY")
+                api_key = _get_openai_api_key_for_bot(session, bot=bot)
                 if not api_key:
                     raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
@@ -2178,6 +2237,11 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/bots/{bot_id}/talk")
     async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[reportGeneralTypeIssues]
+        if not _basic_auth_ok(_ws_auth_header(ws)):
+            await ws.accept()
+            await _ws_send_json(ws, {"type": "error", "error": "Unauthorized"})
+            await ws.close(code=4401)
+            return
         await ws.accept()
         loop = asyncio.get_running_loop()
 
@@ -2365,11 +2429,7 @@ def create_app() -> FastAPI:
                         try:
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
-                                if bot.openai_key_id:
-                                    crypto = require_crypto()
-                                    api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-                                else:
-                                    api_key = os.environ.get("OPENAI_API_KEY")
+                                api_key = _get_openai_api_key_for_bot(session, bot=bot)
                                 if not api_key:
                                     raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
@@ -3874,11 +3934,7 @@ def create_app() -> FastAPI:
                         try:
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
-                                if bot.openai_key_id:
-                                    crypto = require_crypto()
-                                    api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-                                else:
-                                    api_key = os.environ.get("OPENAI_API_KEY")
+                                api_key = _get_openai_api_key_for_bot(session, bot=bot)
                                 if not api_key:
                                     await _ws_send_json(
                                         ws,
@@ -5761,6 +5817,11 @@ def create_app() -> FastAPI:
 
     @app.websocket("/public/v1/ws/bots/{bot_id}/chat")
     async def public_chat_ws(bot_id: UUID, ws: WebSocket) -> None:
+        if not _basic_auth_ok(_ws_auth_header(ws)):
+            await ws.accept()
+            await _ws_send_json(ws, {"type": "error", "error": "Unauthorized"})
+            await ws.close(code=4401)
+            return
         await ws.accept()
 
         key_secret = (ws.query_params.get("key") or "").strip()
@@ -5842,11 +5903,7 @@ def create_app() -> FastAPI:
                             )
                             api_key = ""
                             if need_llm:
-                                if bot.openai_key_id:
-                                    crypto = require_crypto()
-                                    api_key = decrypt_openai_key(session, crypto=crypto, bot=bot) or ""
-                                else:
-                                    api_key = os.environ.get("OPENAI_API_KEY") or ""
+                                api_key = _get_openai_api_key_for_bot(session, bot=bot)
                                 if not api_key:
                                     raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
                             text, metrics = await _public_send_greeting(
@@ -5878,11 +5935,7 @@ def create_app() -> FastAPI:
                             ws, {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)}
                         )
 
-                        if bot.openai_key_id:
-                            crypto = require_crypto()
-                            api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-                        else:
-                            api_key = os.environ.get("OPENAI_API_KEY")
+                        api_key = _get_openai_api_key_for_bot(session, bot=bot)
                         if not api_key:
                             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
@@ -7475,11 +7528,7 @@ def create_app() -> FastAPI:
         session: Session = Depends(get_session),
     ) -> StreamingResponse:
         bot = get_bot(session, bot_id)
-        if bot.openai_key_id:
-            crypto = require_crypto()
-            api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-        else:
-            api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = _get_openai_api_key_for_bot(session, bot=bot)
         if not api_key:
             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
@@ -7601,11 +7650,7 @@ def create_app() -> FastAPI:
         session: Session = Depends(get_session),
     ) -> StreamingResponse:
         bot = get_bot(session, bot_id)
-        if bot.openai_key_id:
-            crypto = require_crypto()
-            api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-        else:
-            api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = _get_openai_api_key_for_bot(session, bot=bot)
         if not api_key:
             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
@@ -7756,11 +7801,7 @@ def create_app() -> FastAPI:
         session: Session = Depends(get_session),
     ) -> dict:
         bot = get_bot(session, bot_id)
-        if bot.openai_key_id:
-            crypto = require_crypto()
-            api_key = decrypt_openai_key(session, crypto=crypto, bot=bot)
-        else:
-            api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = _get_openai_api_key_for_bot(session, bot=bot)
         if not api_key:
             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 

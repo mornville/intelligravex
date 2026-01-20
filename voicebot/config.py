@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # Absolute base URL used for download links returned by export_http_response.
     # Override via VOICEBOT_DOWNLOAD_BASE_URL (supports full URL or host[:port]).
     download_base_url: str = "127.0.0.1:8000"
+    basic_auth_user: Optional[str] = None
+    basic_auth_pass: Optional[str] = None
 
     # Audio I/O
     input_device: Optional[str] = None

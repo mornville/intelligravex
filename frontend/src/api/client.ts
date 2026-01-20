@@ -1,3 +1,5 @@
+import { authHeader } from '../auth'
+
 const DEFAULT_BACKEND = (() => {
   try {
     const proto = window.location.protocol || 'http:'
@@ -17,7 +19,7 @@ function withBase(path: string): string {
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(withBase(path), { method: 'GET' })
+  const res = await fetch(withBase(path), { method: 'GET', headers: { ...authHeader() } })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return (await res.json()) as T
 }
@@ -25,7 +27,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(withBase(path), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(await safeErr(res))
@@ -35,7 +37,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(withBase(path), {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(await safeErr(res))
@@ -43,7 +45,7 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  const res = await fetch(withBase(path), { method: 'DELETE' })
+  const res = await fetch(withBase(path), { method: 'DELETE', headers: { ...authHeader() } })
   if (!res.ok) throw new Error(await safeErr(res))
   return (await res.json()) as T
 }

@@ -42,9 +42,16 @@ export default function ConversationDetailPage() {
             bot: {conv?.bot_name || conv?.bot_id} • {conv?.test_flag ? 'test' : 'prod'}
           </div>
         </div>
-        <button className="btn" onClick={() => nav('/conversations')}>
-          Back
-        </button>
+        <div className="row gap">
+          {conv ? (
+            <button className="btn" onClick={() => nav(`/bots/${conv.bot_id}?conversation_id=${conv.id}`)}>
+              Continue
+            </button>
+          ) : null}
+          <button className="btn" onClick={() => nav('/conversations')}>
+            Back
+          </button>
+        </div>
       </div>
 
       {err ? <div className="alert">{err}</div> : null}
@@ -141,4 +148,3 @@ function MessageRow({ m }: { m: ConversationMessage }) {
     </div>
   )
 }
-

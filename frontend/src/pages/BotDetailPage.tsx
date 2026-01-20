@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import MicTest from '../components/MicTest'
-import type { ApiKey, Bot, IntegrationTool, Options, SystemTool } from '../types'
+import type { ApiKey, Bot, ConversationSummary, IntegrationTool, Options, SystemTool } from '../types'
 
 type TtsMeta = { speakers: string[]; languages: string[] }
 
@@ -18,6 +18,10 @@ function HelpTip({ children }: { children: ReactNode }) {
 export default function BotDetailPage() {
   const { botId } = useParams()
   const nav = useNavigate()
+  const [searchParams] = useSearchParams()
+  const [initialConversationId, setInitialConversationId] = useState<string | undefined>(
+    searchParams.get('conversation_id') || undefined,
+  )
   const [bot, setBot] = useState<Bot | null>(null)
   const [keys, setKeys] = useState<ApiKey[]>([])
   const [options, setOptions] = useState<Options | null>(null)
@@ -110,6 +114,30 @@ Rules:
   useEffect(() => {
     void reload()
   }, [botId])
+
+  useEffect(() => {
+    if (!botId) return
+    const fromQuery = searchParams.get('conversation_id')
+    if (fromQuery) {
+      setInitialConversationId(fromQuery)
+      return
+    }
+    let canceled = false
+    void (async () => {
+      try {
+        const c = await apiGet<{ items: ConversationSummary[]; total: number }>(
+          `/api/conversations?bot_id=${botId}&page=1&page_size=1`,
+        )
+        const latest = c.items?.[0]?.id
+        if (!canceled) setInitialConversationId(latest || undefined)
+      } catch {
+        if (!canceled) setInitialConversationId(undefined)
+      }
+    })()
+    return () => {
+      canceled = true
+    }
+  }, [botId, searchParams])
 
   useEffect(() => {
     if (!bot || !bot.xtts_model || bot.tts_vendor !== 'xtts_local') {
@@ -829,7 +857,7 @@ Rules:
           )}
         </section>
 
-        <MicTest botId={botId} />
+        <MicTest botId={botId} initialConversationId={initialConversationId} />
       </div>
 
       {showToolModal ? (

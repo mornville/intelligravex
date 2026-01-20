@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiGet, BACKEND_URL } from '../api/client'
+import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
@@ -23,6 +24,13 @@ type ChatItem = {
   timings?: Timings
 }
 
+function makeId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64)
   const out = new Uint8Array(bin.length)
@@ -36,7 +44,7 @@ function wsBase(): string {
   return `${proto}//${u.host}`
 }
 
-export default function MicTest({ botId }: { botId: string }) {
+export default function MicTest({ botId, initialConversationId }: { botId: string; initialConversationId?: string }) {
   const [stage, setStage] = useState<Stage>('disconnected')
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [speak, setSpeak] = useState(true)
@@ -99,7 +107,9 @@ export default function MicTest({ botId }: { botId: string }) {
   const canRecord = useMemo(() => speak && stage === 'idle' && !!conversationId, [speak, stage, conversationId])
 
   useEffect(() => {
-    const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk`)
+    const token = getBasicAuthToken()
+    const authQuery = token ? `?auth=${encodeURIComponent(token)}` : ''
+    const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk${authQuery}`)
     wsRef.current = ws
     playerRef.current = new WavQueuePlayer()
     setStage('idle')
@@ -151,7 +161,7 @@ export default function MicTest({ botId }: { botId: string }) {
       if (msg.type === 'asr') {
         const text = String(msg.text || '').trim()
         if (text) {
-          setItems((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', text }])
+        setItems((prev) => [...prev, { id: makeId(), role: 'user', text }])
         }
         return
       }
@@ -159,7 +169,7 @@ export default function MicTest({ botId }: { botId: string }) {
         const details = normalizeToolEventForDisplay(msg)
         setItems((prev) => [
           ...prev,
-          { id: crypto.randomUUID(), role: 'tool', text: `[tool_call] ${msg.name}`, details },
+          { id: makeId(), role: 'tool', text: `[tool_call] ${msg.name}`, details },
         ])
         return
       }
@@ -167,20 +177,20 @@ export default function MicTest({ botId }: { botId: string }) {
         const details = normalizeToolEventForDisplay(msg)
         setItems((prev) => [
           ...prev,
-          { id: crypto.randomUUID(), role: 'tool', text: `[tool_result] ${msg.name}`, details },
+          { id: makeId(), role: 'tool', text: `[tool_result] ${msg.name}`, details },
         ])
         return
       }
       if (msg.type === 'interim') {
         const text = String(msg.text || '').trim()
         if (!text) return
-        setItems((prev) => [...prev, { id: crypto.randomUUID(), role: 'assistant', text }])
+        setItems((prev) => [...prev, { id: makeId(), role: 'assistant', text }])
         return
       }
       if (msg.type === 'text_delta') {
         const delta = String(msg.delta || '')
         if (!delta) return
-        if (!draftAssistantIdRef.current) draftAssistantIdRef.current = crypto.randomUUID()
+        if (!draftAssistantIdRef.current) draftAssistantIdRef.current = makeId()
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
           const hasDraft = prev.some((it) => it.id === draftId)
@@ -211,7 +221,7 @@ export default function MicTest({ botId }: { botId: string }) {
         setItems((prev) => {
           const hasDraft = draftId ? prev.some((it) => it.id === draftId) : false
           if (doneText.trim() && (!draftId || !hasDraft)) {
-            const newId = crypto.randomUUID()
+            const newId = makeId()
             draftAssistantIdRef.current = newId
             return [...prev, { id: newId, role: 'assistant', text: doneText, timings: t }]
           }
@@ -239,6 +249,17 @@ export default function MicTest({ botId }: { botId: string }) {
   }, [botId])
 
   useEffect(() => {
+    if (!initialConversationId) return
+    if (conversationId) return
+    setErr(null)
+    setConversationId(initialConversationId)
+    setItems([])
+    hydratedConvIdRef.current = null
+    draftAssistantIdRef.current = null
+    void hydrateConversation(initialConversationId)
+  }, [initialConversationId, conversationId])
+
+  useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
@@ -255,7 +276,7 @@ export default function MicTest({ botId }: { botId: string }) {
     setItems([])
     hydratedConvIdRef.current = null
     draftAssistantIdRef.current = null
-    const reqId = crypto.randomUUID()
+    const reqId = makeId()
     activeReqIdRef.current = reqId
     wsRef.current.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag, debug }))
   }
@@ -275,8 +296,8 @@ export default function MicTest({ botId }: { botId: string }) {
     setErr(null)
     setChatText('')
     draftAssistantIdRef.current = null
-    setItems((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', text }])
-    const reqId = crypto.randomUUID()
+    setItems((prev) => [...prev, { id: makeId(), role: 'user', text }])
+    const reqId = makeId()
     activeReqIdRef.current = reqId
     wsRef.current.send(
       JSON.stringify({
@@ -303,7 +324,7 @@ export default function MicTest({ botId }: { botId: string }) {
     if (!canRecord) return
     setErr(null)
     draftAssistantIdRef.current = null
-    const reqId = crypto.randomUUID()
+    const reqId = makeId()
     activeReqIdRef.current = reqId
     wsRef.current.send(
       JSON.stringify({ type: 'start', req_id: reqId, conversation_id: conversationId, speak, test_flag: testFlag, debug }),
