@@ -117,6 +117,34 @@ def _summarize_codex_event(ev: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_codex_stream_text(ev: dict[str, Any]) -> str | None:
+    t = str(ev.get("type") or "").strip()
+    payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+    if t == "response_item":
+        if str(payload.get("type") or "").strip() == "message" and str(payload.get("role") or "").strip() == "assistant":
+            content = payload.get("content")
+            parts: list[str] = []
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "output_text":
+                        text = str(item.get("text") or "")
+                        if text:
+                            parts.append(text)
+            if parts:
+                s = _redact("".join(parts).strip())
+                if len(s) > 1000:
+                    s = s[:1000] + "…"
+                return s if s else None
+    if t == "event_msg":
+        pt = str(payload.get("type") or "").strip()
+        if pt in ("tool_call", "tool_result", "tool_error", "status"):
+            tool = _safe_str(payload.get("tool") or payload.get("name") or "", limit=80)
+            status = _safe_str(payload.get("status") or "", limit=60)
+            msg = " ".join(x for x in [pt, tool, status] if x)
+            return msg if msg else None
+    return None
+
+
 @dataclass(frozen=True)
 class _StreamRunResult:
     returncode: int
@@ -649,6 +677,7 @@ def run_data_agent(
     conversation_context: dict[str, Any],
     what_to_do: str,
     timeout_s: float = 600.0,
+    on_stream: Callable[[str], None] | None = None,
 ) -> DataAgentRunResult:
     """
     Runs (or resumes) a Codex CLI session inside the per-conversation container.
@@ -765,6 +794,13 @@ def run_data_agent(
 
     def _on_event(ev: dict[str, Any]) -> None:
         t = str(ev.get("type") or "")
+        if on_stream is not None:
+            try:
+                text = _extract_codex_stream_text(ev)
+                if text:
+                    on_stream(text)
+            except Exception:
+                pass
         if t == "thread.started" and not thread_id_box["thread_id"]:
             tid = str(ev.get("thread_id") or "")
             if tid:

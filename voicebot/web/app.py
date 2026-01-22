@@ -2907,6 +2907,22 @@ def create_app() -> FastAPI:
                                                         (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                                                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
                                                     )
+                                                    def _emit_tool_progress(text: str) -> None:
+                                                        t = (text or "").strip()
+                                                        if not t:
+                                                            return
+                                                        asyncio.run_coroutine_threadsafe(
+                                                            _ws_send_json(
+                                                                ws,
+                                                                {
+                                                                    "type": "tool_progress",
+                                                                    "req_id": req_id,
+                                                                    "name": tool_name,
+                                                                    "text": t,
+                                                                },
+                                                            ),
+                                                            loop,
+                                                        )
 
                                                     task = asyncio.create_task(
                                                         asyncio.to_thread(
@@ -2920,6 +2936,7 @@ def create_app() -> FastAPI:
                                                             system_prompt=sys_prompt,
                                                             conversation_context=ctx,
                                                             what_to_do=what_to_do,
+                                                            on_stream=_emit_tool_progress,
                                                         )
                                                     )
                                                     if wait_reply:
@@ -4497,6 +4514,22 @@ def create_app() -> FastAPI:
                                                         (getattr(bot2, "data_agent_system_prompt", "") or "").strip()
                                                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
                                                     )
+                                                    def _emit_tool_progress(text: str) -> None:
+                                                        t = (text or "").strip()
+                                                        if not t:
+                                                            return
+                                                        asyncio.run_coroutine_threadsafe(
+                                                            _ws_send_json(
+                                                                ws,
+                                                                {
+                                                                    "type": "tool_progress",
+                                                                    "req_id": req_id,
+                                                                    "name": tool_name,
+                                                                    "text": t,
+                                                                },
+                                                            ),
+                                                            loop,
+                                                        )
 
                                                     task = asyncio.create_task(
                                                         asyncio.to_thread(
@@ -4510,6 +4543,7 @@ def create_app() -> FastAPI:
                                                             system_prompt=sys_prompt,
                                                             conversation_context=ctx,
                                                             what_to_do=what_to_do,
+                                                            on_stream=_emit_tool_progress,
                                                         )
                                                     )
                                                     if wait_reply:
@@ -6343,6 +6377,14 @@ def create_app() -> FastAPI:
                                                     (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                                                     or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
                                                 )
+                                                def _emit_tool_progress(text: str) -> None:
+                                                    t = (text or "").strip()
+                                                    if not t:
+                                                        return
+                                                    asyncio.run_coroutine_threadsafe(
+                                                        _public_send_interim(ws, req_id=req_id, kind="tool", text=t),
+                                                        loop,
+                                                    )
 
                                                 task = asyncio.create_task(
                                                     asyncio.to_thread(
@@ -6356,6 +6398,7 @@ def create_app() -> FastAPI:
                                                         system_prompt=sys_prompt,
                                                         conversation_context=ctx,
                                                         what_to_do=what_to_do,
+                                                        on_stream=_emit_tool_progress,
                                                     )
                                                 )
                                                 if wait_reply:

@@ -71,6 +71,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
   const activeReqIdRef = useRef<string | null>(null)
   const recordingRef = useRef(false)
   const draftAssistantIdRef = useRef<string | null>(null)
+  const toolProgressIdRef = useRef<Record<string, string>>({})
   const timingsByReq = useRef<Record<string, Timings>>({})
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const hydratedConvIdRef = useRef<string | null>(null)
@@ -185,6 +186,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
         if (msg.stage === 'idle') {
           activeReqIdRef.current = null
           draftAssistantIdRef.current = null
+          toolProgressIdRef.current = {}
         }
         return
       }
@@ -225,6 +227,21 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           ...prev,
           { id: makeId(), role: 'tool', text: `[tool_result] ${msg.name}`, details },
         ])
+        return
+      }
+      if (msg.type === 'tool_progress') {
+        const text = String(msg.text || '').trim()
+        if (!text) return
+        const key = `${String(msg.req_id || '')}:${String(msg.name || 'tool')}`
+        if (!toolProgressIdRef.current[key]) toolProgressIdRef.current[key] = makeId()
+        const toolId = toolProgressIdRef.current[key]
+        setItems((prev) => {
+          const hasItem = prev.some((it) => it.id === toolId)
+          if (!hasItem) {
+            return [...prev, { id: toolId, role: 'tool', text: `[tool_progress] ${text}` }]
+          }
+          return prev.map((it) => (it.id === toolId ? { ...it, text: `${it.text}\n${text}` } : it))
+        })
         return
       }
       if (msg.type === 'interim') {
