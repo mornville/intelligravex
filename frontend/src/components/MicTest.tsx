@@ -527,7 +527,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           <div className="muted mono">container: {statusLabel}</div>
           {containerErr ? <div className="muted">{containerErr}</div> : null}
           <button className="btn iconBtn" onClick={() => void loadContainerStatus()} disabled={containerLoading} aria-label="Refresh">
-            {containerLoading ? '…' : '↻'}
+            {containerLoading ? '…' : '⟳'}
           </button>
           <button className="btn" onClick={() => setShowFilesModal(true)}>
             Files
@@ -564,7 +564,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
               </div>
               <div className="row gap">
                 <button className="btn iconBtn" onClick={() => void loadFiles()} disabled={filesLoading} aria-label="Refresh">
-                  {filesLoading ? '…' : '↻'}
+                  {filesLoading ? '…' : '⟳'}
                 </button>
                 <button className="btn" onClick={() => setShowFilesModal(false)}>
                   Close
@@ -736,7 +736,7 @@ function renderTree(
         <div className="treeMeta mono">{mtime}</div>
         <div className="treeAction">
           {!node.is_dir && href ? (
-            <a className="btn" href={href}>
+            <a className="btn linkBtn" href={href}>
               Download
             </a>
           ) : (

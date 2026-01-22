@@ -299,6 +299,14 @@ class DataAgentRunResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class ContainerCommandResult:
+    ok: bool
+    stdout: str
+    stderr: str
+    exit_code: int
+
+
 def _run(cmd: list[str], *, timeout_s: float = 300.0) -> subprocess.CompletedProcess[str]:
     logger.debug("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
     return subprocess.run(
@@ -445,6 +453,17 @@ def get_container_status(
         "container_id": cid_out or cid,
         "container_name": name_out or name,
     }
+
+
+def run_container_command(*, container_id: str, command: str, timeout_s: float = 60.0) -> ContainerCommandResult:
+    cmd = ["docker", "exec", "-i", container_id, "sh", "-lc", command]
+    p = _run(cmd, timeout_s=timeout_s)
+    return ContainerCommandResult(
+        ok=p.returncode == 0,
+        stdout=(p.stdout or "").strip(),
+        stderr=(p.stderr or "").strip(),
+        exit_code=int(p.returncode),
+    )
 
 
 def ensure_conversation_container(

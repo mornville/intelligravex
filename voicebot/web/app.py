@@ -89,6 +89,7 @@ from voicebot.data_agent.docker_runner import (
     default_workspace_dir_for_conversation,
     ensure_conversation_container,
     get_container_status,
+    run_container_command,
     run_data_agent,
 )
 
@@ -2485,6 +2486,64 @@ def create_app() -> FastAPI:
                             {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
                         )
                         asyncio.create_task(_kickoff_data_agent_container_if_enabled(bot_id=bot_id, conversation_id=conv_id))
+
+                        if user_text.lstrip().startswith("!"):
+                            cmd = user_text.lstrip()[1:].strip()
+                            if not cmd:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": "Empty command"})
+                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                                active_req_id = None
+                                continue
+                            await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
+                            try:
+                                with Session(engine) as session:
+                                    bot = get_bot(session, bot_id)
+                                    add_message_with_metrics(session, conversation_id=conv_id, role="user", content=user_text)
+                                    meta = _get_conversation_meta(session, conversation_id=conv_id)
+                                    da = _data_agent_meta(meta)
+                                    workspace_dir = (
+                                        str(da.get("workspace_dir") or "").strip()
+                                        or default_workspace_dir_for_conversation(conv_id)
+                                    )
+                                    container_id = str(da.get("container_id") or "").strip()
+                                    if not container_id:
+                                        api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                                        if not api_key:
+                                            raise RuntimeError(
+                                                "No OpenAI API key configured for this bot (needed to start Data Agent container)."
+                                            )
+                                        git_token = _get_git_token_plaintext(session, provider="github")
+                                        container_id = ensure_conversation_container(
+                                            conversation_id=conv_id,
+                                            workspace_dir=workspace_dir,
+                                            openai_api_key=api_key,
+                                            git_token=git_token,
+                                        )
+                                        merge_conversation_metadata(
+                                            session,
+                                            conversation_id=conv_id,
+                                            patch={
+                                                "data_agent.container_id": container_id,
+                                                "data_agent.workspace_dir": workspace_dir,
+                                            },
+                                        )
+                                res = await asyncio.to_thread(run_container_command, container_id=container_id, command=cmd)
+                                out = res.stdout
+                                if res.stderr:
+                                    out = (out + "\n" if out else "") + f"[stderr]\\n{res.stderr}"
+                                if not out:
+                                    out = f"(exit {res.exit_code})"
+                                if len(out) > 8000:
+                                    out = out[:8000] + "…"
+                                with Session(engine) as session:
+                                    add_message_with_metrics(session, conversation_id=conv_id, role="assistant", content=out)
+                                await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": out})
+                                await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": out})
+                            except Exception as exc:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
+                            await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                            active_req_id = None
+                            continue
 
                         try:
                             with Session(engine) as session:

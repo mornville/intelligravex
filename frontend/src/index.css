@@ -372,10 +372,30 @@ label {
 }
 
 .btn.iconBtn {
-  width: 36px;
-  height: 32px;
-  padding: 0;
+  min-width: auto;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 16px;
   font-weight: 700;
+  background: transparent;
+  border: none;
+}
+.btn.iconBtn:hover {
+  background: transparent;
+  border-color: transparent;
+  transform: none;
+}
+.btn.linkBtn {
+  background: transparent;
+  border: none;
+  padding: 2px 6px;
+  color: var(--link);
+}
+.btn.linkBtn:hover {
+  background: transparent;
+  border-color: transparent;
+  text-decoration: underline;
+  transform: none;
 }
 
 .check {
@@ -393,7 +413,7 @@ label {
 }
 .treeRow {
   display: grid;
-  grid-template-columns: 28px 1fr 90px 160px 110px;
+  grid-template-columns: 28px 1fr 90px 160px 70px;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
