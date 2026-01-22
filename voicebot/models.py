@@ -47,7 +47,7 @@ class Bot(SQLModel, table=True):
     whisper_device: str = "auto"
 
     # TTS
-    tts_vendor: str = "xtts_local"
+    tts_vendor: str = "openai_tts"
     tts_language: str = "en"
     xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
     speaker_wav: Optional[str] = None

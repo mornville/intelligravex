@@ -64,7 +64,7 @@ def _apply_light_migrations(engine) -> None:
 
         add_bot_col("start_message_mode", "TEXT NOT NULL DEFAULT 'llm'")
         add_bot_col("start_message_text", "TEXT NOT NULL DEFAULT ''")
-        add_bot_col("tts_vendor", "TEXT NOT NULL DEFAULT 'xtts_local'")
+        add_bot_col("tts_vendor", "TEXT NOT NULL DEFAULT 'openai_tts'")
         add_bot_col("openai_tts_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini-tts'")
         add_bot_col("openai_tts_voice", "TEXT NOT NULL DEFAULT 'alloy'")
         add_bot_col("openai_tts_speed", "REAL NOT NULL DEFAULT 1.0")
@@ -79,6 +79,15 @@ def _apply_light_migrations(engine) -> None:
         add_bot_col("data_agent_return_result_directly", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("data_agent_prewarm_on_start", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("disabled_tools_json", "TEXT NOT NULL DEFAULT '[]'")
+        try:
+            conn.execute(
+                text(
+                    "UPDATE bot SET tts_vendor='openai_tts' "
+                    "WHERE tts_vendor IS NULL OR tts_vendor='' OR tts_vendor='xtts_local'"
+                )
+            )
+        except Exception:
+            pass
         try:
             conn.execute(
                 text(

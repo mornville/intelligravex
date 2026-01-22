@@ -343,6 +343,82 @@ def _ensure_container_running(container_id: str) -> bool:
     return started.returncode == 0
 
 
+def get_container_status(
+    *,
+    conversation_id: Optional[UUID] = None,
+    container_id: str = "",
+    container_name: str = "",
+) -> dict:
+    name = (container_name or "").strip()
+    if not name and conversation_id is not None:
+        name = _container_name_for_conversation(conversation_id)
+
+    cid = (container_id or "").strip()
+    if not cid and name:
+        cid = _get_existing_container_id(name)
+
+    if not _docker_available():
+        return {
+            "docker_available": False,
+            "exists": False,
+            "running": False,
+            "status": "",
+            "container_id": cid,
+            "container_name": name,
+            "error": "Docker not available",
+        }
+
+    if not cid:
+        return {
+            "docker_available": True,
+            "exists": False,
+            "running": False,
+            "status": "",
+            "container_id": "",
+            "container_name": name,
+        }
+
+    p = _run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{.State.Status}}|{{.State.Running}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|{{.Name}}|{{.Id}}",
+            cid,
+        ],
+        timeout_s=10.0,
+    )
+    if p.returncode != 0:
+        return {
+            "docker_available": True,
+            "exists": False,
+            "running": False,
+            "status": "",
+            "container_id": cid,
+            "container_name": name,
+            "error": (p.stderr or p.stdout or "").strip(),
+        }
+
+    parts = (p.stdout or "").strip().split("|")
+    status = parts[0].strip() if len(parts) > 0 else ""
+    running = parts[1].strip().lower() == "true" if len(parts) > 1 else False
+    started_at = parts[2].strip() if len(parts) > 2 else ""
+    finished_at = parts[3].strip() if len(parts) > 3 else ""
+    name_out = parts[4].strip().lstrip("/") if len(parts) > 4 else ""
+    cid_out = parts[5].strip() if len(parts) > 5 else cid
+
+    return {
+        "docker_available": True,
+        "exists": True,
+        "running": running,
+        "status": status,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "container_id": cid_out or cid,
+        "container_name": name_out or name,
+    }
+
+
 def ensure_conversation_container(
     *,
     conversation_id: UUID,

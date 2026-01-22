@@ -37,7 +37,7 @@ from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
-from voicebot.models import Bot
+from voicebot.models import Bot, Conversation
 from voicebot.store import (
     create_bot,
     create_conversation,
@@ -86,6 +86,7 @@ from voicebot.data_agent.docker_runner import (
     DEFAULT_DATA_AGENT_SYSTEM_PROMPT,
     default_workspace_dir_for_conversation,
     ensure_conversation_container,
+    get_container_status,
     run_data_agent,
 )
 
@@ -476,7 +477,7 @@ class BotCreateRequest(BaseModel):
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
-    tts_vendor: str = "xtts_local"
+    tts_vendor: str = "openai_tts"
     whisper_model: str = "small"
     whisper_device: str = "auto"
     xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -787,6 +788,12 @@ def create_app() -> FastAPI:
         languages = list(getattr(tts, "languages", None) or [])
         return {"speakers": speakers, "languages": languages}
 
+    def _normalize_tts_vendor(v: Optional[str]) -> str:
+        raw = (v or "").strip().lower()
+        if raw in ("openai_tts", "openai"):
+            return "openai_tts"
+        return "openai_tts"
+
     @lru_cache(maxsize=8)
     def _get_tts_handle(
         model_name: str,
@@ -829,41 +836,25 @@ def create_app() -> FastAPI:
         """
         Returns a thread-safe (per-handle lock) wav synthesizer for the bot's configured TTS vendor.
         """
-        vendor = (getattr(bot, "tts_vendor", None) or "xtts_local").strip().lower()
+        vendor = _normalize_tts_vendor(getattr(bot, "tts_vendor", None))
+        if vendor != "openai_tts":
+            raise RuntimeError("Local TTS is disabled. Set tts_vendor=openai_tts.")
+        if not api_key:
+            raise RuntimeError("No OpenAI API key configured for OpenAI TTS.")
+        model = (getattr(bot, "openai_tts_model", None) or "gpt-4o-mini-tts").strip()
+        voice = (getattr(bot, "openai_tts_voice", None) or "alloy").strip()
+        speed_raw = getattr(bot, "openai_tts_speed", None)
+        try:
+            speed = float(speed_raw) if speed_raw is not None else 1.0
+        except Exception:
+            speed = 1.0
 
-        if vendor == "openai_tts":
-            if not api_key:
-                raise RuntimeError("No OpenAI API key configured for OpenAI TTS.")
-            model = (getattr(bot, "openai_tts_model", None) or "gpt-4o-mini-tts").strip()
-            voice = (getattr(bot, "openai_tts_voice", None) or "alloy").strip()
-            speed_raw = getattr(bot, "openai_tts_speed", None)
-            try:
-                speed = float(speed_raw) if speed_raw is not None else 1.0
-            except Exception:
-                speed = 1.0
-
-            tts, lock = _get_openai_tts_handle(api_key, model, voice, speed)
-
-            def synth(text: str) -> tuple[bytes, int]:
-                with lock:
-                    wav = tts.synthesize_wav_bytes(text)
-                return wav, OpenAITTS.DEFAULT_SAMPLE_RATE
-
-            return synth
-
-        # Default: local XTTS
-        tts_handle = _get_tts_handle(
-            bot.xtts_model,
-            bot.speaker_wav,
-            bot.speaker_id,
-            True,
-            bot.tts_split_sentences,
-            bot.tts_language,
-        )
+        tts, lock = _get_openai_tts_handle(api_key, model, voice, speed)
 
         def synth(text: str) -> tuple[bytes, int]:
-            a = _tts_synthesize(tts_handle, text)
-            return _wav_bytes(a.audio, a.sample_rate), a.sample_rate
+            with lock:
+                wav = tts.synthesize_wav_bytes(text)
+            return wav, OpenAITTS.DEFAULT_SAMPLE_RATE
 
         return synth
 
@@ -1687,9 +1678,8 @@ def create_app() -> FastAPI:
             sent_greeting_delta = False
             api_key: Optional[str] = None
 
-            needs_openai_key = not (bot.start_message_mode == "static" and greeting_text) or (
-                speak and (bot.tts_vendor or "xtts_local").strip().lower() == "openai_tts"
-            )
+            tts_vendor = _normalize_tts_vendor(getattr(bot, "tts_vendor", None))
+            needs_openai_key = not (bot.start_message_mode == "static" and greeting_text) or (speak and tts_vendor == "openai_tts")
             if needs_openai_key:
                 api_key = _get_openai_api_key_for_bot(session, bot=bot)
                 if not api_key:
@@ -2454,7 +2444,6 @@ def create_app() -> FastAPI:
                                 )
                                 tools_defs = _build_tools_for_bot(session, bot.id)
                                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                                tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
                                 if debug_mode:
                                     await _emit_llm_debug_payload(
                                         ws=ws,
@@ -2510,6 +2499,7 @@ def create_app() -> FastAPI:
                                 audio_q.put(None)
                                 return
                             try:
+                                tts_synth = _get_tts_synth_fn(bot, api_key)
                                 parts: list[str] = []
                                 while True:
                                     d = delta_q_tts.get()
@@ -4003,7 +3993,6 @@ def create_app() -> FastAPI:
                             tools_defs = _build_tools_for_bot(session, bot.id)
 
                             llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-                            tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
                             if debug_mode:
                                 await _emit_llm_debug_payload(
                                     ws=ws,
@@ -4058,6 +4047,7 @@ def create_app() -> FastAPI:
                                 audio_q.put(None)
                                 return
                             try:
+                                tts_synth = _get_tts_synth_fn(bot, api_key)
                                 parts: list[str] = []
                                 while True:
                                     d = delta_q_tts.get()
@@ -5472,33 +5462,57 @@ def create_app() -> FastAPI:
             return True
         return False
 
-    @app.get("/conversations/{conversation_id}/files")
-    def public_conversation_files(
+    def _resolve_data_agent_target(
+        session: Session,
+        *,
         conversation_id: UUID,
-        request: Request,
-        key: str = Query("", description="Client key secret (igx_...)"),
-        path: str = Query("", description="Directory path relative to the data-agent workspace"),
-        recursive: bool = Query(False, description="List files recursively"),
-        include_hidden: bool = Query(False, description="Include dotfiles (still blocks secrets like auth.json)"),
-        format: str = Query("html", description="html|json"),
-        session: Session = Depends(get_session),
-    ) -> Response:
-        ck, conv, bot = _require_public_conversation_access(
-            session=session, request=request, conversation_id=conversation_id, key=key
-        )
+        path: str,
+        include_hidden: bool,
+    ) -> tuple[Path, str, Path]:
         workspace_dir = _data_agent_workspace_dir_for_conversation(session, conversation_id=conversation_id)
         root = Path(workspace_dir).resolve()
         req_rel = (path or "").lstrip("/").strip()
         target = (root / req_rel).resolve()
         if not _is_path_within_root(root, target):
             raise HTTPException(status_code=400, detail="Invalid path")
-        if not target.exists():
-            raise HTTPException(status_code=404, detail="Path not found")
         if req_rel and _should_hide_data_agent_path(req_rel, include_hidden=bool(include_hidden)):
             raise HTTPException(status_code=403, detail="Path not allowed")
+        return root, req_rel, target
+
+    def _conversation_files_payload(
+        *,
+        session: Session,
+        conversation_id: UUID,
+        conv: Conversation,
+        bot: Bot,
+        path: str,
+        recursive: bool,
+        include_hidden: bool,
+        download_url_for: Callable[[str], Optional[str]],
+    ) -> dict:
+        root, req_rel, target = _resolve_data_agent_target(
+            session,
+            conversation_id=conversation_id,
+            path=path,
+            include_hidden=include_hidden,
+        )
+        max_items = 2000
+        if not target.exists():
+            if not req_rel:
+                return {
+                    "conversation_id": str(conversation_id),
+                    "bot_id": str(conv.bot_id),
+                    "bot_name": bot.name,
+                    "external_id": conv.external_id,
+                    "workspace_dir": str(root),
+                    "path": req_rel,
+                    "recursive": bool(recursive),
+                    "items": [],
+                    "max_items": max_items,
+                }
+            raise HTTPException(status_code=404, detail="Path not found")
 
         items: list[dict[str, Any]] = []
-        max_items = 2000
 
         def _add_item(p: Path) -> None:
             nonlocal items
@@ -5515,10 +5529,7 @@ def create_app() -> FastAPI:
             is_dir = p.is_dir()
             download_url = None
             if not is_dir:
-                download_url = (
-                    f"/conversations/{conversation_id}/files/download?"
-                    f"key={_url_quote((key or '').strip())}&path={_url_quote(rel)}"
-                )
+                download_url = download_url_for(rel)
             items.append(
                 {
                     "path": rel,
@@ -5545,7 +5556,7 @@ def create_app() -> FastAPI:
                         break
                     _add_item(p)
 
-        payload = {
+        return {
             "conversation_id": str(conversation_id),
             "bot_id": str(conv.bot_id),
             "bot_name": bot.name,
@@ -5554,7 +5565,39 @@ def create_app() -> FastAPI:
             "path": req_rel,
             "recursive": bool(recursive),
             "items": items,
+            "max_items": max_items,
         }
+
+    @app.get("/conversations/{conversation_id}/files")
+    def public_conversation_files(
+        conversation_id: UUID,
+        request: Request,
+        key: str = Query("", description="Client key secret (igx_...)"),
+        path: str = Query("", description="Directory path relative to the data-agent workspace"),
+        recursive: bool = Query(False, description="List files recursively"),
+        include_hidden: bool = Query(False, description="Include dotfiles (still blocks secrets like auth.json)"),
+        format: str = Query("html", description="html|json"),
+        session: Session = Depends(get_session),
+    ) -> Response:
+        ck, conv, bot = _require_public_conversation_access(
+            session=session, request=request, conversation_id=conversation_id, key=key
+        )
+        base_key = (key or "").strip()
+        payload = _conversation_files_payload(
+            session=session,
+            conversation_id=conversation_id,
+            conv=conv,
+            bot=bot,
+            path=path,
+            recursive=recursive,
+            include_hidden=include_hidden,
+            download_url_for=lambda rel: (
+                f"/conversations/{conversation_id}/files/download?key={_url_quote(base_key)}&path={_url_quote(rel)}"
+            ),
+        )
+        items = payload.get("items") or []
+        max_items = int(payload.get("max_items") or 0)
+        req_rel = str(payload.get("path") or "")
 
         fmt = (format or "").strip().lower()
         if fmt == "json":
@@ -5698,16 +5741,61 @@ def create_app() -> FastAPI:
         _ck, _conv, _bot = _require_public_conversation_access(
             session=session, request=request, conversation_id=conversation_id, key=key
         )
-        workspace_dir = _data_agent_workspace_dir_for_conversation(session, conversation_id=conversation_id)
-        root = Path(workspace_dir).resolve()
         req_rel = (path or "").lstrip("/").strip()
         if not req_rel:
             raise HTTPException(status_code=400, detail="Missing path")
-        if _should_hide_data_agent_path(req_rel, include_hidden=False):
-            raise HTTPException(status_code=403, detail="Path not allowed")
-        target = (root / req_rel).resolve()
-        if not _is_path_within_root(root, target):
-            raise HTTPException(status_code=400, detail="Invalid path")
+        root, req_rel, target = _resolve_data_agent_target(
+            session,
+            conversation_id=conversation_id,
+            path=req_rel,
+            include_hidden=False,
+        )
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        mt, _ = mimetypes.guess_type(str(target))
+        return FileResponse(
+            path=str(target),
+            media_type=mt or "application/octet-stream",
+            filename=target.name,
+        )
+
+    @app.get("/api/conversations/{conversation_id}/files")
+    def api_conversation_files(
+        conversation_id: UUID,
+        path: str = Query("", description="Directory path relative to the data-agent workspace"),
+        recursive: bool = Query(False, description="List files recursively"),
+        include_hidden: bool = Query(False, description="Include dotfiles (still blocks secrets like auth.json)"),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        conv = get_conversation(session, conversation_id)
+        bot = get_bot(session, conv.bot_id)
+        return _conversation_files_payload(
+            session=session,
+            conversation_id=conversation_id,
+            conv=conv,
+            bot=bot,
+            path=path,
+            recursive=recursive,
+            include_hidden=include_hidden,
+            download_url_for=lambda rel: f"/api/conversations/{conversation_id}/files/download?path={_url_quote(rel)}",
+        )
+
+    @app.get("/api/conversations/{conversation_id}/files/download")
+    def api_conversation_file_download(
+        conversation_id: UUID,
+        path: str = Query(..., description="File path relative to the data-agent workspace"),
+        session: Session = Depends(get_session),
+    ) -> FileResponse:
+        _ = get_conversation(session, conversation_id)
+        req_rel = (path or "").lstrip("/").strip()
+        if not req_rel:
+            raise HTTPException(status_code=400, detail="Missing path")
+        _root, _req_rel, target = _resolve_data_agent_target(
+            session,
+            conversation_id=conversation_id,
+            path=req_rel,
+            include_hidden=False,
+        )
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         mt, _ = mimetypes.guess_type(str(target))
@@ -7018,12 +7106,12 @@ def create_app() -> FastAPI:
             "whisper_models": ui_options.get("whisper_models", []),
             "whisper_devices": ui_options.get("whisper_devices", []),
             "languages": ui_options.get("languages", []),
-            "xtts_models": ui_options.get("xtts_models", []),
+            "xtts_models": [],
             "openai_tts_models": ui_options.get("openai_tts_models", []),
             "openai_tts_voices": ui_options.get("openai_tts_voices", []),
             "start_message_modes": ["llm", "static"],
             "asr_vendors": ["whisper_local"],
-            "tts_vendors": ["xtts_local", "openai_tts"],
+            "tts_vendors": ["openai_tts"],
             "http_methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
         }
 
@@ -7068,7 +7156,7 @@ def create_app() -> FastAPI:
             "system_prompt": bot.system_prompt,
             "language": bot.language,
             "tts_language": bot.tts_language,
-            "tts_vendor": bot.tts_vendor,
+            "tts_vendor": _normalize_tts_vendor(bot.tts_vendor),
             "whisper_model": bot.whisper_model,
             "whisper_device": bot.whisper_device,
             "xtts_model": bot.xtts_model,
@@ -7154,7 +7242,7 @@ def create_app() -> FastAPI:
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,
-            tts_vendor=(payload.tts_vendor or "xtts_local").strip() or "xtts_local",
+            tts_vendor=_normalize_tts_vendor(payload.tts_vendor),
             whisper_model=payload.whisper_model,
             whisper_device=payload.whisper_device,
             xtts_model=payload.xtts_model,
@@ -7184,14 +7272,9 @@ def create_app() -> FastAPI:
         for k, v in payload.model_dump(exclude_unset=True).items():
             if k in ("speaker_id", "speaker_wav"):
                 patch[k] = (v or "").strip() or None
-            elif k in (
-                "tts_vendor",
-                "openai_tts_model",
-                "openai_tts_voice",
-                "web_search_model",
-                "codex_model",
-                "summary_model",
-            ):
+            elif k == "tts_vendor":
+                patch[k] = _normalize_tts_vendor(v)
+            elif k in ("openai_tts_model", "openai_tts_voice", "web_search_model", "codex_model", "summary_model"):
                 patch[k] = (v or "").strip()
             elif k == "openai_tts_speed":
                 patch[k] = float(v) if v is not None else 1.0
@@ -7521,6 +7604,22 @@ def create_app() -> FastAPI:
             "messages": messages,
         }
 
+    @app.get("/api/conversations/{conversation_id}/data-agent")
+    def api_conversation_data_agent(conversation_id: UUID, session: Session = Depends(get_session)) -> dict:
+        _ = get_conversation(session, conversation_id)
+        meta = _get_conversation_meta(session, conversation_id=conversation_id)
+        da = _data_agent_meta(meta)
+        container_id = str(da.get("container_id") or "").strip()
+        session_id = str(da.get("session_id") or "").strip()
+        workspace_dir = str(da.get("workspace_dir") or "").strip() or default_workspace_dir_for_conversation(conversation_id)
+        status = get_container_status(conversation_id=conversation_id, container_id=container_id)
+        status["conversation_id"] = str(conversation_id)
+        status["workspace_dir"] = workspace_dir
+        status["session_id"] = session_id
+        if container_id and not status.get("container_id"):
+            status["container_id"] = container_id
+        return status
+
     @app.post("/api/bots/{bot_id}/chat/stream")
     def chat_stream(
         bot_id: UUID,
@@ -7533,7 +7632,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
 
         llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-        tts_synth = _get_tts_synth_fn(bot, api_key)
         def gen() -> Generator[bytes, None, None]:
             text = (payload.text or "").strip()
             speak = bool(payload.speak)
@@ -7568,6 +7666,7 @@ def create_app() -> FastAPI:
                     audio_q.put(None)
                     return
                 try:
+                    tts_synth = _get_tts_synth_fn(bot, api_key)
                     parts: list[str] = []
                     while True:
                         d = delta_q_tts.get()
@@ -7680,7 +7779,6 @@ def create_app() -> FastAPI:
         add_message(session, conversation_id=conv_id, role="user", content=user_text)
 
         llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-        tts_synth = _get_tts_synth_fn(bot, api_key)
 
         def gen() -> Generator[bytes, None, None]:
             yield _ndjson({"type": "conversation", "id": str(conv_id)})
@@ -7719,6 +7817,7 @@ def create_app() -> FastAPI:
                     audio_q.put(None)
                     return
                 try:
+                    tts_synth = _get_tts_synth_fn(bot, api_key)
                     parts: list[str] = []
                     while True:
                         d = delta_q_tts.get()

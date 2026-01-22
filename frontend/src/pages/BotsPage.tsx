@@ -25,7 +25,7 @@ export default function BotsPage() {
     system_prompt: defaultPrompt,
     language: 'en',
     tts_language: 'en',
-    tts_vendor: 'xtts_local',
+    tts_vendor: 'openai_tts',
     whisper_model: 'small',
     whisper_device: 'auto',
     xtts_model: 'tts_models/multilingual/multi-dataset/xtts_v2',
@@ -183,7 +183,7 @@ export default function BotsPage() {
             <div className="formRow">
               <label>TTS vendor</label>
               <select value={newBot.tts_vendor} onChange={(e) => setNewBot((p) => ({ ...p, tts_vendor: e.target.value }))}>
-                {(options?.tts_vendors?.length ? options.tts_vendors : ['xtts_local']).map((v) => (
+                {(options?.tts_vendors?.length ? options.tts_vendors : ['openai_tts']).map((v) => (
                   <option value={v} key={v}>
                     {v}
                   </option>

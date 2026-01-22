@@ -4,7 +4,7 @@ import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
-import type { ConversationDetail } from '../types'
+import type { ConversationDetail, DataAgentStatus, ConversationFiles } from '../types'
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
 
@@ -51,6 +51,15 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
   const [testFlag, setTestFlag] = useState(true)
   const [debug, setDebug] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [containerStatus, setContainerStatus] = useState<DataAgentStatus | null>(null)
+  const [containerErr, setContainerErr] = useState<string | null>(null)
+  const [containerLoading, setContainerLoading] = useState(false)
+  const [showFilesModal, setShowFilesModal] = useState(false)
+  const [files, setFiles] = useState<ConversationFiles | null>(null)
+  const [filesErr, setFilesErr] = useState<string | null>(null)
+  const [filesLoading, setFilesLoading] = useState(false)
+  const [filesRecursive, setFilesRecursive] = useState(true)
+  const [filesHidden, setFilesHidden] = useState(false)
   const [items, setItems] = useState<ChatItem[]>([])
   const [recording, setRecording] = useState(false)
   const [lastTimings, setLastTimings] = useState<Timings>({})
@@ -100,6 +109,43 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
       setItems(mapped)
     } catch (e: any) {
       setErr(String(e?.message || e))
+    }
+  }
+
+  async function loadContainerStatus(cid?: string) {
+    const id = cid || conversationId
+    if (!id) return
+    setContainerLoading(true)
+    setContainerErr(null)
+    try {
+      const d = await apiGet<DataAgentStatus>(`/api/conversations/${id}/data-agent`)
+      setContainerStatus(d)
+    } catch (e: any) {
+      setContainerErr(String(e?.message || e))
+    } finally {
+      setContainerLoading(false)
+    }
+  }
+
+  async function loadFiles(cid?: string, recursive?: boolean, includeHidden?: boolean) {
+    const id = cid || conversationId
+    if (!id) return
+    const rec = recursive ?? filesRecursive
+    const hidden = includeHidden ?? filesHidden
+    const params = new URLSearchParams()
+    if (rec) params.set('recursive', '1')
+    if (hidden) params.set('include_hidden', '1')
+    setFilesLoading(true)
+    setFilesErr(null)
+    try {
+      const d = await apiGet<ConversationFiles>(`/api/conversations/${id}/files?${params.toString()}`)
+      setFiles(d)
+      setFilesRecursive(rec)
+      setFilesHidden(hidden)
+    } catch (e: any) {
+      setFilesErr(String(e?.message || e))
+    } finally {
+      setFilesLoading(false)
     }
   }
 
@@ -260,6 +306,16 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
   }, [initialConversationId, conversationId])
 
   useEffect(() => {
+    if (!conversationId) return
+    void loadContainerStatus(conversationId)
+  }, [conversationId])
+
+  useEffect(() => {
+    if (!showFilesModal) return
+    void loadFiles()
+  }, [showFilesModal])
+
+  useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
@@ -367,11 +423,21 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
     </button>
   )
 
+  const statusLabel = !containerStatus
+    ? '—'
+    : !containerStatus.docker_available
+      ? 'docker unavailable'
+      : containerStatus.exists
+        ? containerStatus.running
+          ? 'running'
+          : containerStatus.status || 'stopped'
+        : 'not started'
+
   return (
     <section className="card">
       <div className="cardTitleRow">
         <div>
-          <div className="cardTitle">Test Conversation (Mic)</div>
+          <div className="cardTitle">Test Conve</div>
           <div className="muted">Assistant speaks first; record only when you press “Record”.</div>
         </div>
         <div className="pill">status: {stage}</div>
@@ -421,6 +487,18 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
         conversation: {conversationId || '(none)'} | latency: ASR {fmtMs(lastTimings.asr)} | LLM 1st {fmtMs(lastTimings.llm_ttfb)} |
         TTS 1st {fmtMs(lastTimings.tts_first_audio)} | total {fmtMs(lastTimings.total)}
       </div>
+      {conversationId ? (
+        <div className="row gap" style={{ marginTop: 6, alignItems: 'center' }}>
+          <div className="muted mono">container: {statusLabel}</div>
+          {containerErr ? <div className="muted">{containerErr}</div> : null}
+          <button className="btn" onClick={() => void loadContainerStatus()} disabled={containerLoading}>
+            {containerLoading ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button className="btn" onClick={() => setShowFilesModal(true)}>
+            Files
+          </button>
+        </div>
+      ) : null}
 
       <div className="chat" ref={scrollerRef}>
         {items.map((it) => (
@@ -441,6 +519,95 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           </div>
         ))}
       </div>
+      {showFilesModal ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true">
+          <div className="modalCard">
+            <div className="cardTitleRow">
+              <div>
+                <div className="cardTitle">Container files</div>
+                <div className="muted">Workspace files for this conversation.</div>
+              </div>
+              <div className="row gap">
+                <button className="btn" onClick={() => void loadFiles()} disabled={filesLoading}>
+                  {filesLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+                <button className="btn" onClick={() => setShowFilesModal(false)}>
+                  Close
+                </button>
+              </div>
+            </div>
+            {filesErr ? <div className="alert">{filesErr}</div> : null}
+            <div className="row gap" style={{ marginTop: 8, alignItems: 'center' }}>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={filesRecursive}
+                  onChange={(e) => void loadFiles(conversationId || undefined, e.target.checked, filesHidden)}
+                />{' '}
+                recursive
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={filesHidden}
+                  onChange={(e) => void loadFiles(conversationId || undefined, filesRecursive, e.target.checked)}
+                />{' '}
+                hidden
+              </label>
+              <div className="spacer" />
+              <div className="muted mono">{files?.items ? `${files.items.length} items` : '—'}</div>
+            </div>
+            {!files ? (
+              <div className="muted" style={{ marginTop: 10 }}>
+                Loading…
+              </div>
+            ) : (
+              <table className="table" style={{ marginTop: 12 }}>
+                <thead>
+                  <tr>
+                    <th>Path</th>
+                    <th>Size</th>
+                    <th>Modified</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {files.items.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="muted">
+                        No files found.
+                      </td>
+                    </tr>
+                  ) : (
+                    files.items.map((it) => {
+                      const href = it.download_url ? new URL(it.download_url, BACKEND_URL).toString() : ''
+                      const size = it.size_bytes === null ? '—' : fmtBytes(it.size_bytes)
+                      return (
+                        <tr key={`${it.path}_${it.name}`}>
+                          <td className="mono">{it.is_dir ? `${it.path}/` : it.path}</td>
+                          <td className="mono">{size}</td>
+                          <td className="mono">{new Date(it.mtime).toLocaleString()}</td>
+                          <td>
+                            {it.is_dir ? (
+                              <span className="muted">—</span>
+                            ) : it.download_url ? (
+                              <a className="btn" href={href}>
+                                Download
+                              </a>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -463,4 +630,16 @@ function normalizeToolEventForDisplay(msg: any): any {
     }
   }
   return out
+}
+
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return i === 0 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`
 }

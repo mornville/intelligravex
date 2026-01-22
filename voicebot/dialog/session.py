@@ -31,7 +31,7 @@ class VoiceBotSession:
             language=settings.language,
         )
         self._llm = OpenAILLM(model=settings.openai_model, api_key=settings.openai_api_key)
-        tts_vendor = (settings.tts_vendor or "xtts_local").strip().lower()
+        tts_vendor = (settings.tts_vendor or "openai_tts").strip().lower()
         if tts_vendor == "openai_tts":
             self._tts = OpenAITTS(
                 api_key=settings.openai_api_key or os.environ.get("OPENAI_API_KEY"),

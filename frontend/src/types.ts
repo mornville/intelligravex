@@ -18,7 +18,7 @@ export type Bot = {
   system_prompt: string
   language: string
   tts_language: string
-  tts_vendor: 'xtts_local' | 'openai_tts' | string
+  tts_vendor: 'openai_tts' | string
   whisper_model: string
   whisper_device: string
   xtts_model: string
@@ -107,6 +107,42 @@ export type ConversationDetail = {
   conversation: ConversationSummary
   bot: Bot
   messages: ConversationMessage[]
+}
+
+export type DataAgentStatus = {
+  conversation_id: UUID
+  docker_available: boolean
+  exists: boolean
+  running: boolean
+  status?: string
+  container_id?: string
+  container_name?: string
+  started_at?: string
+  finished_at?: string
+  workspace_dir?: string
+  session_id?: string
+  error?: string
+}
+
+export type ConversationFileItem = {
+  path: string
+  name: string
+  is_dir: boolean
+  size_bytes: number | null
+  mtime: string
+  download_url?: string | null
+}
+
+export type ConversationFiles = {
+  conversation_id: UUID
+  bot_id: UUID
+  bot_name: string
+  external_id?: string | null
+  workspace_dir: string
+  path: string
+  recursive: boolean
+  items: ConversationFileItem[]
+  max_items?: number
 }
 
 export type Options = {

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     tts_split_sentences: bool = False
     tts_chunk_min_chars: int = 20
     tts_chunk_max_chars: int = 120
-    tts_vendor: str = "xtts_local"  # xtts_local | openai_tts
+    tts_vendor: str = "openai_tts"  # openai_tts
 
     # XTTS v2
     xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
