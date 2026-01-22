@@ -78,6 +78,7 @@ def _apply_light_migrations(engine) -> None:
         add_bot_col("data_agent_system_prompt", "TEXT NOT NULL DEFAULT ''")
         add_bot_col("data_agent_return_result_directly", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("data_agent_prewarm_on_start", "INTEGER NOT NULL DEFAULT 0")
+        add_bot_col("data_agent_prewarm_prompt", "TEXT NOT NULL DEFAULT ''")
         add_bot_col("disabled_tools_json", "TEXT NOT NULL DEFAULT '[]'")
         try:
             conn.execute(

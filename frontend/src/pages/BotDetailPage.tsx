@@ -84,7 +84,7 @@ Rules:
 `
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'tools'>('llm')
+  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'tools'>('llm')
 
   const speakerChoices = useMemo(() => {
     const s = ttsMeta?.speakers || []
@@ -379,6 +379,9 @@ Rules:
             <button className={activeTab === 'tts' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tts')}>
               TTS
             </button>
+            <button className={activeTab === 'agent' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('agent')}>
+              Data Agent
+            </button>
             <button className={activeTab === 'tools' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tools')}>
               Tools
             </button>
@@ -448,86 +451,6 @@ Rules:
                     />
                     <div className="muted">Keep the last N user turns verbatim; older turns are summarized.</div>
                   </div>
-                  <div className="formRow">
-                    <label>Enable Data Agent</label>
-                    <label className="row gap" style={{ justifyContent: 'flex-start' }}>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(bot.enable_data_agent)}
-                        onChange={(e) => void save({ enable_data_agent: e.target.checked })}
-                      />
-                      <span className="muted">Enable additional data-agent behaviors (configured later).</span>
-                    </label>
-                  </div>
-                  {bot.enable_data_agent ? (
-                    <>
-                      <div className="formRow">
-                        <label>Prewarm Data Agent on conversation start</label>
-                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(bot.data_agent_prewarm_on_start)}
-                            onChange={(e) => void save({ data_agent_prewarm_on_start: e.target.checked })}
-                          />
-                          <span className="muted">Starts the container + initializes a Codex session in the background.</span>
-                        </label>
-                      </div>
-                      <div className="formRow">
-                        <label>Return Data Agent result directly</label>
-                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(bot.data_agent_return_result_directly)}
-                            onChange={(e) => void save({ data_agent_return_result_directly: e.target.checked })}
-                          />
-                          <span className="muted">Skip LLM rewrite; show Data Agent result_text as-is.</span>
-                        </label>
-                      </div>
-                      <div className="formRow">
-                        <label>Data Agent API spec</label>
-                        <textarea
-                          value={bot.data_agent_api_spec_text || ''}
-                          onChange={(e) => setBot((p) => (p ? { ...p, data_agent_api_spec_text: e.target.value } : p))}
-                          rows={8}
-                          placeholder="Paste API spec JSON here (saved as api_spec.json in the agent workspace). The Data Agent will use only the APIs listed here."
-                        />
-                        <div className="row">
-                          <button className="btn" onClick={() => void save({ data_agent_api_spec_text: bot.data_agent_api_spec_text || '' })}>
-                            Save API spec
-                          </button>
-                        </div>
-                      </div>
-                      <div className="formRow">
-                        <label>Data Agent API authorizations (JSON)</label>
-                        <textarea
-                          value={bot.data_agent_auth_json || '{}'}
-                          onChange={(e) => setBot((p) => (p ? { ...p, data_agent_auth_json: e.target.value } : p))}
-                          rows={6}
-                          placeholder='{"Authorization":"Bearer ..."}'
-                        />
-                        <div className="muted">Stored as plaintext (not masked). Put only what you’re comfortable storing.</div>
-                        <div className="row">
-                          <button className="btn" onClick={() => void save({ data_agent_auth_json: bot.data_agent_auth_json || '{}' })}>
-                            Save auth JSON
-                          </button>
-                        </div>
-                      </div>
-                      <div className="formRow">
-                        <label>Data Agent system prompt</label>
-                        <textarea
-                          value={bot.data_agent_system_prompt || ''}
-                          onChange={(e) => setBot((p) => (p ? { ...p, data_agent_system_prompt: e.target.value } : p))}
-                          rows={6}
-                          placeholder="Default: You are given a task (what_to_do), API spec, authorization tokens, and conversation context..."
-                        />
-                        <div className="row">
-                          <button className="btn" onClick={() => void save({ data_agent_system_prompt: bot.data_agent_system_prompt || '' })}>
-                            Save Data Agent prompt
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  ) : null}
                   <div className="formRow">
                     <label>OpenAI key</label>
                     <select value={bot.openai_key_id || ''} onChange={(e) => void save({ openai_key_id: e.target.value || null })}>
@@ -745,6 +668,108 @@ Rules:
                     />
                   </div>
                 </div>
+              ) : null}
+
+              {activeTab === 'agent' ? (
+                <>
+                  <div className="formRow">
+                    <label>Enable Data Agent</label>
+                    <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(bot.enable_data_agent)}
+                        onChange={(e) => void save({ enable_data_agent: e.target.checked })}
+                      />
+                      <span className="muted">Enable additional data-agent behaviors (configured later).</span>
+                    </label>
+                  </div>
+                  {bot.enable_data_agent ? (
+                    <>
+                      <div className="formRow">
+                        <label>Prewarm Data Agent on conversation start</label>
+                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(bot.data_agent_prewarm_on_start)}
+                            onChange={(e) => void save({ data_agent_prewarm_on_start: e.target.checked })}
+                          />
+                          <span className="muted">Starts the container + initializes a Codex session in the background.</span>
+                        </label>
+                      </div>
+                      <div className="formRow">
+                        <label>Prewarm prompt</label>
+                        <textarea
+                          value={bot.data_agent_prewarm_prompt || ''}
+                          onChange={(e) => setBot((p) => (p ? { ...p, data_agent_prewarm_prompt: e.target.value } : p))}
+                          rows={6}
+                          placeholder="INIT / PREWARM:&#10;- Open and read: api_spec.json, auth.json, conversation_context.json.&#10;- Do NOT call external APIs.&#10;- Output ok=true and result_text='READY'."
+                        />
+                        <div className="row">
+                          <button
+                            className="btn"
+                            onClick={() => void save({ data_agent_prewarm_prompt: bot.data_agent_prewarm_prompt || '' })}
+                          >
+                            Save prewarm prompt
+                          </button>
+                        </div>
+                      </div>
+                      <div className="formRow">
+                        <label>Return Data Agent result directly</label>
+                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(bot.data_agent_return_result_directly)}
+                            onChange={(e) => void save({ data_agent_return_result_directly: e.target.checked })}
+                          />
+                          <span className="muted">Skip LLM rewrite; show Data Agent result_text as-is.</span>
+                        </label>
+                      </div>
+                      <div className="formRow">
+                        <label>Data Agent API spec</label>
+                        <textarea
+                          value={bot.data_agent_api_spec_text || ''}
+                          onChange={(e) => setBot((p) => (p ? { ...p, data_agent_api_spec_text: e.target.value } : p))}
+                          rows={8}
+                          placeholder="Paste API spec JSON here (saved as api_spec.json in the agent workspace). The Data Agent will use only the APIs listed here."
+                        />
+                        <div className="row">
+                          <button className="btn" onClick={() => void save({ data_agent_api_spec_text: bot.data_agent_api_spec_text || '' })}>
+                            Save API spec
+                          </button>
+                        </div>
+                      </div>
+                      <div className="formRow">
+                        <label>Data Agent API authorizations (JSON)</label>
+                        <textarea
+                          value={bot.data_agent_auth_json || '{}'}
+                          onChange={(e) => setBot((p) => (p ? { ...p, data_agent_auth_json: e.target.value } : p))}
+                          rows={6}
+                          placeholder='{"Authorization":"Bearer ..."}'
+                        />
+                        <div className="muted">Stored as plaintext (not masked). Put only what you’re comfortable storing.</div>
+                        <div className="row">
+                          <button className="btn" onClick={() => void save({ data_agent_auth_json: bot.data_agent_auth_json || '{}' })}>
+                            Save auth JSON
+                          </button>
+                        </div>
+                      </div>
+                      <div className="formRow">
+                        <label>Data Agent system prompt</label>
+                        <textarea
+                          value={bot.data_agent_system_prompt || ''}
+                          onChange={(e) => setBot((p) => (p ? { ...p, data_agent_system_prompt: e.target.value } : p))}
+                          rows={6}
+                          placeholder="Default: You are given a task (what_to_do), API spec, authorization tokens, and conversation context..."
+                        />
+                        <div className="row">
+                          <button className="btn" onClick={() => void save({ data_agent_system_prompt: bot.data_agent_system_prompt || '' })}>
+                            Save Data Agent prompt
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
+                </>
               ) : null}
 
               {activeTab === 'tools' && systemTools.length ? (

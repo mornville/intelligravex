@@ -482,6 +482,7 @@ class BotCreateRequest(BaseModel):
     data_agent_system_prompt: str = ""
     data_agent_return_result_directly: bool = False
     data_agent_prewarm_on_start: bool = False
+    data_agent_prewarm_prompt: str = ""
     system_prompt: str
     language: str = "en"
     tts_language: str = "en"
@@ -515,6 +516,7 @@ class BotUpdateRequest(BaseModel):
     data_agent_system_prompt: Optional[str] = None
     data_agent_return_result_directly: Optional[bool] = None
     data_agent_prewarm_on_start: Optional[bool] = None
+    data_agent_prewarm_prompt: Optional[str] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     tts_language: Optional[str] = None
@@ -1384,12 +1386,14 @@ def create_app() -> FastAPI:
                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
                     )
 
-                init_task = (
-                    "INIT / PREWARM:\n"
-                    "- Open and read: api_spec.json, auth.json, conversation_context.json.\n"
-                    "- Do NOT call external APIs.\n"
-                    "- Output ok=true and result_text='READY'."
-                )
+                init_task = (getattr(bot, "data_agent_prewarm_prompt", "") or "").strip()
+                if not init_task:
+                    init_task = (
+                        "INIT / PREWARM:\n"
+                        "- Open and read: api_spec.json, auth.json, conversation_context.json.\n"
+                        "- Do NOT call external APIs.\n"
+                        "- Output ok=true and result_text='READY'."
+                    )
                 try:
                     res = await asyncio.to_thread(
                         run_data_agent,
@@ -7338,6 +7342,7 @@ def create_app() -> FastAPI:
             "data_agent_system_prompt": getattr(bot, "data_agent_system_prompt", "") or "",
             "data_agent_return_result_directly": bool(getattr(bot, "data_agent_return_result_directly", False)),
             "data_agent_prewarm_on_start": bool(getattr(bot, "data_agent_prewarm_on_start", False)),
+            "data_agent_prewarm_prompt": getattr(bot, "data_agent_prewarm_prompt", "") or "",
             "disabled_tools": sorted(disabled),
             "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
@@ -7426,6 +7431,7 @@ def create_app() -> FastAPI:
             data_agent_system_prompt=(payload.data_agent_system_prompt or ""),
             data_agent_return_result_directly=bool(getattr(payload, "data_agent_return_result_directly", False)),
             data_agent_prewarm_on_start=bool(getattr(payload, "data_agent_prewarm_on_start", False)),
+            data_agent_prewarm_prompt=(payload.data_agent_prewarm_prompt or ""),
             system_prompt=payload.system_prompt,
             language=payload.language,
             tts_language=payload.tts_language,
