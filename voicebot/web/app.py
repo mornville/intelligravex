@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from sqlmodel import Session
 
 from voicebot.config import Settings
-from voicebot.crypto import CryptoError, get_crypto_box
+from voicebot.crypto import CryptoError, build_hint, get_crypto_box
 from voicebot.db import init_db, make_engine
 from voicebot.asr.whisper_asr import WhisperASR
 from voicebot.llm.codex_http_agent import run_codex_http_agent_one_shot, run_codex_http_agent_one_shot_from_paths
@@ -69,6 +69,8 @@ from voicebot.store import (
     delete_integration_tool,
     get_integration_tool,
     get_integration_tool_by_name,
+    get_git_token,
+    upsert_git_token,
     verify_client_key,
 )
 from voicebot.tts.xtts import XTTSv2
@@ -459,6 +461,11 @@ class ClientKeyCreateRequest(BaseModel):
     allowed_origins: str = ""
     allowed_bot_ids: list[str] = []
     secret: Optional[str] = None
+
+
+class GitTokenRequest(BaseModel):
+    provider: str = "github"
+    token: str
 
 
 class BotCreateRequest(BaseModel):
@@ -1149,6 +1156,44 @@ def create_app() -> FastAPI:
             key = _read_openai_key_from_env_file()
         return (key or "").strip()
 
+    def _normalize_git_provider(provider: str) -> str:
+        p = (provider or "").strip().lower()
+        if p in ("github", "gh"):
+            return "github"
+        raise HTTPException(status_code=400, detail="Unsupported provider")
+
+    def _get_git_token_plaintext(session: Session, *, provider: str) -> str:
+        try:
+            crypto = require_crypto()
+        except Exception:
+            return ""
+        rec = get_git_token(session, provider=provider)
+        if not rec:
+            return ""
+        try:
+            return crypto.decrypt_str(rec.token_ciphertext)
+        except Exception:
+            return ""
+
+    async def _validate_github_token(token: str) -> tuple[bool, str | None]:
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(
+                    "https://api.github.com/user",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "Intelligravex-VoiceBot",
+                    },
+                )
+            if resp.status_code == 200:
+                return True, None
+            if resp.status_code in (401, 403):
+                return False, "Invalid GitHub token"
+            return False, f"GitHub validation error (status {resp.status_code})"
+        except Exception as exc:
+            return False, f"GitHub validation failed: {exc}"
+
     def _data_agent_meta(meta: dict) -> dict:
         da = meta.get("data_agent")
         return da if isinstance(da, dict) else {}
@@ -1169,12 +1214,14 @@ def create_app() -> FastAPI:
         api_key = _get_openai_api_key_for_bot(session, bot=bot)
         if not api_key:
             raise RuntimeError("No OpenAI API key configured for this bot (needed for Data Agent).")
+        git_token = _get_git_token_plaintext(session, provider="github")
 
         if not container_id:
             container_id = ensure_conversation_container(
                 conversation_id=conversation_id,
                 workspace_dir=workspace_dir,
                 openai_api_key=api_key,
+                git_token=git_token,
             )
             meta_current = merge_conversation_metadata(
                 session,
@@ -1242,6 +1289,7 @@ def create_app() -> FastAPI:
                             },
                         )
                         return
+                    git_token = _get_git_token_plaintext(session, provider="github")
 
                     workspace_dir = (
                         str(da.get("workspace_dir") or "").strip()
@@ -1261,6 +1309,7 @@ def create_app() -> FastAPI:
                         conversation_id=conversation_id,
                         workspace_dir=workspace_dir,
                         openai_api_key=api_key,
+                        git_token=git_token,
                     )
                     with Session(engine) as session:
                         merge_conversation_metadata(
@@ -2801,6 +2850,7 @@ def create_app() -> FastAPI:
                                                         raise RuntimeError(
                                                             "No OpenAI API key configured for this bot (needed for Data Agent)."
                                                         )
+                                                    git_token = _get_git_token_plaintext(session, provider="github")
 
                                                     # Ensure the container exists and is running even if metadata has a stale id.
                                                     ensured_container_id = await asyncio.to_thread(
@@ -2808,6 +2858,7 @@ def create_app() -> FastAPI:
                                                         conversation_id=conv_id,
                                                         workspace_dir=workspace_dir,
                                                         openai_api_key=api_key,
+                                                        git_token=git_token,
                                                     )
                                                     if ensured_container_id and ensured_container_id != container_id:
                                                         container_id = ensured_container_id
@@ -4388,6 +4439,7 @@ def create_app() -> FastAPI:
                                                         raise RuntimeError(
                                                             "No OpenAI API key configured for this bot (needed for Data Agent)."
                                                         )
+                                                    git_token = _get_git_token_plaintext(session, provider="github")
 
                                                     if not container_id:
                                                         container_id = await asyncio.to_thread(
@@ -4395,6 +4447,7 @@ def create_app() -> FastAPI:
                                                             conversation_id=conv_id,
                                                             workspace_dir=workspace_dir,
                                                             openai_api_key=api_key,
+                                                            git_token=git_token,
                                                         )
                                                         meta_current = merge_conversation_metadata(
                                                             session,
@@ -6231,11 +6284,13 @@ def create_app() -> FastAPI:
                                                         raise RuntimeError(
                                                             "No OpenAI API key configured for this bot (needed for Data Agent)."
                                                         )
+                                                    git_token = _get_git_token_plaintext(session, provider="github")
                                                     container_id = await asyncio.to_thread(
                                                         ensure_conversation_container,
                                                         conversation_id=conv_id,
                                                         workspace_dir=workspace_dir,
                                                         openai_api_key=api_key,
+                                                        git_token=git_token,
                                                     )
                                                     meta_current = merge_conversation_metadata(
                                                         session,
@@ -7498,6 +7553,55 @@ def create_app() -> FastAPI:
         _ = get_client_key(session, key_id)
         delete_client_key(session, key_id)
         return {"ok": True}
+
+    @app.get("/api/user/git-token")
+    def api_get_git_token(session: Session = Depends(get_session)) -> dict:
+        provider = "github"
+        rec = get_git_token(session, provider=provider)
+        if not rec:
+            return {"provider": provider, "configured": False}
+        return {
+            "provider": provider,
+            "configured": True,
+            "hint": rec.hint,
+            "created_at": rec.created_at.isoformat(),
+            "updated_at": rec.updated_at.isoformat(),
+        }
+
+    @app.post("/api/user/git-token")
+    async def api_set_git_token(payload: GitTokenRequest, session: Session = Depends(get_session)) -> dict:
+        provider = _normalize_git_provider(payload.provider)
+        token = (payload.token or "").strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="Token is required")
+        crypto = require_crypto()
+
+        validated = None
+        warning = None
+        if provider == "github":
+            ok, msg = await _validate_github_token(token)
+            if ok:
+                validated = True
+            else:
+                if msg == "Invalid GitHub token":
+                    raise HTTPException(status_code=400, detail=msg)
+                validated = False
+                warning = msg
+
+        encrypted = crypto.encrypt_str(token)
+        hint = build_hint(token)
+        rec = upsert_git_token(session, provider=provider, token_ciphertext=encrypted, hint=hint)
+        out = {
+            "provider": provider,
+            "hint": rec.hint,
+            "created_at": rec.created_at.isoformat(),
+            "updated_at": rec.updated_at.isoformat(),
+        }
+        if validated is not None:
+            out["validated"] = validated
+        if warning:
+            out["warning"] = warning
+        return out
 
     @app.get("/api/conversations")
     def api_list_conversations(

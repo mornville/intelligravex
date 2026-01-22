@@ -432,6 +432,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           ? 'running'
           : containerStatus.status || 'stopped'
         : 'not started'
+  const modalItems = (files?.items || []).filter((it) => it.path)
 
   return (
     <section className="card">
@@ -555,7 +556,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
                 hidden
               </label>
               <div className="spacer" />
-              <div className="muted mono">{files?.items ? `${files.items.length} items` : '—'}</div>
+              <div className="muted mono">{files?.items ? `${modalItems.length} items` : '—'}</div>
             </div>
             {!files ? (
               <div className="muted" style={{ marginTop: 10 }}>
@@ -572,14 +573,14 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
                   </tr>
                 </thead>
                 <tbody>
-                  {files.items.length === 0 ? (
+                  {modalItems.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="muted">
                         No files found.
                       </td>
                     </tr>
                   ) : (
-                    files.items.map((it) => {
+                    modalItems.map((it) => {
                       const href = it.download_url ? new URL(it.download_url, BACKEND_URL).toString() : ''
                       const size = it.size_bytes === null ? '—' : fmtBytes(it.size_bytes)
                       return (

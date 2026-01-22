@@ -165,3 +165,12 @@ class ClientKey(SQLModel, table=True):
     allowed_origins: str = Field(default="")  # comma-separated
     allowed_bot_ids_json: str = Field(default="[]")  # JSON list of UUID strings (empty = all)
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+
+class GitToken(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    provider: str = Field(index=True)
+    hint: str = Field(default="")
+    token_ciphertext: bytes
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)

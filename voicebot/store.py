@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from voicebot.crypto import CryptoBox, build_hint
-from voicebot.models import ApiKey, Bot, ClientKey, Conversation, ConversationMessage, IntegrationTool
+from voicebot.models import ApiKey, Bot, ClientKey, Conversation, ConversationMessage, IntegrationTool, GitToken
 
 
 class NotFoundError(RuntimeError):
@@ -147,6 +147,29 @@ def get_client_key(session: Session, key_id: UUID) -> ClientKey:
     if not k:
         raise NotFoundError("Client key not found")
     return k
+
+
+def get_git_token(session: Session, *, provider: str) -> GitToken | None:
+    stmt = select(GitToken).where(GitToken.provider == provider).limit(1)
+    return session.exec(stmt).first()
+
+
+def upsert_git_token(session: Session, *, provider: str, token_ciphertext: bytes, hint: str) -> GitToken:
+    existing = get_git_token(session, provider=provider)
+    now = dt.datetime.now(dt.timezone.utc)
+    if existing:
+        existing.token_ciphertext = token_ciphertext
+        existing.hint = hint
+        existing.updated_at = now
+        session.add(existing)
+        session.commit()
+        session.refresh(existing)
+        return existing
+    gt = GitToken(provider=provider, token_ciphertext=token_ciphertext, hint=hint, created_at=now, updated_at=now)
+    session.add(gt)
+    session.commit()
+    session.refresh(gt)
+    return gt
 
 
 def create_client_key(

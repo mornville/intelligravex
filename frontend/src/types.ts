@@ -55,6 +55,16 @@ export type ClientKey = {
   created_at: string
 }
 
+export type GitTokenInfo = {
+  provider: string
+  configured: boolean
+  hint?: string
+  created_at?: string
+  updated_at?: string
+  validated?: boolean
+  warning?: string
+}
+
 export type ApiKey = {
   id: UUID
   provider: string

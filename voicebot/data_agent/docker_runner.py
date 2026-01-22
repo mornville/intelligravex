@@ -424,6 +424,7 @@ def ensure_conversation_container(
     conversation_id: UUID,
     workspace_dir: str,
     openai_api_key: str,
+    git_token: str = "",
 ) -> str:
     ensure_image_built()
     name = _container_name_for_conversation(conversation_id)
@@ -445,19 +446,23 @@ def ensure_conversation_container(
         pass
     logger.info("Starting Data Agent container for conversation %s (workspace=%s)", conversation_id, workspace_dir)
 
-    p = _run(
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        name,
+        "-e",
+        f"CODEX_API_KEY={openai_api_key}",
+        "-e",
+        "HOME=/work",
+        "-e",
+        "PYTHONUNBUFFERED=1",
+    ]
+    if git_token:
+        cmd.extend(["-e", f"GIT_TOKEN={git_token}"])
+    cmd.extend(
         [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            name,
-            "-e",
-            f"CODEX_API_KEY={openai_api_key}",
-            "-e",
-            "HOME=/work",
-            "-e",
-            "PYTHONUNBUFFERED=1",
             "-v",
             f"{workspace_dir}:/work",
             "-w",
@@ -466,9 +471,9 @@ def ensure_conversation_container(
             "sh",
             "-lc",
             "mkdir -p /work/.codex && tail -f /dev/null",
-        ],
-        timeout_s=30.0,
+        ]
     )
+    p = _run(cmd, timeout_s=30.0)
     if p.returncode != 0:
         # If another concurrent kickoff created the container after we checked, docker run may fail
         # with a name conflict. In that case, reuse the existing container instead of failing.

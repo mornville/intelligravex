@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiDelete, apiGet, apiPost } from '../api/client'
-import type { ApiKey, ClientKey } from '../types'
+import type { ApiKey, ClientKey, GitTokenInfo } from '../types'
 import { fmtIso } from '../utils/format'
 
 export default function KeysPage() {
@@ -13,6 +13,9 @@ export default function KeysPage() {
   const [creatingClient, setCreatingClient] = useState(false)
   const [clientForm, setClientForm] = useState({ name: '', allowed_origins: '' })
   const [newClientSecret, setNewClientSecret] = useState<string | null>(null)
+  const [gitToken, setGitToken] = useState('')
+  const [gitStatus, setGitStatus] = useState<GitTokenInfo | null>(null)
+  const [savingGit, setSavingGit] = useState(false)
 
   async function reload() {
     setLoading(true)
@@ -31,8 +34,18 @@ export default function KeysPage() {
     }
   }
 
+  async function loadGitStatus() {
+    try {
+      const d = await apiGet<GitTokenInfo>('/api/user/git-token')
+      setGitStatus(d)
+    } catch (e: any) {
+      setGitStatus(null)
+    }
+  }
+
   useEffect(() => {
     void reload()
+    void loadGitStatus()
   }, [])
 
   async function onCreate() {
@@ -67,6 +80,21 @@ export default function KeysPage() {
       setErr(String(e?.message || e))
     } finally {
       setCreatingClient(false)
+    }
+  }
+
+  async function onSaveGitToken() {
+    if (!gitToken.trim()) return
+    setSavingGit(true)
+    setErr(null)
+    try {
+      const d = await apiPost<GitTokenInfo>('/api/user/git-token', { provider: 'github', token: gitToken.trim() })
+      setGitToken('')
+      setGitStatus({ ...d, configured: true })
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setSavingGit(false)
     }
   }
 
@@ -159,6 +187,62 @@ export default function KeysPage() {
                 ))}
               </tbody>
             </table>
+          )}
+        </section>
+      </div>
+
+      <div style={{ height: 16 }} />
+
+      <div className="grid2">
+        <section className="card">
+          <div className="cardTitle">GitHub token (fine‑grained)</div>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            Go to GitHub → Settings → Developer settings → Personal access tokens → Fine‑grained tokens.
+          </div>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            Set expiration (30–90 days), select only needed repositories, and grant read‑only Contents (and optional Pull requests).
+          </div>
+          <div className="formRow">
+            <label>Token</label>
+            <input
+              value={gitToken}
+              onChange={(e) => setGitToken(e.target.value)}
+              placeholder="github_pat_..."
+              type="password"
+              autoComplete="off"
+            />
+            <div className="muted">Stored encrypted at rest (requires `VOICEBOT_SECRET_KEY`).</div>
+          </div>
+          <div className="row">
+            <button className="btn primary" onClick={() => void onSaveGitToken()} disabled={savingGit || !gitToken.trim()}>
+              {savingGit ? 'Saving…' : 'Save GitHub token'}
+            </button>
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="cardTitle">GitHub token status</div>
+          {!gitStatus ? (
+            <div className="muted">Loading…</div>
+          ) : gitStatus.configured ? (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Hint</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>{gitStatus.provider}</td>
+                  <td className="mono">{gitStatus.hint || '—'}</td>
+                  <td>{gitStatus.updated_at ? fmtIso(gitStatus.updated_at) : '—'}</td>
+                </tr>
+              </tbody>
+            </table>
+          ) : (
+            <div className="muted">No GitHub token saved.</div>
           )}
         </section>
       </div>

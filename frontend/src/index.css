@@ -180,15 +180,6 @@ a {
   padding: 18px;
 }
 
-.footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px 20px;
-  border-top: 1px solid var(--border);
-  background: rgba(10, 12, 24, 0.5);
-}
 
 .pageHeader {
   display: flex;
