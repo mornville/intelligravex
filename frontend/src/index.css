@@ -371,6 +371,13 @@ label {
   background: transparent;
 }
 
+.btn.iconBtn {
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  font-weight: 700;
+}
+
 .check {
   display: inline-flex;
   align-items: center;
@@ -379,6 +386,43 @@ label {
 }
 .check input {
   width: auto;
+}
+
+.tree {
+  margin-top: 10px;
+}
+.treeRow {
+  display: grid;
+  grid-template-columns: 28px 1fr 90px 160px 110px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.treeRow:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.treeToggle {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+}
+.treeSpacer {
+  display: inline-block;
+  width: 22px;
+}
+.treeName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.treeMeta {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+}
+.treeAction {
+  text-align: right;
 }
 
 .authWrap {

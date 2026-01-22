@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { apiGet, BACKEND_URL } from '../api/client'
 import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
@@ -60,6 +60,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
   const [filesLoading, setFilesLoading] = useState(false)
   const [filesRecursive, setFilesRecursive] = useState(true)
   const [filesHidden, setFilesHidden] = useState(false)
+  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({})
   const [items, setItems] = useState<ChatItem[]>([])
   const [recording, setRecording] = useState(false)
   const [lastTimings, setLastTimings] = useState<Timings>({})
@@ -325,6 +326,11 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
   useEffect(() => {
     if (!conversationId) return
     void loadContainerStatus(conversationId)
+    const id = conversationId
+    const t = setInterval(() => {
+      void loadContainerStatus(id)
+    }, 5000)
+    return () => clearInterval(t)
   }, [conversationId])
 
   useEffect(() => {
@@ -450,6 +456,17 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           : containerStatus.status || 'stopped'
         : 'not started'
   const modalItems = (files?.items || []).filter((it) => it.path)
+  const tree = useMemo(() => buildTree(modalItems), [modalItems])
+
+  useEffect(() => {
+    if (!showFilesModal) return
+    if (Object.keys(expandedPaths).length) return
+    const next: Record<string, boolean> = {}
+    for (const child of tree.children) {
+      if (child.is_dir) next[child.path] = true
+    }
+    setExpandedPaths(next)
+  }, [showFilesModal, tree, expandedPaths])
 
   return (
     <section className="card">
@@ -509,8 +526,8 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
         <div className="row gap" style={{ marginTop: 6, alignItems: 'center' }}>
           <div className="muted mono">container: {statusLabel}</div>
           {containerErr ? <div className="muted">{containerErr}</div> : null}
-          <button className="btn" onClick={() => void loadContainerStatus()} disabled={containerLoading}>
-            {containerLoading ? 'Refreshing…' : 'Refresh'}
+          <button className="btn iconBtn" onClick={() => void loadContainerStatus()} disabled={containerLoading} aria-label="Refresh">
+            {containerLoading ? '…' : '↻'}
           </button>
           <button className="btn" onClick={() => setShowFilesModal(true)}>
             Files
@@ -546,8 +563,8 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
                 <div className="muted">Workspace files for this conversation.</div>
               </div>
               <div className="row gap">
-                <button className="btn" onClick={() => void loadFiles()} disabled={filesLoading}>
-                  {filesLoading ? 'Refreshing…' : 'Refresh'}
+                <button className="btn iconBtn" onClick={() => void loadFiles()} disabled={filesLoading} aria-label="Refresh">
+                  {filesLoading ? '…' : '↻'}
                 </button>
                 <button className="btn" onClick={() => setShowFilesModal(false)}>
                   Close
@@ -580,48 +597,13 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
                 Loading…
               </div>
             ) : (
-              <table className="table" style={{ marginTop: 12 }}>
-                <thead>
-                  <tr>
-                    <th>Path</th>
-                    <th>Size</th>
-                    <th>Modified</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {modalItems.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="muted">
-                        No files found.
-                      </td>
-                    </tr>
-                  ) : (
-                    modalItems.map((it) => {
-                      const href = it.download_url ? new URL(it.download_url, BACKEND_URL).toString() : ''
-                      const size = it.size_bytes === null ? '—' : fmtBytes(it.size_bytes)
-                      return (
-                        <tr key={`${it.path}_${it.name}`}>
-                          <td className="mono">{it.is_dir ? `${it.path}/` : it.path}</td>
-                          <td className="mono">{size}</td>
-                          <td className="mono">{new Date(it.mtime).toLocaleString()}</td>
-                          <td>
-                            {it.is_dir ? (
-                              <span className="muted">—</span>
-                            ) : it.download_url ? (
-                              <a className="btn" href={href}>
-                                Download
-                              </a>
-                            ) : (
-                              <span className="muted">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })
-                  )}
-                </tbody>
-              </table>
+              <div className="tree">
+                {modalItems.length === 0 ? (
+                  <div className="muted">No files found.</div>
+                ) : (
+                  renderTree(tree, 0, expandedPaths, setExpandedPaths)
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -660,4 +642,109 @@ function fmtBytes(n: number): string {
     i += 1
   }
   return i === 0 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`
+}
+
+type TreeNode = {
+  name: string
+  path: string
+  is_dir: boolean
+  children: TreeNode[]
+  size_bytes?: number | null
+  mtime?: string
+  download_url?: string | null
+}
+
+function buildTree(items: ConversationFiles['items']): TreeNode {
+  const root: TreeNode = { name: '', path: '', is_dir: true, children: [] }
+  const nodes = new Map<string, TreeNode>()
+  nodes.set('', root)
+
+  function ensureNode(path: string, name: string, isDir: boolean, parent: TreeNode): TreeNode {
+    const existing = nodes.get(path)
+    if (existing) {
+      if (isDir) existing.is_dir = true
+      return existing
+    }
+    const node: TreeNode = { name, path, is_dir: isDir, children: [] }
+    nodes.set(path, node)
+    parent.children.push(node)
+    return node
+  }
+
+  for (const item of items) {
+    const parts = item.path.split('/').filter(Boolean)
+    let cur = root
+    let curPath = ''
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i]
+      curPath = curPath ? `${curPath}/${part}` : part
+      const isLast = i === parts.length - 1
+      const node = ensureNode(curPath, part, isLast ? item.is_dir : true, cur)
+      if (isLast) {
+        node.is_dir = item.is_dir
+        node.size_bytes = item.size_bytes
+        node.mtime = item.mtime
+        node.download_url = item.download_url ?? null
+      }
+      cur = node
+    }
+  }
+
+  function sortTree(node: TreeNode): void {
+    node.children.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    node.children.forEach(sortTree)
+  }
+
+  sortTree(root)
+  return root
+}
+
+function renderTree(
+  node: TreeNode,
+  depth: number,
+  expanded: Record<string, boolean>,
+  setExpanded: Dispatch<SetStateAction<Record<string, boolean>>>,
+): React.ReactNode {
+  if (!node.children.length && node.path === '') return null
+  if (node.path === '') {
+    return node.children.map((child) => renderTree(child, depth, expanded, setExpanded))
+  }
+  const isOpen = !!expanded[node.path]
+  const indent = depth * 16
+  const href = node.download_url ? new URL(node.download_url, BACKEND_URL).toString() : ''
+  const size = node.is_dir ? '—' : node.size_bytes === null ? '—' : fmtBytes(node.size_bytes || 0)
+  const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '—'
+  return (
+    <div key={node.path}>
+      <div className="treeRow" style={{ paddingLeft: indent }}>
+        {node.is_dir ? (
+          <button
+            className="btn ghost treeToggle"
+            onClick={() => setExpanded((p) => ({ ...p, [node.path]: !isOpen }))}
+            aria-label={isOpen ? 'Collapse folder' : 'Expand folder'}
+          >
+            {isOpen ? 'v' : '>'}
+          </button>
+        ) : (
+          <span className="treeSpacer" />
+        )}
+        <div className="treeName mono">{node.is_dir ? `${node.name}/` : node.name}</div>
+        <div className="treeMeta mono">{size}</div>
+        <div className="treeMeta mono">{mtime}</div>
+        <div className="treeAction">
+          {!node.is_dir && href ? (
+            <a className="btn" href={href}>
+              Download
+            </a>
+          ) : (
+            <span className="muted">—</span>
+          )}
+        </div>
+      </div>
+      {node.is_dir && isOpen ? node.children.map((child) => renderTree(child, depth + 1, expanded, setExpanded)) : null}
+    </div>
+  )
 }
