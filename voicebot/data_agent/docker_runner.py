@@ -460,7 +460,7 @@ def ensure_conversation_container(
         "PYTHONUNBUFFERED=1",
     ]
     if git_token:
-        cmd.extend(["-e", f"GIT_TOKEN={git_token}"])
+        cmd.extend(["-e", f"GIT_TOKEN={git_token}", "-e", f"GITHUB_TOKEN={git_token}"])
     cmd.extend(
         [
             "-v",

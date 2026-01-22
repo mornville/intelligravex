@@ -1175,6 +1175,24 @@ def create_app() -> FastAPI:
         except Exception:
             return ""
 
+    def _merge_git_token_auth(auth_json: str, git_token: str) -> str:
+        if not git_token:
+            return (auth_json or "{}").strip() or "{}"
+        try:
+            obj = json.loads((auth_json or "").strip() or "{}")
+        except Exception:
+            obj = {}
+        if not isinstance(obj, dict):
+            obj = {}
+        if not obj.get("github_token"):
+            obj["github_token"] = git_token
+        if not obj.get("GITHUB_TOKEN"):
+            obj["GITHUB_TOKEN"] = git_token
+        try:
+            return json.dumps(obj, ensure_ascii=False)
+        except Exception:
+            return (auth_json or "{}").strip() or "{}"
+
     async def _validate_github_token(token: str) -> tuple[bool, str | None]:
         try:
             async with httpx.AsyncClient(timeout=6.0) as client:
@@ -1356,7 +1374,10 @@ def create_app() -> FastAPI:
                         meta=meta,
                     )
                     api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                    auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+                    auth_json = _merge_git_token_auth(
+                        getattr(bot, "data_agent_auth_json", "") or "{}",
+                        _get_git_token_plaintext(session, provider="github"),
+                    )
                     sys_prompt = (
                         (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
@@ -2878,7 +2899,10 @@ def create_app() -> FastAPI:
                                                         meta=meta_current,
                                                     )
                                                     api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                                                    auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                                    auth_json = _merge_git_token_auth(
+                                                        getattr(bot, "data_agent_auth_json", "") or "{}",
+                                                        _get_git_token_plaintext(session, provider="github"),
+                                                    )
                                                     sys_prompt = (
                                                         (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                                                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
@@ -4465,7 +4489,10 @@ def create_app() -> FastAPI:
                                                         meta=meta_current,
                                                     )
                                                     api_spec_text = getattr(bot2, "data_agent_api_spec_text", "") or ""
-                                                    auth_json = getattr(bot2, "data_agent_auth_json", "") or "{}"
+                                                    auth_json = _merge_git_token_auth(
+                                                        getattr(bot2, "data_agent_auth_json", "") or "{}",
+                                                        _get_git_token_plaintext(session, provider="github"),
+                                                    )
                                                     sys_prompt = (
                                                         (getattr(bot2, "data_agent_system_prompt", "") or "").strip()
                                                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
@@ -6308,7 +6335,10 @@ def create_app() -> FastAPI:
                                                     meta=meta_current,
                                                 )
                                                 api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                                                auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                                auth_json = _merge_git_token_auth(
+                                                    getattr(bot, "data_agent_auth_json", "") or "{}",
+                                                    _get_git_token_plaintext(session, provider="github"),
+                                                )
                                                 sys_prompt = (
                                                     (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                                                     or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
