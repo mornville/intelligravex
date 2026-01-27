@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { apiGet, BACKEND_URL } from '../api/client'
+import { apiGet, apiPost, BACKEND_URL } from '../api/client'
 import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
@@ -122,6 +122,20 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
     try {
       const d = await apiGet<DataAgentStatus>(`/api/conversations/${id}/data-agent`)
       setContainerStatus(d)
+    } catch (e: any) {
+      setContainerErr(String(e?.message || e))
+    } finally {
+      setContainerLoading(false)
+    }
+  }
+
+  async function cancelDataAgent() {
+    if (!conversationId) return
+    setContainerLoading(true)
+    setContainerErr(null)
+    try {
+      await apiPost(`/api/conversations/${conversationId}/data-agent/cancel`, {})
+      await loadContainerStatus(conversationId)
     } catch (e: any) {
       setContainerErr(String(e?.message || e))
     } finally {
@@ -531,6 +545,9 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           </button>
           <button className="btn" onClick={() => setShowFilesModal(true)}>
             Files
+          </button>
+          <button className="btn danger ghost" onClick={() => void cancelDataAgent()} disabled={containerLoading || !containerStatus?.running}>
+            Stop data agent
           </button>
         </div>
       ) : null}

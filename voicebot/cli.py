@@ -140,6 +140,7 @@ def web(
     Run the bot configuration UI + test API server.
     """
     configure_logging(level=logging.INFO)
+    logging.getLogger("voicebot.cli").info("web: starting uvicorn (host=%s port=%s reload=%s)", host, port, reload)
     try:
         import uvicorn
     except Exception as exc:

@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+ts() {
+  date "+%Y-%m-%d %H:%M:%S"
+}
+
+log_step() {
+  echo "[$(ts)] $*"
+}
+
 pick_python() {
   # Prefer newer CPython (better SSL + wheels). Fall back to python3 if needed.
   for bin in python3.13 python3.12 python3.11 python3.10 python3; do
@@ -15,6 +23,7 @@ pick_python() {
   return 1
 }
 
+log_step "Detecting Python"
 PYTHON_BIN="$(pick_python || true)"
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   echo "python3 not found. Install Python 3.10+ first."
@@ -31,7 +40,7 @@ if [[ "$PY_MAJOR" -lt 3 || "$PY_MINOR" -lt 10 ]]; then
   exit 1
 fi
 
-echo "Using ${PYTHON_BIN} (Python ${PY_VERSION})"
+log_step "Using ${PYTHON_BIN} (Python ${PY_VERSION})"
 
 ensure_venv() {
   local desired_mm="${PY_MAJOR}.${PY_MINOR}"
@@ -54,12 +63,19 @@ ensure_venv() {
   fi
 }
 
+venv_start="$(date +%s)"
+log_step "Ensuring .venv"
 ensure_venv
+log_step "Ensuring .venv done ($(( $(date +%s) - venv_start ))s)"
 
 # shellcheck disable=SC1091
+log_step "Activating .venv"
 source .venv/bin/activate
 
+log_step "Upgrading pip"
+pip_start="$(date +%s)"
 python -m pip install -U pip >/dev/null
+log_step "Upgrading pip done ($(( $(date +%s) - pip_start ))s)"
 
 cmd="run"
 if [[ "$#" -gt 0 ]]; then
@@ -71,6 +87,8 @@ if [[ "$#" -gt 0 ]]; then
 fi
 
 need_install=0
+log_step "Checking base dependencies"
+dep_start="$(date +%s)"
 python - <<'PY' >/dev/null 2>&1 || need_install=1
 import importlib
 mods = ("numpy","sounddevice","webrtcvad","openai","pydantic","pydantic_settings","rich","typer","whisper","TTS")
@@ -80,28 +98,34 @@ for m in mods:
     except Exception as exc:
         raise SystemExit(1) from exc
 PY
+log_step "Checking base dependencies done ($(( $(date +%s) - dep_start ))s)"
 
 if [[ "$need_install" -eq 0 && "$cmd" == "web" ]]; then
+  log_step "Checking web dependencies"
+  web_dep_start="$(date +%s)"
   python - <<'PY' >/dev/null 2>&1 || need_install=1
 import importlib
 for m in ("fastapi","uvicorn","sqlmodel","jinja2","cryptography"):
     importlib.import_module(m)
 PY
+  log_step "Checking web dependencies done ($(( $(date +%s) - web_dep_start ))s)"
 fi
 
 if [[ "$need_install" -eq 1 ]]; then
-  echo "Installing dependencies (this may take a while on first run)..."
+  log_step "Installing dependencies (this may take a while on first run)..."
+  install_start="$(date +%s)"
   python -m pip install -U pip setuptools wheel >/dev/null
   if [[ "$cmd" == "web" ]]; then
     python -m pip install -e ".[asr,tts,web]"
   else
     python -m pip install -e ".[asr,tts]"
   fi
+  log_step "Installing dependencies done ($(( $(date +%s) - install_start ))s)"
 fi
 
 if [[ ! -f ".env" ]]; then
   cp .env.example .env
-  echo "Created .env from .env.example"
+  log_step "Created .env from .env.example"
 fi
 
 has_help=0
@@ -139,6 +163,7 @@ PY
 }
 
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  log_step "Reading OPENAI_API_KEY from .env"
   OPENAI_API_KEY="$(read_openai_key_from_env_file)"
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     export OPENAI_API_KEY
@@ -150,13 +175,15 @@ if [[ "$has_help" -eq 0 && -z "${OPENAI_API_KEY:-}" ]]; then
 fi
 
 if [[ "$has_help" -eq 0 && "$cmd" == "run" ]]; then
-  echo "Running diagnostics..."
+  log_step "Running diagnostics..."
   python -m voicebot doctor || true
-  echo "Starting voice bot. Use Ctrl+C to stop."
+  log_step "Starting voice bot. Use Ctrl+C to stop."
 fi
 
 if [[ "$#" -eq 0 ]]; then
+  log_step "Launching: python -m voicebot run"
   exec python -m voicebot run
 else
+  log_step "Launching: python -m voicebot $*"
   exec python -m voicebot "$@"
 fi

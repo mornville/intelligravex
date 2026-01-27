@@ -120,6 +120,18 @@ def _summarize_codex_event(ev: dict[str, Any]) -> str | None:
 def _extract_codex_stream_text(ev: dict[str, Any]) -> str | None:
     t = str(ev.get("type") or "").strip()
     payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+    if t in ("item.started", "item.completed"):
+        item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+        if isinstance(item, dict) and str(item.get("type") or "").strip() == "command_execution":
+            cmd = _safe_str(item.get("command") or "", limit=160)
+            if not cmd:
+                return None
+            if t == "item.completed":
+                exit_code = item.get("exit_code")
+                if isinstance(exit_code, int):
+                    return f"cmd done (exit {exit_code}): {cmd}"
+                return f"cmd done: {cmd}"
+            return f"cmd start: {cmd}"
     if t == "response_item":
         if str(payload.get("type") or "").strip() == "message" and str(payload.get("role") or "").strip() == "assistant":
             content = payload.get("content")
@@ -472,6 +484,7 @@ def ensure_conversation_container(
     workspace_dir: str,
     openai_api_key: str,
     git_token: str = "",
+    auth_json: str = "",
 ) -> str:
     ensure_image_built()
     name = _container_name_for_conversation(conversation_id)
@@ -493,6 +506,15 @@ def ensure_conversation_container(
         pass
     logger.info("Starting Data Agent container for conversation %s (workspace=%s)", conversation_id, workspace_dir)
 
+    repo_url, repo_cache_path, repo_source_path = _extract_preferred_repo(auth_json or "")
+    host_cache_path = _normalize_host_path(repo_cache_path)
+    host_source_path = _normalize_host_path(repo_source_path)
+    if host_cache_path:
+        try:
+            Path(host_cache_path).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
     cmd = [
         "docker",
         "run",
@@ -508,6 +530,10 @@ def ensure_conversation_container(
     ]
     if git_token:
         cmd.extend(["-e", f"GIT_TOKEN={git_token}", "-e", f"GITHUB_TOKEN={git_token}"])
+    if host_cache_path:
+        cmd.extend(["-v", f"{host_cache_path}:/work/.repo_cache/preferred.git"])
+    if host_source_path:
+        cmd.extend(["-v", f"{host_source_path}:/work/.repo_source:ro"])
     cmd.extend(
         [
             "-v",
@@ -654,6 +680,143 @@ def _setup_ssh_from_auth(ws: Path, auth_json: str) -> None:
     _write_text(ssh_dir / "config", config)
 
 
+def _parse_auth_json(auth_json: str) -> dict[str, Any]:
+    try:
+        obj = json.loads((auth_json or "").strip() or "{}")
+    except Exception:
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    return obj
+
+
+def _extract_preferred_repo(auth_json: str) -> tuple[str, str, str]:
+    obj = _parse_auth_json(auth_json)
+    repo_url = str(
+        obj.get("preferred_repo_url")
+        or obj.get("git_preferred_repo_url")
+        or obj.get("git_repo_url")
+        or obj.get("preferred_repo")
+        or ""
+    ).strip()
+    cache_path = str(
+        obj.get("preferred_repo_cache_path")
+        or obj.get("git_repo_cache_path")
+        or obj.get("preferred_repo_path")
+        or ""
+    ).strip()
+    source_path = str(
+        obj.get("preferred_repo_source_path")
+        or obj.get("git_repo_source_path")
+        or obj.get("preferred_repo_working_path")
+        or ""
+    ).strip()
+    return repo_url, cache_path, source_path
+
+
+def _repo_name_from_url(url: str) -> str:
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return ""
+    if u.endswith(".git"):
+        u = u[: -len(".git")]
+    if ":" in u and "://" not in u:
+        u = u.split(":", 1)[1]
+    if "/" in u:
+        u = u.rsplit("/", 1)[-1]
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", u) or "repo"
+
+
+def _build_ssh_env_prefix(ws: Path) -> str:
+    env_prefix: list[str] = []
+    ssh_config = ws / ".ssh" / "config"
+    if ssh_config.exists():
+        env_prefix.append('GIT_SSH_COMMAND="ssh -F /work/.ssh/config"')
+    askpass = ws / ".ssh" / "askpass.sh"
+    if askpass.exists():
+        env_prefix.append("SSH_ASKPASS=/work/.ssh/askpass.sh")
+        env_prefix.append("SSH_ASKPASS_REQUIRE=force")
+        env_prefix.append("DISPLAY=1")
+    return " ".join(env_prefix)
+
+
+def _normalize_host_path(raw: str) -> str:
+    if not raw:
+        return ""
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return str(p)
+    try:
+        return str((Path.cwd() / p).resolve())
+    except Exception:
+        return str(p)
+
+
+def _ensure_preferred_repo(container_id: str, *, ws: Path, auth_json: str) -> None:
+    repo_url, cache_path, source_path = _extract_preferred_repo(auth_json)
+    if not repo_url or (not cache_path and not source_path):
+        return
+    repo_name = _repo_name_from_url(repo_url)
+    if not repo_name:
+        return
+    logger.info(
+        "Preferred repo setup: repo=%s cache=%s source=%s",
+        _safe_str(repo_url, limit=120),
+        _safe_str(cache_path, limit=120),
+        _safe_str(source_path, limit=120),
+    )
+    mirror_path = "/work/.repo_cache/preferred.git"
+    source_mount = "/work/.repo_source"
+    if source_path:
+        check = run_container_command(
+            container_id=container_id,
+            command=f"[ -d {source_mount}/.git ] || [ -f {source_mount}/HEAD ]",
+            timeout_s=5.0,
+        )
+        if not check.ok:
+            logger.warning(
+                "Preferred repo source path not mounted; reuse requires a new container. source=%s",
+                _safe_str(source_path, limit=120),
+            )
+            return
+    env_prefix = _build_ssh_env_prefix(ws)
+    # Ensure mirror exists/updated, then ensure working tree exists.
+    ref_expr = (
+        f"REF=''; "
+        f"if [ -d {source_mount}/.git ] || [ -f {source_mount}/HEAD ]; then REF='{source_mount}'; "
+        f"elif [ -d {mirror_path}/objects ]; then REF='{mirror_path}'; "
+        f"fi; "
+        f"REF_ARG=''; if [ -n \"$REF\" ]; then REF_ARG=\"--reference $REF\"; fi; "
+    )
+    mirror_setup = (
+        f"mkdir -p /work/.repo_cache && "
+        f"if [ -d {mirror_path}/objects ]; then "
+        f"  git -C {mirror_path} remote update --prune; "
+        f"elif [ -z \"$REF\" ]; then "
+        f"  git clone --mirror {shlex.quote(repo_url)} {mirror_path}; "
+        f"fi; "
+    )
+    clone_setup = (
+        f"if [ -d /work/{repo_name}/.git ]; then "
+        f"  git -C /work/{repo_name} fetch --all --prune; "
+        f"else "
+        f"  git clone $REF_ARG {shlex.quote(repo_url)} /work/{repo_name}; "
+        f"fi"
+    )
+    script = ref_expr + mirror_setup + clone_setup
+    if env_prefix:
+        script = f"{env_prefix} {script}"
+    res = run_container_command(container_id=container_id, command=script, timeout_s=600.0)
+    if not res.ok:
+        logger.warning(
+            "Preferred repo prefetch failed: repo=%s cache=%s exit=%s stderr=%s",
+            _safe_str(repo_url, limit=120),
+            _safe_str(cache_path, limit=120),
+            res.exit_code,
+            _safe_str(res.stderr, limit=240),
+        )
+
+
 def _append_jsonl(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -723,6 +886,7 @@ def run_data_agent(
         pass
     _write_text(auth_path, (auth_json or "{}").strip() or "{}")
     _setup_ssh_from_auth(ws, auth_json or "{}")
+    _ensure_preferred_repo(container_id, ws=ws, auth_json=auth_json or "{}")
     sys_prompt = (system_prompt or "").strip() or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
     _write_text(agents_path, sys_prompt + "\n")
     _write_json(ctx_path, conversation_context or {})
@@ -750,6 +914,17 @@ def run_data_agent(
     }
     _write_json(schema_path, schema)
 
+    repo_url, _repo_cache, _repo_source = _extract_preferred_repo(auth_json or "{}")
+    repo_name = _repo_name_from_url(repo_url) if repo_url else ""
+    repo_note = ""
+    if repo_url and repo_name:
+        repo_note = (
+            "\nPreferred repo cache:\n"
+            f"- Repo URL: {repo_url}\n"
+            f"- Workspace path: /work/{repo_name}\n"
+            "- If the repo already exists, avoid recloning; use fetch/checkout instead.\n"
+        )
+
     prompt = (
         "You are the Data Agent for this conversation.\n"
         f"- Task (what_to_do): {what_to_do}\n\n"
@@ -757,6 +932,7 @@ def run_data_agent(
         f"- API spec: {api_spec_path.name}\n"
         f"- Auth JSON: {auth_path.name}\n"
         f"- Conversation context: {ctx_path.name}\n\n"
+        f"{repo_note}"
         "Rules:\n"
         "- Use the API spec and auth JSON if you need to call external APIs.\n"
         "- Keep the response concise and directly answer the task.\n"
@@ -788,17 +964,9 @@ def run_data_agent(
     cmd.append(prompt)
     # Use a shell to avoid PATH issues in minimal images, but keep args safely quoted.
     cmd_str = " ".join(shlex.quote(x) for x in cmd)
-    env_prefix: list[str] = []
-    ssh_config = ws / ".ssh" / "config"
-    if ssh_config.exists():
-        env_prefix.append('GIT_SSH_COMMAND="ssh -F /work/.ssh/config"')
-    askpass = ws / ".ssh" / "askpass.sh"
-    if askpass.exists():
-        env_prefix.append("SSH_ASKPASS=/work/.ssh/askpass.sh")
-        env_prefix.append("SSH_ASKPASS_REQUIRE=force")
-        env_prefix.append("DISPLAY=1")
+    env_prefix = _build_ssh_env_prefix(ws)
     if env_prefix:
-        cmd_str = f"{' '.join(env_prefix)} {cmd_str}"
+        cmd_str = f"{env_prefix} {cmd_str}"
 
     logger.info(
         "Data Agent run: conv=%s container=%s session_id=%s timeout_s=%s",

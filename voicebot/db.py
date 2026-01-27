@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Optional
 
 from sqlalchemy import text
@@ -20,19 +22,30 @@ def make_engine(db_url: Optional[str] = None):
 
 
 def init_db(engine) -> None:
+    logger = logging.getLogger("voicebot.db")
+    start = time.monotonic()
+    logger.info("init_db: start")
     SQLModel.metadata.create_all(engine)
+    logger.info("init_db: create_all done (%.2fs)", time.monotonic() - start)
+    mig_start = time.monotonic()
     _apply_light_migrations(engine)
+    logger.info("init_db: migrations done (%.2fs)", time.monotonic() - mig_start)
+    logger.info("init_db: complete (%.2fs)", time.monotonic() - start)
 
 
 def _apply_light_migrations(engine) -> None:
     # Minimal, best-effort SQLite migrations for local dev (no Alembic).
+    logger = logging.getLogger("voicebot.db")
+    start = time.monotonic()
     url = str(getattr(engine, "url", ""))
     if not url.startswith("sqlite:"):
+        logger.info("init_db: _apply_light_migrations skipped (non-sqlite) (%.2fs)", time.monotonic() - start)
         return
     with engine.begin() as conn:
         try:
             rows = conn.execute(text("PRAGMA table_info(conversation)")).fetchall()
         except Exception:
+            logger.info("init_db: _apply_light_migrations skipped (no conversation table) (%.2fs)", time.monotonic() - start)
             return
         existing = {r[1] for r in rows}  # name at index=1
 
@@ -169,6 +182,7 @@ def _apply_light_migrations(engine) -> None:
 
         add_client_key_col("allowed_origins", "TEXT NOT NULL DEFAULT ''")
         add_client_key_col("allowed_bot_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+    logger.info("init_db: _apply_light_migrations complete (%.2fs)", time.monotonic() - start)
 
 
 def get_session(engine) -> Session:

@@ -29,6 +29,10 @@ export default function BotDetailPage() {
   const [tools, setTools] = useState<IntegrationTool[]>([])
   const [systemTools, setSystemTools] = useState<SystemTool[]>([])
   const [showToolModal, setShowToolModal] = useState(false)
+  const [gitSshKeyPath, setGitSshKeyPath] = useState('')
+  const [preferredRepoUrl, setPreferredRepoUrl] = useState('')
+  const [preferredRepoCachePath, setPreferredRepoCachePath] = useState('')
+  const [preferredRepoSourcePath, setPreferredRepoSourcePath] = useState('')
   const [toolForm, setToolForm] = useState({
     id: '',
     name: '',
@@ -91,6 +95,16 @@ Rules:
     return ['(auto)', ...s]
   }, [ttsMeta?.speakers])
 
+  function parseAuthJson(raw?: string): Record<string, any> | null {
+    try {
+      const obj = JSON.parse((raw || '').trim() || '{}')
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+      return obj
+    } catch {
+      return null
+    }
+  }
+
   async function reload() {
     if (!botId) return
     setErr(null)
@@ -114,6 +128,23 @@ Rules:
   useEffect(() => {
     void reload()
   }, [botId])
+
+  useEffect(() => {
+    const obj = parseAuthJson(bot?.data_agent_auth_json)
+    if (!obj) return
+    const keyPath = String(obj.ssh_private_key_path || obj.ssh_key_path || '')
+    setGitSshKeyPath(keyPath)
+    const repoUrl = String(obj.preferred_repo_url || obj.git_preferred_repo_url || obj.git_repo_url || obj.preferred_repo || '')
+    const repoCache = String(
+      obj.preferred_repo_cache_path || obj.git_repo_cache_path || obj.preferred_repo_path || '',
+    )
+    const repoSource = String(
+      obj.preferred_repo_source_path || obj.git_repo_source_path || obj.preferred_repo_working_path || '',
+    )
+    setPreferredRepoUrl(repoUrl)
+    setPreferredRepoCachePath(repoCache)
+    setPreferredRepoSourcePath(repoSource)
+  }, [bot?.data_agent_auth_json])
 
   useEffect(() => {
     if (!botId) return
@@ -166,6 +197,56 @@ Rules:
     } finally {
       setSaving(false)
     }
+  }
+
+  async function saveGitSshKeyPath() {
+    if (!bot) return
+    const base = parseAuthJson(bot.data_agent_auth_json) || {}
+    const trimmed = gitSshKeyPath.trim()
+    if (trimmed) {
+      base.ssh_private_key_path = trimmed
+      delete base.ssh_key_path
+      base.git_auth_method = 'ssh'
+    } else {
+      delete base.ssh_private_key_path
+      delete base.ssh_key_path
+      if (String(base.git_auth_method || '').toLowerCase() === 'ssh') {
+        delete base.git_auth_method
+      }
+    }
+    const nextJson = JSON.stringify(base, null, 2)
+    setBot({ ...bot, data_agent_auth_json: nextJson })
+    await save({ data_agent_auth_json: nextJson })
+  }
+
+  async function savePreferredRepoCache() {
+    if (!bot) return
+    const base = parseAuthJson(bot.data_agent_auth_json) || {}
+    const url = preferredRepoUrl.trim()
+    const cachePath = preferredRepoCachePath.trim()
+    const sourcePath = preferredRepoSourcePath.trim()
+    if (url || cachePath) {
+      if (url) base.preferred_repo_url = url
+      else delete base.preferred_repo_url
+      if (cachePath) base.preferred_repo_cache_path = cachePath
+      else delete base.preferred_repo_cache_path
+      if (sourcePath) base.preferred_repo_source_path = sourcePath
+      else delete base.preferred_repo_source_path
+    } else {
+      delete base.preferred_repo_url
+      delete base.preferred_repo_cache_path
+      delete base.preferred_repo_source_path
+      delete base.git_preferred_repo_url
+      delete base.git_repo_url
+      delete base.git_repo_cache_path
+      delete base.preferred_repo
+      delete base.preferred_repo_path
+      delete base.git_repo_source_path
+      delete base.preferred_repo_working_path
+    }
+    const nextJson = JSON.stringify(base, null, 2)
+    setBot({ ...bot, data_agent_auth_json: nextJson })
+    await save({ data_agent_auth_json: nextJson })
   }
 
   async function onDelete() {
@@ -750,6 +831,60 @@ Rules:
                         <div className="row">
                           <button className="btn" onClick={() => void save({ data_agent_auth_json: bot.data_agent_auth_json || '{}' })}>
                             Save auth JSON
+                          </button>
+                        </div>
+                      </div>
+                      <div className="formRow">
+                        <label>Git SSH key path (per bot)</label>
+                        <input
+                          value={gitSshKeyPath}
+                          onChange={(e) => setGitSshKeyPath(e.target.value)}
+                          placeholder="/Users/you/.ssh/id_ed25519"
+                        />
+                        <div className="muted">
+                          Stored as a path in the bot's auth JSON. The key file must exist on the server host. Clear to
+                          fall back to the saved GitHub token.
+                        </div>
+                        <div className="row">
+                          <button className="btn" onClick={() => void saveGitSshKeyPath()}>
+                            Save SSH key path
+                          </button>
+                        </div>
+                      </div>
+                      <div className="formRow">
+                        <label>Preferred repo (URL)</label>
+                        <input
+                          value={preferredRepoUrl}
+                          onChange={(e) => setPreferredRepoUrl(e.target.value)}
+                          placeholder="git@github.com:org/repo.git"
+                        />
+                        <div className="muted">Used to prime a local mirror for faster clones in each conversation.</div>
+                      </div>
+                      <div className="formRow">
+                        <label>Preferred repo cache path (host)</label>
+                        <input
+                          value={preferredRepoCachePath}
+                          onChange={(e) => setPreferredRepoCachePath(e.target.value)}
+                          placeholder="/Users/you/.igx_repo_cache/candorverse.git"
+                        />
+                        <div className="muted">
+                          This is a shared bare mirror on the host. Each conversation will clone from it instead of the
+                          network.
+                        </div>
+                      </div>
+                      <div className="formRow">
+                        <label>Preferred repo source path (host)</label>
+                        <input
+                          value={preferredRepoSourcePath}
+                          onChange={(e) => setPreferredRepoSourcePath(e.target.value)}
+                          placeholder="/Users/you/Desktop/candor/candorverse"
+                        />
+                        <div className="muted">
+                          Optional: a local working repo to use as a reference source for fast clones per conversation.
+                        </div>
+                        <div className="row">
+                          <button className="btn" onClick={() => void savePreferredRepoCache()}>
+                            Save repo preferences
                           </button>
                         </div>
                       </div>

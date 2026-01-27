@@ -579,12 +579,22 @@ class IntegrationToolUpdateRequest(BaseModel):
 
 
 def create_app() -> FastAPI:
-    settings = Settings()
-    engine = make_engine(settings.db_url)
-    init_db(engine)
-
-    app = FastAPI(title="Intelligravex VoiceBot Studio")
     logger = logging.getLogger("voicebot.web")
+    start = time.monotonic()
+    logger.info("create_app: start")
+    t0 = time.monotonic()
+    settings = Settings()
+    logger.info("create_app: settings loaded (%.2fs)", time.monotonic() - t0)
+    t0 = time.monotonic()
+    engine = make_engine(settings.db_url)
+    logger.info("create_app: db engine ready (%.2fs)", time.monotonic() - t0)
+    t0 = time.monotonic()
+    init_db(engine)
+    logger.info("create_app: init_db done (%.2fs)", time.monotonic() - t0)
+
+    t0 = time.monotonic()
+    app = FastAPI(title="Intelligravex VoiceBot Studio")
+    logger.info("create_app: FastAPI init done (%.2fs)", time.monotonic() - t0)
     data_agent_kickoff_locks: dict[UUID, asyncio.Lock] = {}
 
     download_base_url = (getattr(settings, "download_base_url", "") or "127.0.0.1:8000").strip()
@@ -1178,15 +1188,38 @@ def create_app() -> FastAPI:
         except Exception:
             return ""
 
-    def _merge_git_token_auth(auth_json: str, git_token: str) -> str:
-        if not git_token:
-            return (auth_json or "{}").strip() or "{}"
+    def _parse_auth_json(auth_json: str) -> dict[str, Any]:
         try:
             obj = json.loads((auth_json or "").strip() or "{}")
         except Exception:
-            obj = {}
+            return {}
         if not isinstance(obj, dict):
-            obj = {}
+            return {}
+        return obj
+
+    def _git_auth_mode(auth_json: str) -> str:
+        obj = _parse_auth_json(auth_json)
+        method = str(obj.get("git_auth_method") or "").strip().lower()
+        if method in ("ssh", "ssh-key", "ssh_key"):
+            return "ssh"
+        if method in ("token", "pat", "github_token", "github_pat"):
+            return "token"
+        for key in (
+            "ssh_private_key",
+            "ssh_private_key_path",
+            "ssh_private_key_b64",
+            "ssh_private_key_base64",
+            "ssh_key",
+            "ssh_key_path",
+        ):
+            if str(obj.get(key) or "").strip():
+                return "ssh"
+        return "token"
+
+    def _merge_git_token_auth(auth_json: str, git_token: str) -> str:
+        if not git_token or _git_auth_mode(auth_json) != "token":
+            return (auth_json or "{}").strip() or "{}"
+        obj = _parse_auth_json(auth_json)
         if not obj.get("github_token"):
             obj["github_token"] = git_token
         if not obj.get("GITHUB_TOKEN"):
@@ -1235,7 +1268,8 @@ def create_app() -> FastAPI:
         api_key = _get_openai_api_key_for_bot(session, bot=bot)
         if not api_key:
             raise RuntimeError("No OpenAI API key configured for this bot (needed for Data Agent).")
-        git_token = _get_git_token_plaintext(session, provider="github")
+        auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+        git_token = _get_git_token_plaintext(session, provider="github") if _git_auth_mode(auth_json) == "token" else ""
 
         if not container_id:
             container_id = ensure_conversation_container(
@@ -1243,6 +1277,7 @@ def create_app() -> FastAPI:
                 workspace_dir=workspace_dir,
                 openai_api_key=api_key,
                 git_token=git_token,
+                auth_json=auth_json,
             )
             meta_current = merge_conversation_metadata(
                 session,
@@ -1310,7 +1345,10 @@ def create_app() -> FastAPI:
                             },
                         )
                         return
-                    git_token = _get_git_token_plaintext(session, provider="github")
+                    auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
+                    git_token = (
+                        _get_git_token_plaintext(session, provider="github") if _git_auth_mode(auth_json) == "token" else ""
+                    )
 
                     workspace_dir = (
                         str(da.get("workspace_dir") or "").strip()
@@ -1331,6 +1369,7 @@ def create_app() -> FastAPI:
                         workspace_dir=workspace_dir,
                         openai_api_key=api_key,
                         git_token=git_token,
+                        auth_json=auth_json,
                     )
                     with Session(engine) as session:
                         merge_conversation_metadata(
@@ -1377,10 +1416,13 @@ def create_app() -> FastAPI:
                         meta=meta,
                     )
                     api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                    auth_json = _merge_git_token_auth(
-                        getattr(bot, "data_agent_auth_json", "") or "{}",
-                        _get_git_token_plaintext(session, provider="github"),
+                    auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
+                    git_token_current = (
+                        _get_git_token_plaintext(session, provider="github")
+                        if _git_auth_mode(auth_json_raw) == "token"
+                        else ""
                     )
+                    auth_json = _merge_git_token_auth(auth_json_raw, git_token_current)
                     sys_prompt = (
                         (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
@@ -2516,12 +2558,18 @@ def create_app() -> FastAPI:
                                             raise RuntimeError(
                                                 "No OpenAI API key configured for this bot (needed to start Data Agent container)."
                                             )
-                                        git_token = _get_git_token_plaintext(session, provider="github")
+                                        auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                        git_token = (
+                                            _get_git_token_plaintext(session, provider="github")
+                                            if _git_auth_mode(auth_json_raw) == "token"
+                                            else ""
+                                        )
                                         container_id = ensure_conversation_container(
                                             conversation_id=conv_id,
                                             workspace_dir=workspace_dir,
                                             openai_api_key=api_key,
                                             git_token=git_token,
+                                            auth_json=auth_json_raw,
                                         )
                                         merge_conversation_metadata(
                                             session,
@@ -2735,12 +2783,21 @@ def create_app() -> FastAPI:
                             followup_streamed = False
                             followup_persisted = False
                             tts_busy_until: float = 0.0
+                            last_wait_text: str | None = None
+                            last_wait_ts: float = 0.0
+                            wait_repeat_s: float = 45.0
 
                             async def _send_interim(text: str, *, kind: str) -> None:
-                                nonlocal tts_busy_until
+                                nonlocal tts_busy_until, last_wait_text, last_wait_ts
                                 t = (text or "").strip()
                                 if not t:
                                     return
+                                if kind == "wait":
+                                    now = time.time()
+                                    if last_wait_text == t and (now - last_wait_ts) < wait_repeat_s:
+                                        return
+                                    last_wait_text = t
+                                    last_wait_ts = now
                                 await _ws_send_json(
                                     ws,
                                     {"type": "interim", "req_id": req_id, "kind": kind, "text": t},
@@ -2934,7 +2991,12 @@ def create_app() -> FastAPI:
                                                         raise RuntimeError(
                                                             "No OpenAI API key configured for this bot (needed for Data Agent)."
                                                         )
-                                                    git_token = _get_git_token_plaintext(session, provider="github")
+                                                    auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                                    git_token = (
+                                                        _get_git_token_plaintext(session, provider="github")
+                                                        if _git_auth_mode(auth_json_raw) == "token"
+                                                        else ""
+                                                    )
 
                                                     # Ensure the container exists and is running even if metadata has a stale id.
                                                     ensured_container_id = await asyncio.to_thread(
@@ -2943,6 +3005,7 @@ def create_app() -> FastAPI:
                                                         workspace_dir=workspace_dir,
                                                         openai_api_key=api_key,
                                                         git_token=git_token,
+                                                        auth_json=auth_json_raw,
                                                     )
                                                     if ensured_container_id and ensured_container_id != container_id:
                                                         container_id = ensured_container_id
@@ -2962,10 +3025,7 @@ def create_app() -> FastAPI:
                                                         meta=meta_current,
                                                     )
                                                     api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                                                    auth_json = _merge_git_token_auth(
-                                                        getattr(bot, "data_agent_auth_json", "") or "{}",
-                                                        _get_git_token_plaintext(session, provider="github"),
-                                                    )
+                                                    auth_json = _merge_git_token_auth(auth_json_raw, git_token)
                                                     sys_prompt = (
                                                         (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                                                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
@@ -4346,12 +4406,21 @@ def create_app() -> FastAPI:
                             followup_streamed = False
                             followup_persisted = False
                             tts_busy_until: float = 0.0
+                            last_wait_text: str | None = None
+                            last_wait_ts: float = 0.0
+                            wait_repeat_s: float = 45.0
 
                             async def _send_interim(text: str, *, kind: str) -> None:
-                                nonlocal tts_busy_until
+                                nonlocal tts_busy_until, last_wait_text, last_wait_ts
                                 t = (text or "").strip()
                                 if not t:
                                     return
+                                if kind == "wait":
+                                    now = time.time()
+                                    if last_wait_text == t and (now - last_wait_ts) < wait_repeat_s:
+                                        return
+                                    last_wait_text = t
+                                    last_wait_ts = now
                                 await _ws_send_json(
                                     ws,
                                     {"type": "interim", "req_id": req_id, "kind": kind, "text": t},
@@ -4543,7 +4612,12 @@ def create_app() -> FastAPI:
                                                         raise RuntimeError(
                                                             "No OpenAI API key configured for this bot (needed for Data Agent)."
                                                         )
-                                                    git_token = _get_git_token_plaintext(session, provider="github")
+                                                    auth_json_raw = getattr(bot2, "data_agent_auth_json", "") or "{}"
+                                                    git_token = (
+                                                        _get_git_token_plaintext(session, provider="github")
+                                                        if _git_auth_mode(auth_json_raw) == "token"
+                                                        else ""
+                                                    )
 
                                                     if not container_id:
                                                         container_id = await asyncio.to_thread(
@@ -4552,6 +4626,7 @@ def create_app() -> FastAPI:
                                                             workspace_dir=workspace_dir,
                                                             openai_api_key=api_key,
                                                             git_token=git_token,
+                                                            auth_json=auth_json_raw,
                                                         )
                                                         meta_current = merge_conversation_metadata(
                                                             session,
@@ -4569,10 +4644,7 @@ def create_app() -> FastAPI:
                                                         meta=meta_current,
                                                     )
                                                     api_spec_text = getattr(bot2, "data_agent_api_spec_text", "") or ""
-                                                    auth_json = _merge_git_token_auth(
-                                                        getattr(bot2, "data_agent_auth_json", "") or "{}",
-                                                        _get_git_token_plaintext(session, provider="github"),
-                                                    )
+                                                    auth_json = _merge_git_token_auth(auth_json_raw, git_token)
                                                     sys_prompt = (
                                                         (getattr(bot2, "data_agent_system_prompt", "") or "").strip()
                                                         or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
@@ -5989,6 +6061,21 @@ def create_app() -> FastAPI:
         t = (text or "").strip()
         if not t:
             return
+        if kind == "wait":
+            now = time.time()
+            cache = getattr(_public_send_interim, "_wait_cache", None)
+            if cache is None:
+                cache = {}
+                setattr(_public_send_interim, "_wait_cache", cache)
+            key = f"{id(ws)}:{req_id}:{t}"
+            last_ts = cache.get(key)
+            if isinstance(last_ts, float) and (now - last_ts) < 45.0:
+                return
+            cache[key] = now
+            if len(cache) > 1024:
+                for k, ts in list(cache.items()):
+                    if not isinstance(ts, float) or (now - ts) > 300.0:
+                        cache.pop(k, None)
         await _ws_send_json(ws, {"type": "interim", "req_id": req_id, "kind": kind, "text": t})
 
     async def _public_send_greeting(
@@ -6401,6 +6488,12 @@ def create_app() -> FastAPI:
                                                 )
                                                 container_id = str(da.get("container_id") or "").strip()
                                                 session_id = str(da.get("session_id") or "").strip()
+                                                auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                                git_token = (
+                                                    _get_git_token_plaintext(session, provider="github")
+                                                    if _git_auth_mode(auth_json_raw) == "token"
+                                                    else ""
+                                                )
 
                                                 if not container_id:
                                                     api_key = _get_openai_api_key_for_bot(session, bot=bot)
@@ -6408,13 +6501,13 @@ def create_app() -> FastAPI:
                                                         raise RuntimeError(
                                                             "No OpenAI API key configured for this bot (needed for Data Agent)."
                                                         )
-                                                    git_token = _get_git_token_plaintext(session, provider="github")
                                                     container_id = await asyncio.to_thread(
                                                         ensure_conversation_container,
                                                         conversation_id=conv_id,
                                                         workspace_dir=workspace_dir,
                                                         openai_api_key=api_key,
                                                         git_token=git_token,
+                                                        auth_json=auth_json_raw,
                                                     )
                                                     meta_current = merge_conversation_metadata(
                                                         session,
@@ -6432,10 +6525,7 @@ def create_app() -> FastAPI:
                                                     meta=meta_current,
                                                 )
                                                 api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                                                auth_json = _merge_git_token_auth(
-                                                    getattr(bot, "data_agent_auth_json", "") or "{}",
-                                                    _get_git_token_plaintext(session, provider="github"),
-                                                )
+                                                auth_json = _merge_git_token_auth(auth_json_raw, git_token)
                                                 sys_prompt = (
                                                     (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                                                     or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
@@ -7862,6 +7952,34 @@ def create_app() -> FastAPI:
             status["container_id"] = container_id
         return status
 
+    @app.post("/api/conversations/{conversation_id}/data-agent/cancel")
+    def api_conversation_data_agent_cancel(conversation_id: UUID, session: Session = Depends(get_session)) -> dict:
+        _ = get_conversation(session, conversation_id)
+        meta = _get_conversation_meta(session, conversation_id=conversation_id)
+        da = _data_agent_meta(meta)
+        container_id = str(da.get("container_id") or "").strip()
+        if not container_id:
+            return {"ok": False, "error": "No data agent container for this conversation."}
+        kill_script = (
+            "for p in /proc/[0-9]*; do "
+            "cmd=$(tr '\\0' ' ' < \"$p\"/cmdline 2>/dev/null); "
+            "case \"$cmd\" in "
+            "*codex\\ exec*|*'/codex/codex exec'*|*'/usr/local/bin/codex exec'*|*'@openai/codex'*|*'git clone'*|*'git-upload-pack'*|*'git index-pack'*) "
+            "pid=${p##*/}; "
+            "if [ \"$pid\" != \"$$\" ]; then kill -9 \"$pid\" 2>/dev/null || true; fi "
+            ";; "
+            "esac; "
+            "done; "
+            "echo cancelled"
+        )
+        res = run_container_command(container_id=container_id, command=kill_script, timeout_s=15.0)
+        return {
+            "ok": res.ok,
+            "exit_code": res.exit_code,
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+        }
+
     @app.post("/api/bots/{bot_id}/chat/stream")
     def chat_stream(
         bot_id: UUID,
@@ -8161,4 +8279,5 @@ def create_app() -> FastAPI:
         wav, sr = tts_synth(out_text)
         return {"text": out_text, "audio_wav_base64": base64.b64encode(wav).decode(), "sr": sr}
 
+    logger.info("create_app: complete (%.2fs)", time.monotonic() - start)
     return app
