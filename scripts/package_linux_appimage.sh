@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-}"
 VENV_DIR="${ROOT_DIR}/.build/venv-linux"
 APPDIR="${ROOT_DIR}/.build/AppDir"
-BIN_NAME="IntelligravexStudio"
+BIN_NAME="GravexStudio"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "This script is intended for Linux."
@@ -56,15 +56,15 @@ pyinstaller --noconfirm --clean \
 rm -rf "${APPDIR}"
 mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
 cp "${ROOT_DIR}/dist/${BIN_NAME}/${BIN_NAME}" "${APPDIR}/usr/bin/${BIN_NAME}"
-cp "${ROOT_DIR}/packaging/icon.png" "${APPDIR}/intelligravex.png"
-cp "${ROOT_DIR}/packaging/icon.png" "${APPDIR}/usr/share/icons/hicolor/256x256/apps/intelligravex.png"
+cp "${ROOT_DIR}/packaging/icon.png" "${APPDIR}/gravexstudio.png"
+cp "${ROOT_DIR}/packaging/icon.png" "${APPDIR}/usr/share/icons/hicolor/256x256/apps/gravexstudio.png"
 
-cat <<'DESKTOP' > "${APPDIR}/intelligravex.desktop"
+cat <<'DESKTOP' > "${APPDIR}/gravexstudio.desktop"
 [Desktop Entry]
 Type=Application
-Name=Intelligravex Studio
-Exec=IntelligravexStudio
-Icon=intelligravex
+Name=GravexStudio
+Exec=GravexStudio
+Icon=gravexstudio
 Categories=Utility;
 Terminal=false
 DESKTOP
@@ -72,7 +72,7 @@ DESKTOP
 cat <<'APPRUN' > "${APPDIR}/AppRun"
 #!/usr/bin/env sh
 HERE="$(dirname "$(readlink -f "$0")")"
-exec "$HERE/usr/bin/IntelligravexStudio" "$@"
+exec "$HERE/usr/bin/GravexStudio" "$@"
 APPRUN
 chmod +x "${APPDIR}/AppRun"
 
@@ -83,6 +83,6 @@ if [[ ! -x "${APPIMAGETOOL}" ]]; then
   chmod +x "${APPIMAGETOOL}"
 fi
 
-"${APPIMAGETOOL}" "${APPDIR}" "${ROOT_DIR}/dist/IntelligravexStudio-x86_64.AppImage"
+"${APPIMAGETOOL}" "${APPDIR}" "${ROOT_DIR}/dist/GravexStudio-x86_64.AppImage"
 
-echo "Built AppImage: dist/IntelligravexStudio-x86_64.AppImage"
+echo "Built AppImage: dist/GravexStudio-x86_64.AppImage"

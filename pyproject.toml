@@ -1,10 +1,10 @@
 [project]
-name = "intelligravex-voicebot"
+name = "gravexstudio-voicebot"
 version = "0.1.0"
 description = "End-to-end continuous AI voice bot (OpenAI ASR + OpenAI LLM + OpenAI TTS)."
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Intelligravex" }]
+authors = [{ name = "GravexStudio" }]
 dependencies = [
   "numpy>=1.24",
   "openai>=1.40.0",

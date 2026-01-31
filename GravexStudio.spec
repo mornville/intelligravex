@@ -32,7 +32,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='IntelligravexStudio',
+    name='GravexStudio',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -51,11 +51,11 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='IntelligravexStudio',
+    name='GravexStudio',
 )
 app = BUNDLE(
     coll,
-    name='IntelligravexStudio.app',
+    name='GravexStudio.app',
     icon=None,
     bundle_identifier=None,
 )

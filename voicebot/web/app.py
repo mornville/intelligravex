@@ -1279,7 +1279,7 @@ def create_app() -> FastAPI:
                     headers={
                         "Authorization": f"Bearer {token}",
                         "Accept": "application/vnd.github+json",
-                        "User-Agent": "Intelligravex-VoiceBot",
+                        "User-Agent": "GravexStudio-VoiceBot",
                     },
                 )
             if resp.status_code == 200:

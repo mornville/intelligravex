@@ -10,7 +10,7 @@ from voicebot.config import Settings
 from voicebot.dialog.session import VoiceBotSession
 from voicebot.logging_utils import configure_logging
 
-app = typer.Typer(add_completion=False, help="Intelligravex continuous AI voice bot.")
+app = typer.Typer(add_completion=False, help="GravexStudio continuous AI voice bot.")
 
 
 @app.command()

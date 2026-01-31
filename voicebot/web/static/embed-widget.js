@@ -65,7 +65,7 @@
     // If callers explicitly provide a stable id, we still accept it.
     var userConversationId = String(opts.userConversationId || '') || uuid()
     var baseOrigin = String(opts.baseOrigin || defaultBackendOrigin || window.location.origin)
-    var title = String(opts.title || 'Intelligravex Bot')
+    var title = String(opts.title || 'GravexStudio Bot')
     var target = opts.target || null
 
     if (!botId) throw new Error('botId is required')
@@ -351,7 +351,7 @@
     }
   }
 
-  window.IntelligravexVoiceBot = {
+  window.GravexStudioVoiceBot = {
     create: createWidget,
     autoInit: function () {
       var script = document.currentScript
@@ -360,7 +360,7 @@
       var apiKey = script.getAttribute('data-api-key') || ''
       var userConversationId = script.getAttribute('data-user-conversation-id') || ''
       var target = script.getAttribute('data-target') || ''
-      var title = script.getAttribute('data-title') || 'Intelligravex Bot'
+      var title = script.getAttribute('data-title') || 'GravexStudio Bot'
       var baseOrigin = script.getAttribute('data-backend-origin') || getBaseOriginFromScript(script)
       if (!botId || !apiKey || !userConversationId) return
       createWidget({ botId: botId, apiKey: apiKey, userConversationId: userConversationId, target: target || null, title: title, baseOrigin: baseOrigin })
@@ -368,6 +368,6 @@
   }
 
   try {
-    window.IntelligravexVoiceBot.autoInit()
+    window.GravexStudioVoiceBot.autoInit()
   } catch {}
 })()

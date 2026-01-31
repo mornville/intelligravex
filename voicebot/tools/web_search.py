@@ -194,7 +194,7 @@ class WebSearchConfig:
     chunk_overlap_chars: int = 200
     max_chunks: int = 200
     top_k: int = 5
-    user_agent: str = "IntelligravexVoiceBot/1.0"
+    user_agent: str = "GravexStudioVoiceBot/1.0"
     timeout_s: float = 30.0
 
 

@@ -1164,7 +1164,7 @@ Rules:
                   <div className="tipTitle">Examples</div>
                   <pre className="tipPre">
                     {'{\n  \"Authorization\": \"Bearer <PASTE_TOKEN_HERE>\"\n}\n\n'}
-                    {'{\n  \"X-Client\": \"intelligravex\"\n}'}
+                    {'{\n  \"X-Client\": \"gravexstudio\"\n}'}
                   </pre>
                 </HelpTip>
               </label>

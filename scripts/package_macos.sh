@@ -43,7 +43,7 @@ python -m pip install --upgrade pip
 python -m pip install "${ROOT_DIR}[web,packaging]"
 
 pyinstaller --noconfirm --clean \
-  --name "IntelligravexStudio" \
+  --name "GravexStudio" \
   --windowed \
   --collect-all voicebot.web \
   --collect-all tiktoken \
@@ -52,4 +52,4 @@ pyinstaller --noconfirm --clean \
   --add-data "${ROOT_DIR}/voicebot/web/static:voicebot/web/static" \
   "${ROOT_DIR}/voicebot/launcher.py"
 
-echo "Built macOS app: dist/IntelligravexStudio.app"
+echo "Built macOS app: dist/GravexStudio.app"

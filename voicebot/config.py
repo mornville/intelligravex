@@ -11,7 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _default_data_dir() -> str:
-    return str(Path.home() / ".intelligravex")
+    return str(Path.home() / ".gravexstudio")
 
 
 def _load_or_create_secret_key(data_dir: Path) -> Optional[str]:
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     language: str = Field(default="en")
     bot_uuid: Optional[str] = None
 
-    # App data (default: ~/.intelligravex)
+    # App data (default: ~/.gravexstudio)
     data_dir: str = Field(default_factory=_default_data_dir, alias="DATA_DIR")
 
     # Storage
