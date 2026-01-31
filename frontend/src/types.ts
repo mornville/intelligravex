@@ -4,6 +4,7 @@ export type Bot = {
   id: UUID
   name: string
   openai_model: string
+  openai_asr_model: string
   web_search_model: string
   codex_model: string
   summary_model?: string
@@ -15,22 +16,11 @@ export type Bot = {
   data_agent_return_result_directly?: boolean
   data_agent_prewarm_on_start?: boolean
   data_agent_prewarm_prompt?: string
-  openai_key_id: UUID | null
   system_prompt: string
   language: string
-  tts_language: string
-  tts_vendor: 'openai_tts' | string
-  whisper_model: string
-  whisper_device: string
-  xtts_model: string
-  speaker_id: string | null
-  speaker_wav: string | null
   openai_tts_model: string
   openai_tts_voice: string
   openai_tts_speed: number
-  tts_split_sentences: boolean
-  tts_chunk_min_chars: number
-  tts_chunk_max_chars: number
   start_message_mode: 'llm' | 'static'
   start_message_text: string
   disabled_tools?: string[]
@@ -158,15 +148,11 @@ export type ConversationFiles = {
 
 export type Options = {
   openai_models: string[]
-  whisper_models: string[]
-  whisper_devices: string[]
+  openai_asr_models: string[]
   languages: string[]
-  xtts_models: string[]
   openai_tts_models?: string[]
   openai_tts_voices?: string[]
   start_message_modes: string[]
-  asr_vendors?: string[]
-  tts_vendors?: string[]
   openai_pricing: Record<string, { input_per_1m: number; output_per_1m: number }>
   http_methods?: string[]
 }

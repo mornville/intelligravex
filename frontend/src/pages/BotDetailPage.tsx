@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import MicTest from '../components/MicTest'
-import type { ApiKey, Bot, ConversationSummary, IntegrationTool, Options, SystemTool } from '../types'
-
-type TtsMeta = { speakers: string[]; languages: string[] }
+import SelectField from '../components/SelectField'
+import LoadingSpinner from '../components/LoadingSpinner'
+import type { Bot, ConversationSummary, IntegrationTool, Options, SystemTool } from '../types'
+import { TrashIcon } from '@heroicons/react/24/solid'
 
 function HelpTip({ children }: { children: ReactNode }) {
   return (
@@ -23,9 +24,7 @@ export default function BotDetailPage() {
     searchParams.get('conversation_id') || undefined,
   )
   const [bot, setBot] = useState<Bot | null>(null)
-  const [keys, setKeys] = useState<ApiKey[]>([])
   const [options, setOptions] = useState<Options | null>(null)
-  const [ttsMeta, setTtsMeta] = useState<TtsMeta | null>(null)
   const [tools, setTools] = useState<IntegrationTool[]>([])
   const [systemTools, setSystemTools] = useState<SystemTool[]>([])
   const [showToolModal, setShowToolModal] = useState(false)
@@ -89,11 +88,7 @@ Rules:
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'tools'>('llm')
-
-  const speakerChoices = useMemo(() => {
-    const s = ttsMeta?.speakers || []
-    return ['(auto)', ...s]
-  }, [ttsMeta?.speakers])
+  const [showSettings, setShowSettings] = useState(false)
 
   function parseAuthJson(raw?: string): Record<string, any> | null {
     try {
@@ -109,13 +104,8 @@ Rules:
     if (!botId) return
     setErr(null)
     try {
-      const [b, k, o] = await Promise.all([
-        apiGet<Bot>(`/api/bots/${botId}`),
-        apiGet<{ items: ApiKey[] }>(`/api/keys?provider=openai`),
-        apiGet<Options>(`/api/options`),
-      ])
+      const [b, o] = await Promise.all([apiGet<Bot>(`/api/bots/${botId}`), apiGet<Options>(`/api/options`)])
       setBot(b)
-      setKeys(k.items)
       setOptions(o)
       const t = await apiGet<{ items: IntegrationTool[]; system_tools?: SystemTool[] }>(`/api/bots/${botId}/tools`)
       setTools(t.items)
@@ -169,21 +159,6 @@ Rules:
       canceled = true
     }
   }, [botId, searchParams])
-
-  useEffect(() => {
-    if (!bot || !bot.xtts_model || bot.tts_vendor !== 'xtts_local') {
-      setTtsMeta(null)
-      return
-    }
-    void (async () => {
-      try {
-        const meta = await apiGet<TtsMeta>(`/api/tts/meta?model_name=${encodeURIComponent(bot.xtts_model)}`)
-        setTtsMeta(meta)
-      } catch {
-        setTtsMeta({ speakers: [], languages: [] })
-      }
-    })()
-  }, [bot?.xtts_model, bot?.tts_vendor])
 
   async function save(patch: Record<string, unknown>) {
     if (!botId) return
@@ -430,11 +405,19 @@ Rules:
       <div className="pageHeader">
         <div>
           <h1>{bot?.name || 'Bot'}</h1>
-          <div className="muted mono">UUID: {botId}</div>
         </div>
         <div className="row gap">
-          <button className="btn danger ghost" onClick={() => void onDelete()} disabled={!bot}>
-            Delete bot
+          <button className="btn" onClick={() => setShowSettings(true)}>
+            Settings
+          </button>
+          <button
+            className="btn iconBtn danger"
+            onClick={() => void onDelete()}
+            disabled={!bot}
+            aria-label="Delete bot"
+            title="Delete bot"
+          >
+            <TrashIcon aria-hidden="true" />
           </button>
           <button className="btn" onClick={() => nav('/bots')}>
             Back
@@ -444,11 +427,23 @@ Rules:
 
       {err ? <div className="alert">{err}</div> : null}
 
-      <div className="grid2">
-        <section className="card">
+      <MicTest botId={botId} initialConversationId={initialConversationId} />
+
+      {showSettings ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true">
+          <div className="modalCard settingsModal">
+            <section className="card settingsCard">
           <div className="cardTitleRow">
-            <div className="cardTitle">Configuration</div>
-            {saving ? <div className="pill">saving…</div> : <div className="pill">saved</div>}
+            <div>
+              <div className="cardTitle">Configuration</div>
+              <div className="muted">Tune models, voice, and tools.</div>
+            </div>
+            <div className="row gap">
+              {saving ? <div className="pill accent">saving…</div> : <div className="pill accent">saved</div>}
+              <button className="btn" onClick={() => setShowSettings(false)}>
+                Close
+              </button>
+            </div>
           </div>
           <div className="row gap" style={{ marginTop: 10, flexWrap: 'wrap' }}>
             <button className={activeTab === 'llm' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('llm')}>
@@ -469,7 +464,9 @@ Rules:
           </div>
 
           {!bot ? (
-            <div className="muted">Loading…</div>
+            <div className="muted">
+              <LoadingSpinner />
+            </div>
           ) : (
             <>
               {activeTab === 'llm' ? (
@@ -480,45 +477,56 @@ Rules:
                   </div>
                   <div className="formRow">
                     <label>OpenAI model</label>
-                    <select value={bot.openai_model} onChange={(e) => void save({ openai_model: e.target.value })}>
+                    <SelectField value={bot.openai_model} onChange={(e) => void save({ openai_model: e.target.value })}>
                       {(options?.openai_models || [bot.openai_model]).map((m) => (
                         <option value={m} key={m}>
                           {m}
                         </option>
                       ))}
-                    </select>
+                    </SelectField>
                   </div>
+                  <details className="accordion" style={{ marginTop: 10 }}>
+                    <summary>Advanced models</summary>
                   <div className="formRow">
                     <label>Web search model</label>
-                    <select value={bot.web_search_model || bot.openai_model} onChange={(e) => void save({ web_search_model: e.target.value })}>
+                    <SelectField
+                      value={bot.web_search_model || bot.openai_model}
+                      onChange={(e) => void save({ web_search_model: e.target.value })}
+                    >
                       {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
                         <option value={m} key={m}>
                           {m}
                         </option>
                       ))}
-                    </select>
+                    </SelectField>
                     <div className="muted">Used for web_search filtering + summarization.</div>
                   </div>
                   <div className="formRow">
                     <label>Codex model</label>
-                    <select value={bot.codex_model || 'gpt-5.1-codex-mini'} onChange={(e) => void save({ codex_model: e.target.value })}>
+                    <SelectField
+                      value={bot.codex_model || 'gpt-5.1-codex-mini'}
+                      onChange={(e) => void save({ codex_model: e.target.value })}
+                    >
                       {(options?.openai_models || [bot.codex_model || 'gpt-5.1-codex-mini']).map((m) => (
                         <option value={m} key={m}>
                           {m}
                         </option>
                       ))}
-                    </select>
+                    </SelectField>
                     <div className="muted">Used for “use Codex for response” HTTP integrations.</div>
                   </div>
                   <div className="formRow">
                     <label>Summary model</label>
-                    <select value={bot.summary_model || 'gpt-5-nano'} onChange={(e) => void save({ summary_model: e.target.value })}>
+                    <SelectField
+                      value={bot.summary_model || 'gpt-5-nano'}
+                      onChange={(e) => void save({ summary_model: e.target.value })}
+                    >
                       {(options?.openai_models || [bot.summary_model || 'gpt-5-nano']).map((m) => (
                         <option value={m} key={m}>
                           {m}
                         </option>
                       ))}
-                    </select>
+                    </SelectField>
                     <div className="muted">Used to summarize older conversation history when context grows.</div>
                   </div>
                   <div className="formRow">
@@ -532,17 +540,7 @@ Rules:
                     />
                     <div className="muted">Keep the last N user turns verbatim; older turns are summarized.</div>
                   </div>
-                  <div className="formRow">
-                    <label>OpenAI key</label>
-                    <select value={bot.openai_key_id || ''} onChange={(e) => void save({ openai_key_id: e.target.value || null })}>
-                      <option value="">(use env OPENAI_API_KEY)</option>
-                      {keys.map((k) => (
-                        <option value={k.id} key={k.id}>
-                          {k.name} — {k.hint}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  </details>
                   <div className="formRow">
                     <label>System prompt</label>
                     <textarea
@@ -557,64 +555,56 @@ Rules:
                     </div>
                   </div>
 
-                  <div className="cardSubTitle">Conversation start message</div>
-                  <div className="formRowGrid2">
-                    <div className="formRow">
-                      <label>Mode</label>
-                      <select value={bot.start_message_mode} onChange={(e) => void save({ start_message_mode: e.target.value })}>
-                        <option value="static">Static</option>
-                        <option value="llm">LLM-generated</option>
-                      </select>
-                    </div>
-                    <div className="formRow">
-                      <label>Static start message (optional)</label>
-                      <input
-                        value={bot.start_message_text}
-                        placeholder="(empty = will be generated by LLM)"
-                        onChange={(e) => setBot((p) => (p ? { ...p, start_message_text: e.target.value } : p))}
-                      />
-                      <div className="row">
-                        <button className="btn" onClick={() => void save({ start_message_text: bot.start_message_text })}>
-                          Save start message
-                        </button>
+                  <details className="accordion" style={{ marginTop: 10 }}>
+                    <summary>Conversation start message</summary>
+                    <div className="formRowGrid2">
+                      <div className="formRow">
+                        <label>Mode</label>
+                        <SelectField value={bot.start_message_mode} onChange={(e) => void save({ start_message_mode: e.target.value })}>
+                          <option value="static">Static</option>
+                          <option value="llm">LLM-generated</option>
+                        </SelectField>
+                      </div>
+                      <div className="formRow">
+                        <label>Static start message (optional)</label>
+                        <input
+                          value={bot.start_message_text}
+                          placeholder="(empty = will be generated by LLM)"
+                          onChange={(e) => setBot((p) => (p ? { ...p, start_message_text: e.target.value } : p))}
+                        />
+                        <div className="row">
+                          <button className="btn" onClick={() => void save({ start_message_text: bot.start_message_text })}>
+                            Save start message
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  </details>
                 </>
               ) : null}
 
               {activeTab === 'asr' ? (
                 <>
-                  <div className="formRow">
-                    <label>ASR language</label>
-                    <select value={bot.language} onChange={(e) => void save({ language: e.target.value })}>
-                      {(options?.languages || [bot.language]).map((l) => (
-                        <option value={l} key={l}>
-                          {l}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
                   <div className="formRowGrid2">
                     <div className="formRow">
-                      <label>Whisper model</label>
-                      <select value={bot.whisper_model} onChange={(e) => void save({ whisper_model: e.target.value })}>
-                        {(options?.whisper_models || [bot.whisper_model]).map((m) => (
+                      <label>ASR language</label>
+                      <SelectField value={bot.language} onChange={(e) => void save({ language: e.target.value })}>
+                        {(options?.languages || [bot.language]).map((l) => (
+                          <option value={l} key={l}>
+                            {l}
+                          </option>
+                        ))}
+                      </SelectField>
+                    </div>
+                    <div className="formRow">
+                      <label>ASR model</label>
+                      <SelectField value={bot.openai_asr_model} onChange={(e) => void save({ openai_asr_model: e.target.value })}>
+                        {(options?.openai_asr_models || [bot.openai_asr_model]).map((m) => (
                           <option value={m} key={m}>
                             {m}
                           </option>
                         ))}
-                      </select>
-                    </div>
-                    <div className="formRow">
-                      <label>Whisper device</label>
-                      <select value={bot.whisper_device} onChange={(e) => void save({ whisper_device: e.target.value })}>
-                        {(options?.whisper_devices || [bot.whisper_device]).map((d) => (
-                          <option value={d} key={d}>
-                            {d}
-                          </option>
-                        ))}
-                      </select>
+                      </SelectField>
                     </div>
                   </div>
                 </>
@@ -622,54 +612,26 @@ Rules:
 
               {activeTab === 'tts' ? (
                 <>
-                  <div className="formRow">
-                    <label>TTS vendor</label>
-                    <select value={bot.tts_vendor} onChange={(e) => void save({ tts_vendor: e.target.value })}>
-                      {(options?.tts_vendors?.length ? options.tts_vendors : [bot.tts_vendor]).map((v) => (
-                        <option value={v} key={v}>
-                          {v}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </>
-              ) : null}
-
-              {activeTab === 'tts' && bot.tts_vendor === 'xtts_local' ? (
-                <div className="formRow">
-                  <label>TTS language</label>
-                  <select value={bot.tts_language} onChange={(e) => void save({ tts_language: e.target.value })}>
-                    {(ttsMeta?.languages?.length ? ttsMeta.languages : options?.languages || [bot.tts_language]).map((l) => (
-                      <option value={l} key={l}>
-                        {l}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : null}
-
-              {activeTab === 'tts' && bot.tts_vendor === 'openai_tts' ? (
-                <>
                   <div className="formRowGrid2">
                     <div className="formRow">
                       <label>OpenAI TTS model</label>
-                      <select value={bot.openai_tts_model} onChange={(e) => void save({ openai_tts_model: e.target.value })}>
+                      <SelectField value={bot.openai_tts_model} onChange={(e) => void save({ openai_tts_model: e.target.value })}>
                         {(options?.openai_tts_models?.length ? options.openai_tts_models : [bot.openai_tts_model]).map((m) => (
                           <option value={m} key={m}>
                             {m}
                           </option>
                         ))}
-                      </select>
+                      </SelectField>
                     </div>
                     <div className="formRow">
                       <label>OpenAI voice</label>
-                      <select value={bot.openai_tts_voice} onChange={(e) => void save({ openai_tts_voice: e.target.value })}>
+                      <SelectField value={bot.openai_tts_voice} onChange={(e) => void save({ openai_tts_voice: e.target.value })}>
                         {(options?.openai_tts_voices?.length ? options.openai_tts_voices : [bot.openai_tts_voice]).map((v) => (
                           <option value={v} key={v}>
                             {v}
                           </option>
                         ))}
-                      </select>
+                      </SelectField>
                     </div>
                   </div>
                   <div className="formRow">
@@ -686,73 +648,12 @@ Rules:
                 </>
               ) : null}
 
-              {activeTab === 'tts' && bot.tts_vendor === 'xtts_local' ? (
-                <>
-                  <div className="formRow">
-                    <label>XTTS v2 model</label>
-                    <select value={bot.xtts_model} onChange={(e) => void save({ xtts_model: e.target.value })}>
-                      {(options?.xtts_models || [bot.xtts_model]).map((m) => (
-                        <option value={m} key={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="formRowGrid2">
-                    <div className="formRow">
-                      <label>Speaker ID (optional)</label>
-                      <select
-                        value={bot.speaker_id || '(auto)'}
-                        onChange={(e) => void save({ speaker_id: e.target.value === '(auto)' ? null : e.target.value })}
-                      >
-                        {speakerChoices.map((s) => (
-                          <option value={s} key={s}>
-                            {s}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="formRow">
-                      <label>Speaker WAV path (optional)</label>
-                      <input
-                        value={bot.speaker_wav || ''}
-                        placeholder="/path/to/voice.wav"
-                        onChange={(e) => setBot((p) => (p ? { ...p, speaker_wav: e.target.value } : p))}
-                      />
-                      <div className="row">
-                        <button className="btn" onClick={() => void save({ speaker_wav: bot.speaker_wav || null })}>
-                          Save WAV path
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              ) : null}
-
-              {activeTab === 'tts' ? (
-                <div className="formRowGrid2">
-                  <div className="formRow">
-                    <label>TTS chunk min chars</label>
-                    <input
-                      type="number"
-                      value={bot.tts_chunk_min_chars}
-                      onChange={(e) => void save({ tts_chunk_min_chars: Number(e.target.value) })}
-                    />
-                  </div>
-                  <div className="formRow">
-                    <label>TTS chunk max chars</label>
-                    <input
-                      type="number"
-                      value={bot.tts_chunk_max_chars}
-                      onChange={(e) => void save({ tts_chunk_max_chars: Number(e.target.value) })}
-                    />
-                  </div>
-                </div>
-              ) : null}
 
               {activeTab === 'agent' ? (
                 <>
+                  <div className="muted" style={{ marginBottom: 8 }}>
+                    Data Agent requires Docker. Install and start Docker before enabling.
+                  </div>
                   <div className="formRow">
                     <label>Enable Data Agent</label>
                     <label className="row gap" style={{ justifyContent: 'flex-start' }}>
@@ -908,9 +809,9 @@ Rules:
               ) : null}
 
               {activeTab === 'tools' && systemTools.length ? (
-                <>
-                  <div className="cardSubTitle">System tools (default)</div>
-                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                <details className="accordion" style={{ marginBottom: 12 }} open>
+                  <summary>System tools</summary>
+                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8, marginTop: 8 }}>
                     <div className="muted">Toggle built-in tools per bot. Click “Update tools” to save.</div>
                     <button className="btn" onClick={() => void saveSystemTools()} disabled={!systemToolsDirty || saving}>
                       Update tools
@@ -943,13 +844,13 @@ Rules:
                       ))}
                     </tbody>
                   </table>
-                </>
+                </details>
               ) : null}
 
               {activeTab === 'tools' ? (
-                <>
-                  <div className="cardSubTitle">Integrations (HTTP tools)</div>
-                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                <details className="accordion" open>
+                  <summary>Integrations (HTTP tools)</summary>
+                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8, marginTop: 8 }}>
                     <div className="muted">
                       Use variables like <span className="mono">{'{{.firstName}}'}</span> in prompts and tool next_reply.{' '}
                       <HelpTip>
@@ -1001,8 +902,13 @@ Rules:
                                 <button className="btn" onClick={() => openEditTool(t)}>
                                   Edit
                                 </button>
-                                <button className="btn danger ghost" onClick={() => void deleteTool(t)}>
-                                  Delete
+                                <button
+                                  className="btn iconBtn danger"
+                                  onClick={() => void deleteTool(t)}
+                                  aria-label="Delete integration"
+                                  title="Delete integration"
+                                >
+                                  <TrashIcon aria-hidden="true" />
                                 </button>
                               </div>
                             </td>
@@ -1011,14 +917,14 @@ Rules:
                       </tbody>
                     </table>
                   )}
-                </>
+                </details>
               ) : null}
             </>
           )}
         </section>
-
-        <MicTest botId={botId} initialConversationId={initialConversationId} />
-      </div>
+          </div>
+        </div>
+      ) : null}
 
       {showToolModal ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
@@ -1060,13 +966,13 @@ Rules:
             <div className="formRowGrid2">
               <div className="formRow">
                 <label>Method</label>
-                <select value={toolForm.method} onChange={(e) => setToolForm((p) => ({ ...p, method: e.target.value }))}>
+                <SelectField value={toolForm.method} onChange={(e) => setToolForm((p) => ({ ...p, method: e.target.value }))}>
                   {(options?.http_methods || ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).map((m) => (
                     <option value={m} key={m}>
                       {m}
                     </option>
                   ))}
-                </select>
+                </SelectField>
               </div>
               <div className="formRow">
                 <label>Enabled</label>

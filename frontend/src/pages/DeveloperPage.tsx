@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet, apiPost } from '../api/client'
+import LoadingSpinner from '../components/LoadingSpinner'
+import { StopCircleIcon } from '@heroicons/react/24/solid'
 
 type DataAgentContainer = {
   id: string
@@ -99,11 +101,17 @@ export default function DeveloperPage() {
           <div className="muted">Operational controls for Data Agent containers.</div>
         </div>
         <div className="row gap">
-          <button className="btn" onClick={() => void reload()} disabled={loading}>
-            {loading ? 'Refreshing…' : 'Refresh'}
+          <button className="btn" onClick={() => void reload()} disabled={loading} aria-label="Refresh containers">
+            {loading ? <LoadingSpinner label="Refreshing" /> : 'Refresh'}
           </button>
-          <button className="btn danger ghost" onClick={() => void stopAll()} disabled={loading || items.length === 0}>
-            Stop all
+          <button
+            className="btn iconBtn danger"
+            onClick={() => void stopAll()}
+            disabled={loading || items.length === 0}
+            aria-label="Stop all containers"
+            title="Stop all containers"
+          >
+            <StopCircleIcon aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -123,10 +131,14 @@ export default function DeveloperPage() {
           <div className="muted" style={{ marginTop: 8 }}>
             Docker is not available. Install Docker Desktop or enable the Docker daemon.
           </div>
-        ) : loading ? (
-          <div className="muted">Loading…</div>
         ) : items.length === 0 ? (
-          <div className="muted">No running containers.</div>
+          loading ? (
+            <div className="muted">
+              <LoadingSpinner />
+            </div>
+          ) : (
+            <div className="muted">No running containers.</div>
+          )
         ) : (
           <table className="table">
             <thead>
@@ -160,8 +172,14 @@ export default function DeveloperPage() {
                       )}
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <button className="btn danger ghost" onClick={() => void stopContainer(target)} disabled={!!stopping[target]}>
-                        {stopping[target] ? 'Stopping…' : 'Stop'}
+                      <button
+                        className="btn iconBtn danger"
+                        onClick={() => void stopContainer(target)}
+                        disabled={!!stopping[target]}
+                        aria-label="Stop container"
+                        title="Stop container"
+                      >
+                        {stopping[target] ? <LoadingSpinner label="Stopping" /> : <StopCircleIcon aria-hidden="true" />}
                       </button>
                     </td>
                   </tr>

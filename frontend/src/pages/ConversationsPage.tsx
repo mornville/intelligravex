@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet } from '../api/client'
+import SelectField from '../components/SelectField'
+import LoadingSpinner from '../components/LoadingSpinner'
 import type { Bot, ConversationSummary } from '../types'
 import { fmtIso, fmtUsd } from '../utils/format'
 
@@ -52,26 +54,26 @@ export default function ConversationsPage() {
           <div className="muted">Stored conversations (paginated).</div>
         </div>
         <div className="row gap">
-          <select value={filterBotId} onChange={(e) => (setPage(1), setFilterBotId(e.target.value))}>
+          <SelectField wrapClassName="compact" value={filterBotId} onChange={(e) => (setPage(1), setFilterBotId(e.target.value))}>
             <option value="">All bots</option>
             {bots.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
               </option>
             ))}
-          </select>
-          <select value={filterTest} onChange={(e) => (setPage(1), setFilterTest(e.target.value))}>
+          </SelectField>
+          <SelectField wrapClassName="compact" value={filterTest} onChange={(e) => (setPage(1), setFilterTest(e.target.value))}>
             <option value="">All</option>
             <option value="true">test=true</option>
             <option value="false">test=false</option>
-          </select>
-          <select value={pageSize} onChange={(e) => (setPage(1), setPageSize(Number(e.target.value)))}>
+          </SelectField>
+          <SelectField wrapClassName="compact" value={pageSize} onChange={(e) => (setPage(1), setPageSize(Number(e.target.value)))}>
             {[25, 50, 100, 200].map((n) => (
               <option key={n} value={n}>
                 {n}/page
               </option>
             ))}
-          </select>
+          </SelectField>
         </div>
       </div>
 
@@ -86,7 +88,9 @@ export default function ConversationsPage() {
         </div>
 
         {loading ? (
-          <div className="muted">Loading…</div>
+          <div className="muted">
+            <LoadingSpinner />
+          </div>
         ) : items.length === 0 ? (
           <div className="muted">No conversations.</div>
         ) : (
@@ -94,22 +98,16 @@ export default function ConversationsPage() {
             <thead>
               <tr>
                 <th>Created</th>
-                <th>UUID</th>
                 <th>Bot</th>
                 <th>test</th>
                 <th style={{ textAlign: 'right' }}>Cost</th>
-                <th style={{ textAlign: 'right' }}>Resume</th>
+                <th style={{ textAlign: 'right' }}>Open</th>
               </tr>
             </thead>
             <tbody>
               {items.map((c) => (
                 <tr key={c.id}>
                   <td>{fmtIso(c.created_at)}</td>
-                  <td className="mono">
-                    <Link className="link" to={`/conversations/${c.id}`}>
-                      {c.id}
-                    </Link>
-                  </td>
                   <td>{c.bot_name || c.bot_id}</td>
                   <td>{c.test_flag ? 'true' : 'false'}</td>
                   <td className="mono" style={{ textAlign: 'right' }}>
@@ -117,7 +115,7 @@ export default function ConversationsPage() {
                   </td>
                   <td style={{ textAlign: 'right' }}>
                     <Link className="btn ghost" to={`/bots/${c.bot_id}?conversation_id=${c.id}`}>
-                      Continue
+                      Open
                     </Link>
                   </td>
                 </tr>

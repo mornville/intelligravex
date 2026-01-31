@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiGet, BACKEND_URL } from '../api/client'
+import LoadingSpinner from '../components/LoadingSpinner'
 import type { ConversationDetail, ConversationMessage, ConversationFiles, DataAgentStatus } from '../types'
 import { fmtIso, fmtMs, fmtUsd } from '../utils/format'
 
@@ -132,13 +133,14 @@ export default function ConversationDetailPage() {
       {err ? <div className="alert">{err}</div> : null}
 
       {!data || !conv ? (
-        <div className="muted">Loading…</div>
+        <div className="muted">
+          <LoadingSpinner />
+        </div>
       ) : (
         <>
           <section className="card">
             <div className="cardTitleRow">
               <div className="cardTitle">Summary</div>
-              <div className="muted mono">{conv.id}</div>
             </div>
             <div className="summaryGrid">
               <div className="summaryItem">
@@ -185,12 +187,14 @@ export default function ConversationDetailPage() {
                 <div className="muted">Per-conversation runtime for tools and files.</div>
               </div>
               <button className="btn" onClick={() => void loadAgentStatus()} disabled={agentLoading}>
-                {agentLoading ? 'Refreshing…' : 'Refresh'}
+                {agentLoading ? <LoadingSpinner label="Refreshing" /> : 'Refresh'}
               </button>
             </div>
             {agentErr ? <div className="alert">{agentErr}</div> : null}
             {!agentStatus ? (
-              <div className="muted">Loading…</div>
+              <div className="muted">
+                <LoadingSpinner />
+              </div>
             ) : (
               <div className="summaryGrid">
                 <div className="summaryItem">
@@ -228,7 +232,7 @@ export default function ConversationDetailPage() {
                 <div className="muted">Browse the data-agent workspace and download outputs.</div>
               </div>
               <button className="btn" onClick={() => void loadFiles()} disabled={filesLoading}>
-                {filesLoading ? 'Refreshing…' : 'Refresh'}
+                {filesLoading ? <LoadingSpinner label="Refreshing" /> : 'Refresh'}
               </button>
             </div>
             {filesErr ? <div className="alert">{filesErr}</div> : null}
@@ -282,7 +286,7 @@ export default function ConversationDetailPage() {
             </div>
             {!files ? (
               <div className="muted" style={{ marginTop: 10 }}>
-                Loading…
+                <LoadingSpinner />
               </div>
             ) : (
               <table className="table" style={{ marginTop: 12 }}>
@@ -365,7 +369,7 @@ function MessageRow({ m }: { m: ConversationMessage }) {
   return (
     <div className={cls}>
       <div className="bubbleMeta" style={{ marginBottom: 6 }}>
-        <span className="pill">{label}</span> <span className="muted">{fmtIso(m.created_at)}</span>
+        <span className="pill accent">{label}</span> <span className="muted">{fmtIso(m.created_at)}</span>
       </div>
       <div className="bubbleText">{m.role === 'tool' ? (m.tool_name ? `${m.tool_name}` : 'tool') : m.content}</div>
       {showMetrics ? (
