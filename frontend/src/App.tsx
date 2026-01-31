@@ -6,6 +6,7 @@ import BotDetailPage from './pages/BotDetailPage'
 import KeysPage from './pages/KeysPage'
 import ConversationsPage from './pages/ConversationsPage'
 import ConversationDetailPage from './pages/ConversationDetailPage'
+import DeveloperPage from './pages/DeveloperPage'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/bots" element={<BotsPage />} />
           <Route path="/bots/:botId" element={<BotDetailPage />} />
           <Route path="/keys" element={<KeysPage />} />
+          <Route path="/developer" element={<DeveloperPage />} />
           <Route path="/conversations" element={<ConversationsPage />} />
           <Route path="/conversations/:conversationId" element={<ConversationDetailPage />} />
           <Route path="*" element={<Navigate to="/bots" replace />} />

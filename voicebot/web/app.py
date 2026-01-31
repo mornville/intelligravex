@@ -92,8 +92,10 @@ from voicebot.data_agent.docker_runner import (
     ensure_conversation_container,
     ensure_image_pulled,
     get_container_status,
+    list_data_agent_containers,
     run_container_command,
     run_data_agent,
+    stop_data_agent_container,
 )
 
 
@@ -5678,6 +5680,9 @@ def create_app() -> FastAPI:
         session: Session = Depends(get_session),
     ) -> Response:
         if not key.strip():
+            # Allow SPA reloads on /conversations/{id} without a client key.
+            if ui_index.exists() and _accepts_html(request.headers.get("accept") or ""):
+                return FileResponse(str(ui_index))
             raise HTTPException(status_code=401, detail="Missing key")
         ck = verify_client_key(session, secret=key.strip())
         if not ck:
@@ -7462,6 +7467,19 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc))
         return {"ok": True, "image": image}
+
+    @app.get("/api/data-agent/containers")
+    def api_data_agent_containers() -> dict:
+        return list_data_agent_containers()
+
+    @app.post("/api/data-agent/containers/{container_id}/stop")
+    def api_data_agent_container_stop(container_id: str) -> dict:
+        res = stop_data_agent_container(container_id)
+        if not res.get("docker_available", True):
+            raise HTTPException(status_code=400, detail="Docker not available")
+        if not res.get("stopped", False):
+            raise HTTPException(status_code=500, detail=str(res.get("error") or "Failed to stop container"))
+        return res
 
     @app.get("/api/downloads/{token}")
     def download_file(token: str) -> FileResponse:

@@ -19,6 +19,9 @@ export default function Layout({ children }: { children: ReactNode }) {
           <NavLink to="/keys" className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}>
             Keys
           </NavLink>
+          <NavLink to="/developer" className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}>
+            Developer
+          </NavLink>
         </nav>
       </header>
       <main className="content">{children}</main>

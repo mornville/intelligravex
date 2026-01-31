@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
 import logging
 import os
 import re
@@ -346,6 +347,87 @@ def docker_available() -> bool:
     return _docker_available()
 
 
+def list_data_agent_containers() -> dict:
+    if not _docker_available():
+        return {"docker_available": False, "items": []}
+    p = _run(
+        ["docker", "ps", "--filter", "name=^igx-data-agent-", "--format", "{{json .}}"],
+        timeout_s=10.0,
+    )
+    if p.returncode != 0:
+        logger.warning("docker ps failed rc=%s stderr=%s", p.returncode, (p.stderr or "").strip())
+        return {"docker_available": True, "items": [], "error": (p.stderr or "").strip()}
+    items: list[dict] = []
+    ids: list[str] = []
+    for line in (p.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except Exception:
+            continue
+        name = str(data.get("Names") or "")
+        cid = str(data.get("ID") or "")
+        if cid:
+            ids.append(cid)
+        items.append(
+            {
+                "id": cid,
+                "name": name,
+                "image": str(data.get("Image") or ""),
+                "status": str(data.get("Status") or ""),
+                "created_at": str(data.get("CreatedAt") or ""),
+                "running_for": str(data.get("RunningFor") or ""),
+                "conversation_id": _conversation_id_from_container_name(name),
+            }
+        )
+    stats_map: dict[str, dict] = {}
+    if ids:
+        stats = _run(
+            ["docker", "stats", "--no-stream", "--format", "{{json .}}"] + ids,
+            timeout_s=10.0,
+        )
+        if stats.returncode == 0:
+            for line in (stats.stdout or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    s = json.loads(line)
+                except Exception:
+                    continue
+                sid = str(s.get("ID") or "")
+                if not sid:
+                    continue
+                stats_map[sid] = {
+                    "cpu": str(s.get("CPUPerc") or ""),
+                    "mem": str(s.get("MemUsage") or ""),
+                    "mem_perc": str(s.get("MemPerc") or ""),
+                }
+    for item in items:
+        stat = stats_map.get(item.get("id") or "")
+        if stat:
+            item.update(stat)
+    return {"docker_available": True, "items": items}
+
+
+def stop_data_agent_container(container_id_or_name: str) -> dict:
+    if not _docker_available():
+        return {"docker_available": False, "stopped": False, "error": "Docker is not available"}
+    target = (container_id_or_name or "").strip()
+    if not target:
+        return {"docker_available": True, "stopped": False, "error": "Missing container id"}
+    p = _run(["docker", "rm", "-f", target], timeout_s=20.0)
+    if p.returncode != 0:
+        return {
+            "docker_available": True,
+            "stopped": False,
+            "error": (p.stderr or p.stdout or "").strip(),
+        }
+    return {"docker_available": True, "stopped": True}
+
+
 def _get_data_agent_image() -> str:
     return (
         os.environ.get("IGX_DATA_AGENT_IMAGE")
@@ -382,6 +464,20 @@ def ensure_image_pulled() -> str:
 def _container_name_for_conversation(conversation_id: UUID) -> str:
     s = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(conversation_id))
     return f"igx-data-agent-{s}"
+
+
+def _conversation_id_from_container_name(name: str) -> str:
+    prefix = "igx-data-agent-"
+    if not name.startswith(prefix):
+        return ""
+    raw = name[len(prefix) :].strip()
+    if not raw:
+        return ""
+    candidate = raw.replace("_", "-")
+    try:
+        return str(uuid.UUID(candidate))
+    except Exception:
+        return ""
 
 
 def _get_existing_container_id(name: str) -> str:
