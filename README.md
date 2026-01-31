@@ -1,9 +1,9 @@
 # Intelligravex VoiceBot
 
-Continuous, local, end-to-end AI voice bot + Studio:
-- **ASR:** Whisper (local)
-- **LLM:** OpenAI `gpt-4o`
-- **TTS:** Coqui **XTTS v2** (local)
+Continuous, end-to-end AI voice bot + Studio:
+- **ASR:** OpenAI (`gpt-4o-mini-transcribe`)
+- **LLM:** OpenAI (configurable)
+- **TTS:** OpenAI (`gpt-4o-mini-tts`)
 
 ## Features
 
@@ -27,77 +27,15 @@ Continuous, local, end-to-end AI voice bot + Studio:
   - Export prior results to CSV/JSON and serve via a short-lived download token URL.
 - **Embeddable widget** (text chat) with client keys and a public WebSocket API.
 
-## Quickstart
+## End‑user setup (no CLI)
 
-### 1) Create a venv + install deps
+On first launch, the Studio UI walks you through setup:
+1) **OpenAI API key** (required for ASR, LLM, and TTS).
+2) **ScrapingBee key** (optional; enables `web_search`).
+3) **Data Agent** (optional; requires Docker installed). The UI will detect Docker and guide you. The first run pulls a prebuilt container image (override with `IGX_DATA_AGENT_IMAGE` if needed).
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -e ".[asr,tts]"
-```
-
-Notes:
-- `sounddevice` requires PortAudio (macOS: `brew install portaudio`).
-- Use a modern CPython (3.10+) on macOS (Homebrew Python recommended) to avoid SSL and wheel issues.
-- Whisper and XTTS will download model weights on first run.
-- Use headphones to avoid feedback (no echo cancellation by default).
-
-### 2) Configure
-
-```bash
-cp .env.example .env
-# edit .env with your OPENAI_API_KEY
-```
-
-TTS voice:
-- Set `VOICEBOT_SPEAKER_WAV` to a short clean voice sample (recommended), or
-- Set `VOICEBOT_SPEAKER_ID` to one of the model speakers (see `voicebot doctor` output).
-
-Language:
-- Set ASR language to a 2-letter code (e.g. `en`, `hi`) or `auto` to let Whisper detect it.
-
-Latency tuning:
-- Use a smaller Whisper model (`VOICEBOT_WHISPER_MODEL=tiny` or `base`) for lower ASR latency.
-- XTTS is compute-heavy on CPU; reduce first-audio delay by lowering `VOICEBOT_TTS_CHUNK_MAX_CHARS`.
-
-### 3) Run
-
-```bash
-voicebot run
-```
-
-## CLI
-
-```bash
-voicebot --help
-voicebot run --help
-voicebot devices
-voicebot doctor
-voicebot tts-speakers
-voicebot web --help
-```
-
-## Studio API server
-
-1) Set a DB URL + secret key in `.env`:
-   - `VOICEBOT_DB_URL=sqlite:///voicebot.db`
-   - `VOICEBOT_SECRET_KEY=...` (Fernet key; used to encrypt API keys at rest)
-
-2) Run:
-
-```bash
-voicebot web --host 0.0.0.0 --port 8000
-# or:
-./start.sh web --host 0.0.0.0 --port 8000
-```
-
-Then open the React Studio UI (see below) to create keys + bots, and run locally by UUID:
-
-```bash
-voicebot run --bot <uuid>
-```
+Default Data Agent image:
+- `ghcr.io/mornville/data-agent:latest`
 
 ### Download URL host (exports)
 
@@ -120,40 +58,8 @@ VOICEBOT_DOWNLOAD_BASE_URL=127.0.0.1:8000
     - send JSON `{type:"stop", req_id}`
   - Server events (JSON): `status`, `conversation`, `asr`, `text_delta`, `audio_wav`, `error`, `done`.
 - REST endpoints:
-  - `POST /api/bots/<uuid>/talk/stream` (WAV upload → Whisper → streaming LLM → streaming TTS, NDJSON)
+- `POST /api/bots/<uuid>/talk/stream` (WAV upload → OpenAI ASR → streaming LLM → streaming TTS, NDJSON)
   - `POST /api/bots/<uuid>/chat` (text → LLM → optional TTS; JSON)
-
-## React Studio (Two-Server Dev)
-
-The repo also includes a React (Vite) frontend under `frontend/`.
-
-1) Start the backend:
-
-```bash
-./start.sh web --host 0.0.0.0 --port 8000
-```
-
-2) Start the React frontend (separate terminal):
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Then open `http://localhost:5173`.
-
-Notes:
-- Backend JSON APIs used by the React app:
-  - `GET/POST/PUT/DELETE /api/bots`
-  - `GET/POST/DELETE /api/keys`
-  - `GET /api/conversations` (paginated), `GET /api/conversations/<uuid>`
-  - `GET/POST/PUT/DELETE /api/bots/<uuid>/tools` (integration tools)
-  - `WS /ws/bots/<uuid>/talk` (mic audio + streamed status/audio)
-- Dev CORS is enabled for local hosts/ports by default (including `localhost:5173`).
-  - Override with `VOICEBOT_CORS_ORIGINS` (comma-separated), e.g.:
-  - `VOICEBOT_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://ashutosh-jha-macbook-pro:3001`
-  - React can also be pointed at a different backend using `VITE_BACKEND_URL` in `frontend/.env`.
 
 ## Variables (Metadata Templating)
 
@@ -280,16 +186,53 @@ Example:
 
 ## Context / Architecture (for handoff)
 
-- Local loop (mic): `voicebot/dialog/session.py` (VAD → Whisper → OpenAI Responses stream → chunked XTTS → playback)
+- Local loop (mic): `voicebot/dialog/session.py` (VAD → OpenAI ASR → OpenAI Responses stream → OpenAI TTS → playback)
 - Studio server: `voicebot/web/app.py` (FastAPI JSON + WebSocket APIs)
 - DB: SQLite by default (`VOICEBOT_DB_URL`), models in `voicebot/models.py` (`Bot`, `ApiKey`, `Conversation`, `ConversationMessage`)
-- Secrets: encrypted with Fernet using `VOICEBOT_SECRET_KEY` (`voicebot/crypto.py`); UI only shows masked hints for keys.
+- Secrets: encrypted with Fernet using `VOICEBOT_SECRET_KEY` (auto-generated unless overridden); UI only shows masked hints for keys.
 
 ## Production notes
 
 - This is a **local** voice loop (mic + speakers). For web/telephony deployment, build a streaming server
   (WebRTC/WebSocket) around the same pipeline.
 - For safety/quality, add policy checks and user authentication if you ship beyond local use.
+
+## Maintainer packaging
+
+These steps are for maintainers building distributable binaries (end users should not need a terminal).
+
+### macOS (PyInstaller .app)
+
+```bash
+./scripts/package_macos.sh
+```
+
+Codesign + notarize (Developer ID required):
+
+```bash
+codesign --force --deep --options runtime --sign "Developer ID Application: <Team Name>" dist/IntelligravexStudio.app
+xcrun notarytool submit dist/IntelligravexStudio.app --keychain-profile "<profile>" --wait
+xcrun stapler staple dist/IntelligravexStudio.app
+```
+
+### Linux (AppImage)
+
+```bash
+./scripts/package_linux_appimage.sh
+```
+
+Output: `dist/IntelligravexStudio-x86_64.AppImage` (AppImage tool is downloaded by the script).
+
+Note: AppImage packaging is currently scripted for x86_64 Linux. For arm64, swap in the appropriate appimagetool binary.
+
+### Data Agent image (prebuilt)
+
+Build the Data Agent container image and push it to your registry:
+
+```bash
+IGX_DATA_AGENT_IMAGE=ghcr.io/mornville/data-agent:latest ./scripts/build_data_agent_image.sh
+docker push ghcr.io/mornville/data-agent:latest
+```
 
 ## Embed (Text-only)
 

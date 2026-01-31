@@ -7,7 +7,10 @@ from typing import Optional
 
 import numpy as np
 
-from voicebot.tts.xtts import TtsAudio
+@dataclass(frozen=True)
+class TtsAudio:
+    audio: np.ndarray
+    sample_rate: int
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,7 @@ class OpenAITTS:
 
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
-            raise RuntimeError("No OpenAI API key found (set OPENAI_API_KEY or configure a bot key).")
+            raise RuntimeError("No OpenAI API key found (set OPENAI_API_KEY or add a key in Studio).")
 
         self._client = OpenAI(api_key=key)
         self._model = (model or "gpt-4o-mini-tts").strip()

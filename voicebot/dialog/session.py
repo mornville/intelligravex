@@ -6,7 +6,7 @@ import threading
 import time
 from typing import List, Optional
 
-from voicebot.asr.whisper_asr import WhisperASR
+from voicebot.asr.openai_asr import OpenAIASR
 from voicebot.audio.devices import parse_device
 from voicebot.audio.mic import Microphone
 from voicebot.audio.playback import AudioPlayer
@@ -14,7 +14,6 @@ from voicebot.audio.vad import VadSegmenter
 from voicebot.config import Settings
 from voicebot.llm.openai_llm import Message, OpenAILLM
 from voicebot.tts.openai_tts import OpenAITTS
-from voicebot.tts.xtts import XTTSv2
 
 log = logging.getLogger(__name__)
 
@@ -25,29 +24,19 @@ class VoiceBotSession:
         self._drop_mic_audio = threading.Event()
         self._mic: Optional[Microphone] = None
 
-        self._asr = WhisperASR(
-            model_name=settings.whisper_model,
-            device=settings.whisper_device,
-            language=settings.language,
+        lang = None if (settings.language or "").strip().lower() in ("", "auto") else settings.language
+        self._asr = OpenAIASR(
+            api_key=settings.openai_api_key or os.environ.get("OPENAI_API_KEY"),
+            model=settings.openai_asr_model,
+            language=lang,
         )
         self._llm = OpenAILLM(model=settings.openai_model, api_key=settings.openai_api_key)
-        tts_vendor = (settings.tts_vendor or "openai_tts").strip().lower()
-        if tts_vendor == "openai_tts":
-            self._tts = OpenAITTS(
-                api_key=settings.openai_api_key or os.environ.get("OPENAI_API_KEY"),
-                model=settings.openai_tts_model,
-                voice=settings.openai_tts_voice,
-                speed=settings.openai_tts_speed,
-            )
-        else:
-            self._tts = XTTSv2(
-                model_name=settings.xtts_model,
-                speaker_wav=settings.speaker_wav,
-                speaker_id=settings.speaker_id,
-                use_gpu=settings.tts_use_gpu,
-                split_sentences=settings.tts_split_sentences,
-                language=settings.tts_language,
-            )
+        self._tts = OpenAITTS(
+            api_key=settings.openai_api_key or os.environ.get("OPENAI_API_KEY"),
+            model=settings.openai_tts_model,
+            voice=settings.openai_tts_voice,
+            speed=settings.openai_tts_speed,
+        )
         self._player = AudioPlayer(device=parse_device(settings.output_device))
         self._vad = VadSegmenter(
             aggressiveness=settings.vad_aggressiveness,
@@ -59,9 +48,6 @@ class VoiceBotSession:
         self._history: List[Message] = [Message(role="system", content=settings.system_prompt)]
 
     def run_forever(self) -> None:
-        if self.settings.input_sample_rate != 16000:
-            raise ValueError("Set VOICEBOT_INPUT_SAMPLE_RATE=16000 (Whisper path is non-resampling).")
-
         log.info("Listening. Press Ctrl+C to stop.")
 
         with Microphone(

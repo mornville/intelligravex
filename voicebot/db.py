@@ -11,8 +11,21 @@ from sqlmodel import Session, SQLModel, create_engine
 
 def get_db_url(db_url: Optional[str] = None) -> str:
     if db_url:
-        return db_url
-    return os.environ.get("VOICEBOT_DB_URL") or "sqlite:///voicebot.db"
+        return _normalize_db_url(db_url)
+    return _normalize_db_url(os.environ.get("VOICEBOT_DB_URL") or "sqlite:///voicebot.db")
+
+
+def _normalize_db_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if raw.startswith("sqlite:///"):
+        path = raw[len("sqlite:///") :]
+        path = os.path.expanduser(path)
+        if path:
+            dir_path = os.path.dirname(path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+        return f"sqlite:///{path}"
+    return raw
 
 
 def make_engine(db_url: Optional[str] = None):
@@ -77,7 +90,7 @@ def _apply_light_migrations(engine) -> None:
 
         add_bot_col("start_message_mode", "TEXT NOT NULL DEFAULT 'llm'")
         add_bot_col("start_message_text", "TEXT NOT NULL DEFAULT ''")
-        add_bot_col("tts_vendor", "TEXT NOT NULL DEFAULT 'openai_tts'")
+        add_bot_col("openai_asr_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini-transcribe'")
         add_bot_col("openai_tts_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini-tts'")
         add_bot_col("openai_tts_voice", "TEXT NOT NULL DEFAULT 'alloy'")
         add_bot_col("openai_tts_speed", "REAL NOT NULL DEFAULT 1.0")
@@ -96,8 +109,8 @@ def _apply_light_migrations(engine) -> None:
         try:
             conn.execute(
                 text(
-                    "UPDATE bot SET tts_vendor='openai_tts' "
-                    "WHERE tts_vendor IS NULL OR tts_vendor='' OR tts_vendor='xtts_local'"
+                    "UPDATE bot SET codex_model='gpt-5.1-codex-mini' "
+                    "WHERE codex_model IS NULL OR codex_model='' OR codex_model='gpt-5-codex-mini'"
                 )
             )
         except Exception:
@@ -105,8 +118,8 @@ def _apply_light_migrations(engine) -> None:
         try:
             conn.execute(
                 text(
-                    "UPDATE bot SET codex_model='gpt-5.1-codex-mini' "
-                    "WHERE codex_model IS NULL OR codex_model='' OR codex_model='gpt-5-codex-mini'"
+                    "UPDATE bot SET openai_asr_model='gpt-4o-mini-transcribe' "
+                    "WHERE openai_asr_model IS NULL OR openai_asr_model=''"
                 )
             )
         except Exception:

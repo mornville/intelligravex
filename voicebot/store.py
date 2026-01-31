@@ -31,6 +31,13 @@ def get_key(session: Session, key_id: UUID) -> ApiKey:
     return key
 
 
+def get_latest_key(session: Session, *, provider: str) -> ApiKey | None:
+    if not provider:
+        return None
+    stmt = select(ApiKey).where(ApiKey.provider == provider).order_by(ApiKey.created_at.desc()).limit(1)
+    return session.exec(stmt).first()
+
+
 def create_key(session: Session, *, crypto: CryptoBox, provider: str, name: str, secret: str) -> ApiKey:
     k = ApiKey(
         provider=provider,
@@ -209,11 +216,9 @@ def verify_client_key(session: Session, *, secret: str) -> Optional[ClientKey]:
     return session.exec(stmt).first()
 
 
-def decrypt_openai_key(session: Session, *, crypto: CryptoBox, bot: Bot) -> Optional[str]:
-    if not bot.openai_key_id:
-        return None
-    key = get_key(session, bot.openai_key_id)
-    if key.provider != "openai":
+def decrypt_provider_key(session: Session, *, crypto: CryptoBox, provider: str) -> Optional[str]:
+    key = get_latest_key(session, provider=provider)
+    if not key:
         return None
     return crypto.decrypt_str(key.secret_ciphertext)
 

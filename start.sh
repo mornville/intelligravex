@@ -91,7 +91,7 @@ log_step "Checking base dependencies"
 dep_start="$(date +%s)"
 python - <<'PY' >/dev/null 2>&1 || need_install=1
 import importlib
-mods = ("numpy","sounddevice","webrtcvad","openai","pydantic","pydantic_settings","rich","typer","whisper","TTS")
+mods = ("numpy","sounddevice","webrtcvad","openai","pydantic","pydantic_settings","rich","typer","soundfile")
 for m in mods:
     try:
         importlib.import_module(m)
@@ -116,9 +116,9 @@ if [[ "$need_install" -eq 1 ]]; then
   install_start="$(date +%s)"
   python -m pip install -U pip setuptools wheel >/dev/null
   if [[ "$cmd" == "web" ]]; then
-    python -m pip install -e ".[asr,tts,web]"
+    python -m pip install -e ".[web]"
   else
-    python -m pip install -e ".[asr,tts]"
+    python -m pip install -e "."
   fi
   log_step "Installing dependencies done ($(( $(date +%s) - install_start ))s)"
 fi

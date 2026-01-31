@@ -40,38 +40,26 @@ def run(
     if bot_uuid:
         from voicebot.crypto import get_crypto_box
         from voicebot.db import init_db, make_engine
-        from voicebot.store import decrypt_openai_key, get_bot
+        from voicebot.store import decrypt_provider_key, get_bot
         from sqlmodel import Session
 
         engine = make_engine(base.db_url)
         init_db(engine)
         with Session(engine) as session:
             bot_row = get_bot(session, UUID(bot_uuid))
-            if bot_row.openai_key_id:
-                crypto = get_crypto_box(base.secret_key)
-                api_key = decrypt_openai_key(session, crypto=crypto, bot=bot_row)
-            else:
-                api_key = None
+            crypto = get_crypto_box(base.secret_key)
+            api_key = decrypt_provider_key(session, crypto=crypto, provider="openai")
 
         settings = base.model_copy(
             update={
                 "openai_model": bot_row.openai_model,
+                "openai_asr_model": bot_row.openai_asr_model,
                 "openai_api_key": api_key,
                 "system_prompt": bot_row.system_prompt,
                 "language": bot_row.language,
-                "whisper_model": bot_row.whisper_model,
-                "whisper_device": bot_row.whisper_device,
-                "tts_vendor": bot_row.tts_vendor,
-                "xtts_model": bot_row.xtts_model,
-                "speaker_wav": bot_row.speaker_wav,
-                "speaker_id": bot_row.speaker_id,
-                "tts_language": bot_row.tts_language,
                 "openai_tts_model": bot_row.openai_tts_model,
                 "openai_tts_voice": bot_row.openai_tts_voice,
                 "openai_tts_speed": bot_row.openai_tts_speed,
-                "tts_split_sentences": bot_row.tts_split_sentences,
-                "tts_chunk_min_chars": bot_row.tts_chunk_min_chars,
-                "tts_chunk_max_chars": bot_row.tts_chunk_max_chars,
                 "input_device": input_device or base.input_device,
                 "output_device": output_device or base.output_device,
             }
@@ -105,29 +93,6 @@ def devices() -> None:
 
     for line in list_audio_devices():
         print(line)
-
-
-@app.command("tts-speakers")
-def tts_speakers() -> None:
-    """
-    List available speaker IDs for the configured TTS model.
-    """
-    settings = Settings()
-    try:
-        from TTS.api import TTS  # type: ignore
-    except Exception as exc:
-        raise typer.Exit(code=1) from exc
-
-    tts = TTS(model_name=settings.xtts_model)
-    speakers = getattr(tts, "speakers", None) or []
-    languages = getattr(tts, "languages", None) or []
-    if languages:
-        print("languages:", ", ".join(languages))
-    if not speakers:
-        print("No speakers exposed by this model.")
-        raise typer.Exit(code=0)
-    for s in speakers:
-        print(s)
 
 
 @app.command()

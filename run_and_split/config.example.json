@@ -1,8 +1,0 @@
-{
-  "source_repo": "/Users/elidoruiz/dev/repos/gh-candorverse",
-  "dest_base": "/Users/elidoruiz/dev/tools/run_and_split/splits",
-  "remote_url": "https://github.com/owner/repo.git",
-  "branch": "main",
-  "recurse_submodules": true,
-  "use_local": true
-}

@@ -39,26 +39,15 @@ class Bot(SQLModel, table=True):
     # Applies to system tools (e.g. web_search, recall_http_response) and integration tools by name.
     disabled_tools_json: str = "[]"
     system_prompt: str = "You are a fast, helpful voice assistant. Keep answers concise unless asked."
-    openai_key_id: Optional[UUID] = Field(default=None, foreign_key="apikey.id")
 
-    # ASR
-    asr_vendor: str = "whisper_local"
+    # ASR (OpenAI)
     language: str = "en"
-    whisper_model: str = "small"
-    whisper_device: str = "auto"
+    openai_asr_model: str = "gpt-4o-mini-transcribe"
 
-    # TTS
-    tts_vendor: str = "openai_tts"
-    tts_language: str = "en"
-    xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
-    speaker_wav: Optional[str] = None
-    speaker_id: Optional[str] = None
+    # TTS (OpenAI)
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "alloy"
     openai_tts_speed: float = 1.0
-    tts_split_sentences: bool = False
-    tts_chunk_min_chars: int = 20
-    tts_chunk_max_chars: int = 120
 
     # Conversation start message (assistant speaks first)
     start_message_mode: str = "llm"  # "static" | "llm"

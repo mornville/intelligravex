@@ -23,7 +23,7 @@ DEFAULT_DATA_AGENT_SYSTEM_PROMPT = (
     "Call any API if needed, satisfy what_to_do, and respond back with a simple response."
 )
 
-DATA_AGENT_IMAGE = "igx-data-agent:latest"
+DEFAULT_DATA_AGENT_IMAGE = "ghcr.io/mornville/data-agent:latest"
 
 logger = logging.getLogger("voicebot.data_agent")
 
@@ -342,29 +342,41 @@ def _docker_available() -> bool:
         return False
 
 
-def ensure_image_built() -> None:
+def docker_available() -> bool:
+    return _docker_available()
+
+
+def _get_data_agent_image() -> str:
+    return (
+        os.environ.get("IGX_DATA_AGENT_IMAGE")
+        or os.environ.get("VOICEBOT_DATA_AGENT_IMAGE")
+        or DEFAULT_DATA_AGENT_IMAGE
+    )
+
+
+def ensure_image_pulled() -> str:
     if not _docker_available():
         raise RuntimeError("Docker is not available (cannot start Data Agent runtime).")
-    p = _run(["docker", "image", "inspect", DATA_AGENT_IMAGE], timeout_s=10.0)
+    image = _get_data_agent_image().strip() or DEFAULT_DATA_AGENT_IMAGE
+    p = _run(["docker", "image", "inspect", image], timeout_s=10.0)
     if p.returncode == 0:
-        logger.info("Data Agent image present: %s", DATA_AGENT_IMAGE)
-        return
-    logger.info("Data Agent image missing; building: %s", DATA_AGENT_IMAGE)
-    dockerfile = Path(__file__).with_name("Dockerfile")
-    context_dir = dockerfile.parent
-    build = _run(
-        ["docker", "build", "-t", DATA_AGENT_IMAGE, "-f", str(dockerfile), str(context_dir)],
-        timeout_s=900.0,
-    )
-    if build.returncode != 0:
+        logger.info("Data Agent image present: %s", image)
+        return image
+    logger.info("Data Agent image missing; pulling: %s", image)
+    pull = _run(["docker", "pull", image], timeout_s=900.0)
+    if pull.returncode != 0:
         logger.error(
-            "Failed to build Data Agent image rc=%s stdout_tail=%s stderr_tail=%s",
-            build.returncode,
-            (build.stdout or "")[-2000:],
-            (build.stderr or "")[-2000:],
+            "Failed to pull Data Agent image rc=%s stdout_tail=%s stderr_tail=%s",
+            pull.returncode,
+            (pull.stdout or "")[-2000:],
+            (pull.stderr or "")[-2000:],
         )
-        raise RuntimeError(f"Failed to build Data Agent image: {build.stderr.strip() or build.stdout.strip()}")
-    logger.info("Built Data Agent image: %s", DATA_AGENT_IMAGE)
+        raise RuntimeError(
+            "Failed to pull Data Agent image. "
+            "Check your network/login or set IGX_DATA_AGENT_IMAGE to a reachable image."
+        )
+    logger.info("Pulled Data Agent image: %s", image)
+    return image
 
 
 def _container_name_for_conversation(conversation_id: UUID) -> str:
@@ -486,7 +498,7 @@ def ensure_conversation_container(
     git_token: str = "",
     auth_json: str = "",
 ) -> str:
-    ensure_image_built()
+    image = ensure_image_pulled()
     name = _container_name_for_conversation(conversation_id)
     existing_id = _get_existing_container_id(name)
     if existing_id:
@@ -540,7 +552,7 @@ def ensure_conversation_container(
             f"{workspace_dir}:/work",
             "-w",
             "/work",
-            DATA_AGENT_IMAGE,
+            image,
             "sh",
             "-lc",
             "mkdir -p /work/.codex && tail -f /dev/null",

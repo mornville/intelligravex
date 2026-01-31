@@ -27,7 +27,10 @@ def estimate_text_tokens(text: str, model: str) -> int:
     try:
         enc = tiktoken.encoding_for_model(model)
     except Exception:
-        enc = tiktoken.get_encoding("cl100k_base")
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return max(1, int(round(len(s) / 4.0)))
     return int(len(enc.encode(s)))
 
 
@@ -52,4 +55,3 @@ def estimate_cost_usd(*, model_price: Optional[ModelPrice], input_tokens: int, o
     if model_price is None:
         return 0.0
     return float(input_tokens) / 1_000_000.0 * model_price.input_per_1m + float(output_tokens) / 1_000_000.0 * model_price.output_per_1m
-

@@ -15,7 +15,7 @@ import threading
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Generator, Optional, Tuple
+from typing import Any, Callable, Generator, Optional
 from urllib.parse import quote as _url_quote
 from uuid import UUID
 
@@ -23,15 +23,17 @@ import httpx
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
 from voicebot.config import Settings
 from voicebot.crypto import CryptoError, build_hint, get_crypto_box
 from voicebot.db import init_db, make_engine
-from voicebot.asr.whisper_asr import WhisperASR
+from voicebot.asr.openai_asr import OpenAIASR
 from voicebot.llm.codex_http_agent import run_codex_http_agent_one_shot, run_codex_http_agent_one_shot_from_paths
 from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
@@ -47,7 +49,7 @@ from voicebot.store import (
     add_message_with_metrics,
     update_conversation_metrics,
     merge_conversation_metadata,
-    decrypt_openai_key,
+    decrypt_provider_key,
     delete_bot,
     delete_client_key,
     delete_key,
@@ -73,7 +75,6 @@ from voicebot.store import (
     upsert_git_token,
     verify_client_key,
 )
-from voicebot.tts.xtts import XTTSv2
 from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.utils.python_postprocess import run_python_postprocessor
@@ -87,7 +88,9 @@ from voicebot.utils.template import eval_template_value, render_jinja_template, 
 from voicebot.data_agent.docker_runner import (
     DEFAULT_DATA_AGENT_SYSTEM_PROMPT,
     default_workspace_dir_for_conversation,
+    docker_available,
     ensure_conversation_container,
+    ensure_image_pulled,
     get_container_status,
     run_container_command,
     run_data_agent,
@@ -472,6 +475,7 @@ class GitTokenRequest(BaseModel):
 class BotCreateRequest(BaseModel):
     name: str
     openai_model: str = "o4-mini"
+    openai_asr_model: str = "gpt-4o-mini-transcribe"
     web_search_model: Optional[str] = None
     codex_model: Optional[str] = None
     summary_model: Optional[str] = None
@@ -485,20 +489,9 @@ class BotCreateRequest(BaseModel):
     data_agent_prewarm_prompt: str = ""
     system_prompt: str
     language: str = "en"
-    tts_language: str = "en"
-    tts_vendor: str = "openai_tts"
-    whisper_model: str = "small"
-    whisper_device: str = "auto"
-    xtts_model: str = "tts_models/multilingual/multi-dataset/xtts_v2"
-    speaker_id: Optional[str] = None
-    speaker_wav: Optional[str] = None
     openai_tts_model: str = "gpt-4o-mini-tts"
     openai_tts_voice: str = "alloy"
     openai_tts_speed: float = 1.0
-    openai_key_id: Optional[UUID] = None
-    tts_split_sentences: bool = False
-    tts_chunk_min_chars: int = 20
-    tts_chunk_max_chars: int = 120
     start_message_mode: str = "llm"
     start_message_text: str = ""
 
@@ -506,6 +499,7 @@ class BotCreateRequest(BaseModel):
 class BotUpdateRequest(BaseModel):
     name: Optional[str] = None
     openai_model: Optional[str] = None
+    openai_asr_model: Optional[str] = None
     web_search_model: Optional[str] = None
     codex_model: Optional[str] = None
     summary_model: Optional[str] = None
@@ -519,20 +513,9 @@ class BotUpdateRequest(BaseModel):
     data_agent_prewarm_prompt: Optional[str] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
-    tts_language: Optional[str] = None
-    tts_vendor: Optional[str] = None
-    whisper_model: Optional[str] = None
-    whisper_device: Optional[str] = None
-    xtts_model: Optional[str] = None
-    speaker_id: Optional[str] = None
-    speaker_wav: Optional[str] = None
     openai_tts_model: Optional[str] = None
     openai_tts_voice: Optional[str] = None
     openai_tts_speed: Optional[float] = None
-    openai_key_id: Optional[UUID] = None
-    tts_split_sentences: Optional[bool] = None
-    tts_chunk_min_chars: Optional[int] = None
-    tts_chunk_max_chars: Optional[int] = None
     start_message_mode: Optional[str] = None
     start_message_text: Optional[str] = None
     disabled_tools: Optional[list[str]] = None
@@ -665,10 +648,9 @@ def create_app() -> FastAPI:
             "http://127.0.0.1:3000",
             "http://localhost:3001",
             "http://127.0.0.1:3001",
-            "http://ashutosh-jha-macbook-pro:3001",
         ]
         # Also allow other dev ports on common local hostnames.
-        cors_origin_regex = r"^https?://(localhost|127\.0\.0\.1|ashutosh-jha-macbook-pro)(:\d+)?$"
+        cors_origin_regex = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -705,10 +687,8 @@ def create_app() -> FastAPI:
             "gpt-5.1",
             "gpt-5.1-chat-latest",
         ],
-        "whisper_models": ["tiny", "base", "small", "medium", "large"],
-        "whisper_devices": ["auto", "cpu", "mps", "cuda"],
+        "openai_asr_models": ["gpt-4o-mini-transcribe", "whisper-1"],
         "languages": ["auto", "en", "hi", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl"],
-        "xtts_models": ["tts_models/multilingual/multi-dataset/xtts_v2"],
         "openai_tts_models": ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"],
         "openai_tts_voices": [
             "alloy",
@@ -732,6 +712,20 @@ def create_app() -> FastAPI:
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    ui_dir_env = (os.environ.get("VOICEBOT_UI_DIR") or "").strip()
+    ui_dir = Path(ui_dir_env) if ui_dir_env else (Path(__file__).parent / "ui")
+    ui_index = ui_dir / "index.html"
+
+    def _accepts_html(accept_header: str) -> bool:
+        accept = (accept_header or "").lower()
+        if not accept:
+            return True
+        if "text/html" in accept:
+            return True
+        if "*/*" in accept:
+            return True
+        return False
+
     # Best-effort: keep the model dropdown up-to-date by periodically fetching available models
     # from the OpenAI API, if a key is configured in the environment.
     openai_models_cache: dict[str, Any] = {"ts": 0.0, "models": []}
@@ -746,9 +740,38 @@ def create_app() -> FastAPI:
         except CryptoError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    @app.get("/")
-    def root() -> dict:
+    @app.get("/", include_in_schema=False)
+    def root(request: Request):
+        if ui_index.exists() and _accepts_html(request.headers.get("accept") or ""):
+            return FileResponse(str(ui_index))
         return {"ok": True, "api_base": "/api", "public_widget_js": "/public/widget.js", "docs": "/docs"}
+
+    @app.exception_handler(StarletteHTTPException)
+    async def spa_fallback(request: Request, exc: StarletteHTTPException):
+        if exc.status_code == 404:
+            path = request.url.path or ""
+            if not path.startswith(("/api", "/public", "/static", "/ws", "/docs", "/openapi.json")):
+                if ui_index.exists() and _accepts_html(request.headers.get("accept") or ""):
+                    return FileResponse(str(ui_index))
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    class SpaStaticFiles(StaticFiles):
+        def __init__(self, *args, index_file: Path, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._index_file = index_file
+
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+            if response.status_code != 404:
+                return response
+            try:
+                headers = Headers(scope=scope)
+                accept = headers.get("accept") or ""
+            except Exception:
+                accept = ""
+            if self._index_file.exists() and _accepts_html(accept) and "." not in path:
+                return FileResponse(str(self._index_file))
+            return response
 
     def _ndjson(obj: dict) -> bytes:
         return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
@@ -785,60 +808,10 @@ def create_app() -> FastAPI:
         audio_i16 = (audio_i16 * 32767.0).astype(np.int16)
         return audio_i16.tobytes()
 
-    @lru_cache(maxsize=8)
-    def _get_asr(model_name: str, device: str, language: str) -> WhisperASR:
+    @lru_cache(maxsize=16)
+    def _get_asr(api_key: str, model_name: str, language: str) -> OpenAIASR:
         lang = None if (language or "").lower() in ("", "auto") else language
-        return WhisperASR(model_name=model_name, device=device, language=lang)
-
-    @lru_cache(maxsize=8)
-    def _get_tts_meta(model_name: str) -> dict:
-        try:
-            from voicebot.compat.torch_mps import ensure_torch_mps_compat
-
-            ensure_torch_mps_compat()
-        except Exception:
-            pass
-        try:
-            from TTS.api import TTS  # type: ignore
-        except Exception:
-            return {"speakers": [], "languages": []}
-
-        tts = TTS(model_name=model_name, gpu=False, progress_bar=False)
-        speakers = list(getattr(tts, "speakers", None) or [])
-        languages = list(getattr(tts, "languages", None) or [])
-        return {"speakers": speakers, "languages": languages}
-
-    def _normalize_tts_vendor(v: Optional[str]) -> str:
-        raw = (v or "").strip().lower()
-        if raw in ("openai_tts", "openai"):
-            return "openai_tts"
-        return "openai_tts"
-
-    @lru_cache(maxsize=8)
-    def _get_tts_handle(
-        model_name: str,
-        speaker_wav: Optional[str],
-        speaker_id: Optional[str],
-        use_gpu: bool,
-        split_sentences: bool,
-        language: str,
-    ) -> Tuple[XTTSv2, threading.Lock]:
-        return (
-            XTTSv2(
-                model_name=model_name,
-                speaker_wav=speaker_wav,
-                speaker_id=speaker_id,
-                use_gpu=use_gpu,
-                split_sentences=split_sentences,
-                language=language,
-            ),
-            threading.Lock(),
-        )
-
-    def _tts_synthesize(tts_handle: Tuple[XTTSv2, threading.Lock], text: str):
-        tts, lock = tts_handle
-        with lock:
-            return tts.synthesize(text)
+        return OpenAIASR(api_key=api_key, model=model_name, language=lang)
 
     @lru_cache(maxsize=16)
     def _get_openai_tts_handle(
@@ -856,9 +829,6 @@ def create_app() -> FastAPI:
         """
         Returns a thread-safe (per-handle lock) wav synthesizer for the bot's configured TTS vendor.
         """
-        vendor = _normalize_tts_vendor(getattr(bot, "tts_vendor", None))
-        if vendor != "openai_tts":
-            raise RuntimeError("Local TTS is disabled. Set tts_vendor=openai_tts.")
         if not api_key:
             raise RuntimeError("No OpenAI API key configured for OpenAI TTS.")
         model = (getattr(bot, "openai_tts_model", None) or "gpt-4o-mini-tts").strip()
@@ -1130,7 +1100,7 @@ def create_app() -> FastAPI:
         meta = safe_json_loads(conv.metadata_json or "{}") or {}
         return meta if isinstance(meta, dict) else {}
 
-    def _get_openai_api_key_for_bot(session: Session, *, bot: Bot) -> str:
+    def _get_openai_api_key(session: Session) -> str:
         def _read_openai_key_from_env_file() -> str:
             # Prefer python-dotenv if available; fall back to a minimal parser.
             try:
@@ -1152,22 +1122,40 @@ def create_app() -> FastAPI:
                 pass
             return ""
 
-        # Prefer the per-bot stored key, fall back to env.
+        # Prefer env, fall back to the latest stored OpenAI key.
+        key = os.environ.get("OPENAI_API_KEY") or ""
+        if not key:
+            try:
+                crypto = require_crypto()
+            except Exception:
+                crypto = None
+            if crypto is not None:
+                try:
+                    key = decrypt_provider_key(session, crypto=crypto, provider="openai") or ""
+                except Exception:
+                    key = ""
+        if not key:
+            key = _read_openai_key_from_env_file()
+        return (key or "").strip()
+
+    def _get_openai_api_key_for_bot(session: Session, *, bot: Bot) -> str:
+        _ = bot
+        return _get_openai_api_key(session)
+
+    def _get_scrapingbee_api_key(session: Session) -> str:
+        key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
+        if key:
+            return key
         try:
             crypto = require_crypto()
         except Exception:
             crypto = None
-        key = ""
-        if crypto is not None:
-            try:
-                key = decrypt_openai_key(session, crypto=crypto, bot=bot) or ""
-            except Exception:
-                key = ""
-        if not key:
-            key = os.environ.get("OPENAI_API_KEY") or ""
-        if not key:
-            key = _read_openai_key_from_env_file()
-        return (key or "").strip()
+        if crypto is None:
+            return ""
+        try:
+            return (decrypt_provider_key(session, crypto=crypto, provider="scrapingbee") or "").strip()
+        except Exception:
+            return ""
 
     def _normalize_git_provider(provider: str) -> str:
         p = (provider or "").strip().lower()
@@ -1323,6 +1311,17 @@ def create_app() -> FastAPI:
                 with Session(engine) as session:
                     bot = get_bot(session, bot_id)
                     if not bool(getattr(bot, "enable_data_agent", False)):
+                        return
+                    if not docker_available():
+                        logger.warning("Data Agent kickoff: Docker not available conv=%s bot=%s", conversation_id, bot_id)
+                        merge_conversation_metadata(
+                            session,
+                            conversation_id=conversation_id,
+                            patch={
+                                "data_agent.init_error": "Docker is not available. Install Docker to use Data Agent.",
+                                "data_agent.ready": False,
+                            },
+                        )
                         return
 
                     prewarm = bool(getattr(bot, "data_agent_prewarm_on_start", False))
@@ -1795,8 +1794,7 @@ def create_app() -> FastAPI:
             sent_greeting_delta = False
             api_key: Optional[str] = None
 
-            tts_vendor = _normalize_tts_vendor(getattr(bot, "tts_vendor", None))
-            needs_openai_key = not (bot.start_message_mode == "static" and greeting_text) or (speak and tts_vendor == "openai_tts")
+            needs_openai_key = not (bot.start_message_mode == "static" and greeting_text) or bool(speak)
             if needs_openai_key:
                 api_key = _get_openai_api_key_for_bot(session, bot=bot)
                 if not api_key:
@@ -2365,6 +2363,7 @@ def create_app() -> FastAPI:
         debug_mode = False
         stop_ts: Optional[float] = None
         accepting_audio = False
+        tts_synth: Optional[Callable[[str], tuple[bytes, int]]] = None
 
         try:
             while True:
@@ -2625,6 +2624,8 @@ def create_app() -> FastAPI:
                                 )
                                 tools_defs = _build_tools_for_bot(session, bot.id)
                                 llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                                if speak:
+                                    tts_synth = _get_tts_synth_fn(bot, api_key)
                                 if debug_mode:
                                     await _emit_llm_debug_payload(
                                         ws=ws,
@@ -2680,7 +2681,7 @@ def create_app() -> FastAPI:
                                 audio_q.put(None)
                                 return
                             try:
-                                tts_synth = _get_tts_synth_fn(bot, api_key)
+                                synth = tts_synth or _get_tts_synth_fn(bot, api_key)
                                 parts: list[str] = []
                                 while True:
                                     d = delta_q_tts.get()
@@ -2694,7 +2695,7 @@ def create_app() -> FastAPI:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
                                     status(req_id, "tts")
-                                    wav, sr = tts_synth(text_to_speak)
+                                    wav, sr = synth(text_to_speak)
                                     audio_q.put((wav, sr))
                             except Exception as exc:
                                 error_q.put(f"TTS failed: {exc}")
@@ -2882,7 +2883,7 @@ def create_app() -> FastAPI:
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
-                                        scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
+                                        scrapingbee_key = _get_scrapingbee_api_key(session)
                                         search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
                                         vector_queries = str(
                                             patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
@@ -2905,43 +2906,49 @@ def create_app() -> FastAPI:
                                                 progress_q.put_nowait(str(s))
                                             except Exception:
                                                 return
-                                        try:
-                                            ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                            task = asyncio.create_task(
-                                                asyncio.to_thread(
-                                                    run_web_search,
-                                                    search_term=search_term,
-                                                    vector_search_queries=vector_queries,
-                                                    why=why,
-                                                    openai_api_key=api_key or "",
-                                                    scrapingbee_api_key=scrapingbee_key,
-                                                    model=ws_model,
-                                                    progress_fn=_progress,
-                                                    top_k=top_k_val,
-                                                    max_results=max_results_val,
-                                                )
-                                            )
-                                            if wait_reply:
-                                                await _send_interim(wait_reply, kind="wait")
-                                            last_wait = time.time()
-                                            while not task.done():
-                                                # Drain progress updates (best-effort).
-                                                try:
-                                                    while True:
-                                                        p = progress_q.get_nowait()
-                                                        if p:
-                                                            await _send_interim(p, kind="progress")
-                                                except queue.Empty:
-                                                    pass
-                                                if wait_reply and (time.time() - last_wait) >= 7.0:
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                    last_wait = time.time()
-                                                await asyncio.sleep(0.2)
-                                            summary_text = await task
-                                            tool_result = str(summary_text or "").strip()
-                                        except Exception as exc:
-                                            tool_result = f"WEB_SEARCH_ERROR: {exc}"
+                                        if not scrapingbee_key:
+                                            tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
                                             tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            try:
+                                                ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
+                                                task = asyncio.create_task(
+                                                    asyncio.to_thread(
+                                                        run_web_search,
+                                                        search_term=search_term,
+                                                        vector_search_queries=vector_queries,
+                                                        why=why,
+                                                        openai_api_key=api_key or "",
+                                                        scrapingbee_api_key=scrapingbee_key,
+                                                        model=ws_model,
+                                                        progress_fn=_progress,
+                                                        top_k=top_k_val,
+                                                        max_results=max_results_val,
+                                                    )
+                                                )
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                last_wait = time.time()
+                                                while not task.done():
+                                                    # Drain progress updates (best-effort).
+                                                    try:
+                                                        while True:
+                                                            p = progress_q.get_nowait()
+                                                            if p:
+                                                                await _send_interim(p, kind="progress")
+                                                    except queue.Empty:
+                                                        pass
+                                                    if wait_reply and (time.time() - last_wait) >= 7.0:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                        last_wait = time.time()
+                                                    await asyncio.sleep(0.2)
+                                                summary_text = await task
+                                                tool_result = str(summary_text or "").strip()
+                                            except Exception as exc:
+                                                tool_result = f"WEB_SEARCH_ERROR: {exc}"
+                                                tool_failed = True
                                         # If the tool finishes while the bot is still speaking, wait before continuing.
                                         if speak:
                                             now = time.time()
@@ -2955,6 +2962,16 @@ def create_app() -> FastAPI:
                                             tool_result = {
                                                 "ok": False,
                                                 "error": {"message": "Data Agent is disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        elif not docker_available():
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {
+                                                    "message": "Docker is not available. Install Docker to use Data Agent.",
+                                                },
                                             }
                                             tool_failed = True
                                             needs_followup_llm = True
@@ -4057,6 +4074,8 @@ def create_app() -> FastAPI:
 
                                 if speak:
                                     status(req_id, "tts")
+                                    if tts_synth is None:
+                                        tts_synth = _get_tts_synth_fn(bot, api_key)
                                     wav, sr = await asyncio.to_thread(tts_synth, rendered_reply)
                                     await _ws_send_json(
                                         ws,
@@ -4157,7 +4176,7 @@ def create_app() -> FastAPI:
                                 pcm16 = bytes(audio_buf)
 
                                 asr = await asyncio.to_thread(
-                                    _get_asr(bot.whisper_model, bot.whisper_device, bot.language).transcribe_pcm16,
+                                    _get_asr(api_key, bot.openai_asr_model, bot.language).transcribe_pcm16,
                                     pcm16=pcm16,
                                     sample_rate=16000,
                                 )
@@ -4506,7 +4525,7 @@ def create_app() -> FastAPI:
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
-                                        scrapingbee_key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
+                                        scrapingbee_key = _get_scrapingbee_api_key(session)
                                         search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
                                         vector_queries = str(
                                             patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
@@ -4529,42 +4548,48 @@ def create_app() -> FastAPI:
                                                 progress_q.put_nowait(str(s))
                                             except Exception:
                                                 return
-                                        try:
-                                            ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                            task = asyncio.create_task(
-                                                asyncio.to_thread(
-                                                    run_web_search,
-                                                    search_term=search_term,
-                                                    vector_search_queries=vector_queries,
-                                                    why=why,
-                                                    openai_api_key=api_key or "",
-                                                    scrapingbee_api_key=scrapingbee_key,
-                                                    model=ws_model,
-                                                    progress_fn=_progress,
-                                                    top_k=top_k_val,
-                                                    max_results=max_results_val,
-                                                )
-                                            )
-                                            if wait_reply:
-                                                await _send_interim(wait_reply, kind="wait")
-                                            last_wait = time.time()
-                                            while not task.done():
-                                                try:
-                                                    while True:
-                                                        p = progress_q.get_nowait()
-                                                        if p:
-                                                            await _send_interim(p, kind="progress")
-                                                except queue.Empty:
-                                                    pass
-                                                if wait_reply and (time.time() - last_wait) >= 7.0:
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                    last_wait = time.time()
-                                                await asyncio.sleep(0.2)
-                                            summary_text = await task
-                                            tool_result = str(summary_text or "").strip()
-                                        except Exception as exc:
-                                            tool_result = f"WEB_SEARCH_ERROR: {exc}"
+                                        if not scrapingbee_key:
+                                            tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
                                             tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            try:
+                                                ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
+                                                task = asyncio.create_task(
+                                                    asyncio.to_thread(
+                                                        run_web_search,
+                                                        search_term=search_term,
+                                                        vector_search_queries=vector_queries,
+                                                        why=why,
+                                                        openai_api_key=api_key or "",
+                                                        scrapingbee_api_key=scrapingbee_key,
+                                                        model=ws_model,
+                                                        progress_fn=_progress,
+                                                        top_k=top_k_val,
+                                                        max_results=max_results_val,
+                                                    )
+                                                )
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                last_wait = time.time()
+                                                while not task.done():
+                                                    try:
+                                                        while True:
+                                                            p = progress_q.get_nowait()
+                                                            if p:
+                                                                await _send_interim(p, kind="progress")
+                                                    except queue.Empty:
+                                                        pass
+                                                    if wait_reply and (time.time() - last_wait) >= 7.0:
+                                                        await _send_interim(wait_reply, kind="wait")
+                                                        last_wait = time.time()
+                                                    await asyncio.sleep(0.2)
+                                                summary_text = await task
+                                                tool_result = str(summary_text or "").strip()
+                                            except Exception as exc:
+                                                tool_result = f"WEB_SEARCH_ERROR: {exc}"
+                                                tool_failed = True
                                         if speak:
                                             now = time.time()
                                             if now < tts_busy_until:
@@ -4577,6 +4602,14 @@ def create_app() -> FastAPI:
                                             tool_result = {
                                                 "ok": False,
                                                 "error": {"message": "Data Agent is disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        elif not docker_available():
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Docker is not available. Install Docker to use Data Agent."},
                                             }
                                             tool_failed = True
                                             needs_followup_llm = True
@@ -5322,6 +5355,8 @@ def create_app() -> FastAPI:
 
                                 if speak:
                                     status(req_id, "tts")
+                                    if tts_synth is None:
+                                        tts_synth = _get_tts_synth_fn(bot, api_key)
                                     wav, sr = await asyncio.to_thread(tts_synth, rendered_reply)
                                     await _ws_send_json(
                                         ws,
@@ -5363,6 +5398,12 @@ def create_app() -> FastAPI:
             return
         except RuntimeError:
             # Starlette can raise RuntimeError if receive() is called after disconnect was already processed.
+            return
+        except Exception as exc:
+            try:
+                await _ws_send_json(ws, {"type": "error", "error": f"Server error: {exc}"})
+            except Exception:
+                pass
             return
 
     def _parse_allowed_bot_ids(k) -> set[str]:
@@ -6386,9 +6427,7 @@ def create_app() -> FastAPI:
                                     new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                     tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                 elif tool_name == "web_search":
-                                    scrapingbee_key = (
-                                        settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or ""
-                                    ).strip()
+                                    scrapingbee_key = _get_scrapingbee_api_key(session)
                                     search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
                                     vector_queries = str(
                                         patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
@@ -6413,44 +6452,52 @@ def create_app() -> FastAPI:
                                         except Exception:
                                             return
 
-                                    try:
-                                        ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                        task = asyncio.create_task(
-                                            asyncio.to_thread(
-                                                run_web_search,
-                                                search_term=search_term,
-                                                vector_search_queries=vector_queries,
-                                                why=why,
-                                                openai_api_key=api_key or "",
-                                                scrapingbee_api_key=scrapingbee_key,
-                                                model=ws_model,
-                                                progress_fn=_progress,
-                                                top_k=top_k_val,
-                                                max_results=max_results_val,
-                                            )
-                                        )
-                                        if wait_reply:
-                                            await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                        last_wait = time.time()
-                                        while not task.done():
-                                            try:
-                                                while True:
-                                                    p = progress_q.get_nowait()
-                                                    if p:
-                                                        await _public_send_interim(
-                                                            ws, req_id=req_id, kind="progress", text=p
-                                                        )
-                                            except queue.Empty:
-                                                pass
-                                            if wait_reply and (time.time() - last_wait) >= 7.0:
-                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                                last_wait = time.time()
-                                            await asyncio.sleep(0.2)
-                                        summary_text = await task
-                                        tool_result = str(summary_text or "").strip()
-                                    except Exception as exc:
-                                        tool_result = f"WEB_SEARCH_ERROR: {exc}"
+                                    if not scrapingbee_key:
+                                        tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
                                         tool_failed = True
+                                        needs_followup_llm = True
+                                        final = ""
+                                    else:
+                                        try:
+                                            ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
+                                            task = asyncio.create_task(
+                                                asyncio.to_thread(
+                                                    run_web_search,
+                                                    search_term=search_term,
+                                                    vector_search_queries=vector_queries,
+                                                    why=why,
+                                                    openai_api_key=api_key or "",
+                                                    scrapingbee_api_key=scrapingbee_key,
+                                                    model=ws_model,
+                                                    progress_fn=_progress,
+                                                    top_k=top_k_val,
+                                                    max_results=max_results_val,
+                                                )
+                                            )
+                                            if wait_reply:
+                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
+                                            last_wait = time.time()
+                                            while not task.done():
+                                                try:
+                                                    while True:
+                                                        p = progress_q.get_nowait()
+                                                        if p:
+                                                            await _public_send_interim(
+                                                                ws, req_id=req_id, kind="progress", text=p
+                                                            )
+                                                except queue.Empty:
+                                                    pass
+                                                if wait_reply and (time.time() - last_wait) >= 7.0:
+                                                    await _public_send_interim(
+                                                        ws, req_id=req_id, kind="wait", text=wait_reply
+                                                    )
+                                                    last_wait = time.time()
+                                                await asyncio.sleep(0.2)
+                                            summary_text = await task
+                                            tool_result = str(summary_text or "").strip()
+                                        except Exception as exc:
+                                            tool_result = f"WEB_SEARCH_ERROR: {exc}"
+                                            tool_failed = True
                                     if tool_failed or not next_reply:
                                         needs_followup_llm = True
                                         final = ""
@@ -6459,6 +6506,14 @@ def create_app() -> FastAPI:
                                         tool_result = {
                                             "ok": False,
                                             "error": {"message": "Data Agent is disabled for this bot."},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        final = ""
+                                    elif not docker_available():
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": "Docker is not available. Install Docker to use Data Agent."},
                                         }
                                         tool_failed = True
                                         needs_followup_llm = True
@@ -7331,10 +7386,6 @@ def create_app() -> FastAPI:
         except RuntimeError:
             return
 
-    @app.get("/api/tts/meta")
-    def tts_meta(model_name: str) -> dict:
-        return _get_tts_meta(model_name)
-
     @app.get("/public/widget.js")
     def public_widget_js() -> Response:
         p = Path(__file__).parent / "static" / "embed-widget.js"
@@ -7384,17 +7435,33 @@ def create_app() -> FastAPI:
         return {
             "openai_models": openai_models,
             "openai_pricing": {k: {"input_per_1m": v.input_per_1m, "output_per_1m": v.output_per_1m} for k, v in pricing.items()},
-            "whisper_models": ui_options.get("whisper_models", []),
-            "whisper_devices": ui_options.get("whisper_devices", []),
+            "openai_asr_models": ui_options.get("openai_asr_models", []),
             "languages": ui_options.get("languages", []),
-            "xtts_models": [],
             "openai_tts_models": ui_options.get("openai_tts_models", []),
             "openai_tts_voices": ui_options.get("openai_tts_voices", []),
             "start_message_modes": ["llm", "static"],
-            "asr_vendors": ["whisper_local"],
-            "tts_vendors": ["openai_tts"],
             "http_methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
         }
+
+    @app.get("/api/status")
+    def api_status(session: Session = Depends(get_session)) -> dict:
+        openai_key = bool(_get_openai_api_key(session))
+        scrapingbee_key = bool(_get_scrapingbee_api_key(session))
+        return {
+            "openai_key_configured": openai_key,
+            "scrapingbee_key_configured": scrapingbee_key,
+            "docker_available": docker_available(),
+        }
+
+    @app.post("/api/data-agent/pull-image")
+    def api_pull_data_agent_image() -> dict:
+        if not docker_available():
+            raise HTTPException(status_code=400, detail="Docker not available")
+        try:
+            image = ensure_image_pulled()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        return {"ok": True, "image": image}
 
     @app.get("/api/downloads/{token}")
     def download_file(token: str) -> FileResponse:
@@ -7434,22 +7501,12 @@ def create_app() -> FastAPI:
             "data_agent_prewarm_on_start": bool(getattr(bot, "data_agent_prewarm_on_start", False)),
             "data_agent_prewarm_prompt": getattr(bot, "data_agent_prewarm_prompt", "") or "",
             "disabled_tools": sorted(disabled),
-            "openai_key_id": str(bot.openai_key_id) if bot.openai_key_id else None,
             "system_prompt": bot.system_prompt,
             "language": bot.language,
-            "tts_language": bot.tts_language,
-            "tts_vendor": _normalize_tts_vendor(bot.tts_vendor),
-            "whisper_model": bot.whisper_model,
-            "whisper_device": bot.whisper_device,
-            "xtts_model": bot.xtts_model,
-            "speaker_id": bot.speaker_id,
-            "speaker_wav": bot.speaker_wav,
+            "openai_asr_model": getattr(bot, "openai_asr_model", "gpt-4o-mini-transcribe"),
             "openai_tts_model": bot.openai_tts_model,
             "openai_tts_voice": bot.openai_tts_voice,
             "openai_tts_speed": float(bot.openai_tts_speed),
-            "tts_split_sentences": bool(bot.tts_split_sentences),
-            "tts_chunk_min_chars": int(bot.tts_chunk_min_chars),
-            "tts_chunk_max_chars": int(bot.tts_chunk_max_chars),
             "start_message_mode": bot.start_message_mode,
             "start_message_text": bot.start_message_text,
             "created_at": bot.created_at.isoformat(),
@@ -7511,6 +7568,7 @@ def create_app() -> FastAPI:
         bot = Bot(
             name=payload.name,
             openai_model=payload.openai_model,
+            openai_asr_model=(payload.openai_asr_model or "gpt-4o-mini-transcribe").strip() or "gpt-4o-mini-transcribe",
             web_search_model=(payload.web_search_model or payload.openai_model).strip() or payload.openai_model,
             codex_model=(payload.codex_model or "gpt-5.1-codex-mini").strip() or "gpt-5.1-codex-mini",
             summary_model=(payload.summary_model or "gpt-5-nano").strip() or "gpt-5-nano",
@@ -7524,20 +7582,9 @@ def create_app() -> FastAPI:
             data_agent_prewarm_prompt=(payload.data_agent_prewarm_prompt or ""),
             system_prompt=payload.system_prompt,
             language=payload.language,
-            tts_language=payload.tts_language,
-            tts_vendor=_normalize_tts_vendor(payload.tts_vendor),
-            whisper_model=payload.whisper_model,
-            whisper_device=payload.whisper_device,
-            xtts_model=payload.xtts_model,
-            speaker_id=(payload.speaker_id or "").strip() or None,
-            speaker_wav=(payload.speaker_wav or "").strip() or None,
             openai_tts_model=(payload.openai_tts_model or "gpt-4o-mini-tts").strip() or "gpt-4o-mini-tts",
             openai_tts_voice=(payload.openai_tts_voice or "alloy").strip() or "alloy",
             openai_tts_speed=float(payload.openai_tts_speed or 1.0),
-            openai_key_id=payload.openai_key_id,
-            tts_split_sentences=bool(payload.tts_split_sentences),
-            tts_chunk_min_chars=int(payload.tts_chunk_min_chars),
-            tts_chunk_max_chars=int(payload.tts_chunk_max_chars),
             start_message_mode=(payload.start_message_mode or "llm").strip() or "llm",
             start_message_text=payload.start_message_text or "",
         )
@@ -7553,11 +7600,7 @@ def create_app() -> FastAPI:
     def api_update_bot(bot_id: UUID, payload: BotUpdateRequest, session: Session = Depends(get_session)) -> dict:
         patch = {}
         for k, v in payload.model_dump(exclude_unset=True).items():
-            if k in ("speaker_id", "speaker_wav"):
-                patch[k] = (v or "").strip() or None
-            elif k == "tts_vendor":
-                patch[k] = _normalize_tts_vendor(v)
-            elif k in ("openai_tts_model", "openai_tts_voice", "web_search_model", "codex_model", "summary_model"):
+            if k in ("openai_tts_model", "openai_tts_voice", "web_search_model", "codex_model", "summary_model", "openai_asr_model"):
                 patch[k] = (v or "").strip()
             elif k == "openai_tts_speed":
                 patch[k] = float(v) if v is not None else 1.0
@@ -7702,9 +7745,9 @@ def create_app() -> FastAPI:
 
     @app.post("/api/keys")
     def api_create_key(payload: ApiKeyCreateRequest, session: Session = Depends(get_session)) -> dict:
-        provider = (payload.provider or "").strip() or "openai"
-        if provider != "openai":
-            raise HTTPException(status_code=400, detail="Only provider=openai is supported right now.")
+        provider = (payload.provider or "").strip().lower() or "openai"
+        if provider not in ("openai", "scrapingbee"):
+            raise HTTPException(status_code=400, detail="Unsupported provider.")
         crypto = require_crypto()
         k = create_key(session, crypto=crypto, provider=provider, name=payload.name, secret=payload.secret)
         return {
@@ -7717,10 +7760,6 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/keys/{key_id}")
     def api_delete_key(key_id: UUID, session: Session = Depends(get_session)) -> dict:
-        # Prevent deleting a key that's still referenced by a bot.
-        bots = list_bots(session)
-        if any(b.openai_key_id == key_id for b in bots):
-            raise HTTPException(status_code=400, detail="Key is in use by one or more bots. Remove it from bots first.")
         delete_key(session, key_id)
         return {"ok": True}
 
@@ -8123,7 +8162,7 @@ def create_app() -> FastAPI:
         if not pcm16:
             raise HTTPException(status_code=400, detail="Empty audio")
 
-        asr = _get_asr(bot.whisper_model, bot.whisper_device, bot.language).transcribe_pcm16(
+        asr = _get_asr(api_key, bot.openai_asr_model, bot.language).transcribe_pcm16(
             pcm16=pcm16, sample_rate=16000
         )
         user_text = asr.text.strip()
@@ -8278,6 +8317,9 @@ def create_app() -> FastAPI:
         tts_synth = _get_tts_synth_fn(bot, api_key)
         wav, sr = tts_synth(out_text)
         return {"text": out_text, "audio_wav_base64": base64.b64encode(wav).decode(), "sr": sr}
+
+    if ui_index.exists():
+        app.mount("/", SpaStaticFiles(directory=str(ui_dir), html=True, index_file=ui_index), name="studio-ui")
 
     logger.info("create_app: complete (%.2fs)", time.monotonic() - start)
     return app
