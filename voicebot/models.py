@@ -36,7 +36,7 @@ class Bot(SQLModel, table=True):
     data_agent_prewarm_on_start: bool = Field(default=False)
     data_agent_prewarm_prompt: str = Field(default="")
     # List of tool names disabled for this bot (JSON list stored as text).
-    # Applies to system tools (e.g. web_search, recall_http_response) and integration tools by name.
+    # Applies to system tools (e.g. web_search) and integration tools by name.
     disabled_tools_json: str = "[]"
     system_prompt: str = "You are a fast, helpful voice assistant. Keep answers concise unless asked."
 

@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # Storage
     db_url: str = Field(default="", alias="DB_URL")
     secret_key: Optional[str] = Field(default=None, alias="SECRET_KEY")  # Fernet key for encrypting provider secrets
-    # Absolute base URL used for download links returned by export_http_response.
+    # Absolute base URL used for download links returned by export helpers.
     # Override via VOICEBOT_DOWNLOAD_BASE_URL (supports full URL or host[:port]).
     download_base_url: str = "127.0.0.1:8000"
     basic_auth_user: Optional[str] = None

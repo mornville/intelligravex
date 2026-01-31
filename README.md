@@ -12,7 +12,7 @@ Continuous, end-to-end AI voice bot + Studio:
   - `openai_model` (main chat)
   - `web_search_model` (system tool: web_search)
   - `codex_model` (HTTP tools with “Use Codex for response”)
-- **System tools** (built-in): `set_metadata`, `web_search`, `recall_http_response`, `export_http_response`.
+- **System tools** (built-in): `set_metadata`, `web_search`.
 - **Per-bot tool enable/disable** from the bot page:
   - Disable/enable built-in system tools (except `set_metadata`).
   - Disable/enable each HTTP integration tool.
@@ -22,9 +22,6 @@ Continuous, end-to-end AI voice bot + Studio:
   - Response-to-metadata mapping
   - Static reply templates (Jinja2)
   - “Use Codex for response” post-processing
-- **Saved response recall + exports**:
-  - Recall previously saved HTTP responses to answer follow-ups without re-calling the API.
-  - Export prior results to CSV/JSON and serve via a short-lived download token URL.
 - **Embeddable widget** (text chat) with client keys and a public WebSocket API.
 
 ## End‑user setup (no CLI)
@@ -36,16 +33,6 @@ On first launch, the Studio UI walks you through setup:
 
 Default Data Agent image:
 - `ghcr.io/mornville/data-agent:latest`
-
-### Download URL host (exports)
-
-`export_http_response` returns a `download_url` that points at the Studio server.
-
-Set the base URL (host[:port] or full URL) using:
-
-```bash
-VOICEBOT_DOWNLOAD_BASE_URL=127.0.0.1:8000
-```
 
 ### Test from UI / API
 
@@ -262,18 +249,6 @@ Events (server → client):
 - `done`: final turn text + `metrics` (model, token estimates, cost, latencies)
 
 Tool calls/results are executed server-side but **not exposed** over the public WebSocket.
-
-## Downloads (Exports)
-
-`export_http_response` creates an export file (CSV/JSON) from a previously saved integration response, and returns:
-- `download_url`: absolute URL to `GET /api/downloads/<token>`
-- `download_token`: token used by the downloads endpoint
-
-The downloads endpoint:
-- `GET /api/downloads/<token>` (serves the exported file)
-
-Configure the base host/URL for `download_url` via:
-- `VOICEBOT_DOWNLOAD_BASE_URL` (default `127.0.0.1:8000`)
 
 ### Widget script
 

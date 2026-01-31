@@ -60,7 +60,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return (
       <div className="authWrap">
         <div className="authCard">
-          <div className="authTitle">Intelligravex Studio</div>
+          <div className="authTitle">GravexStudio</div>
           <div className="muted">Checking setup…</div>
         </div>
       </div>
@@ -71,7 +71,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return (
       <div className="authWrap">
         <div className="authCard">
-          <div className="authTitle">Intelligravex Studio</div>
+          <div className="authTitle">GravexStudio</div>
           <div className="alert">{statusErr}</div>
           <div className="row gap" style={{ marginTop: 12 }}>
             <button className="btn primary" onClick={() => void refreshStatus()} disabled={checkingStatus}>

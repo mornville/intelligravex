@@ -445,7 +445,7 @@ Rules:
               </button>
             </div>
           </div>
-          <div className="row gap" style={{ marginTop: 10, flexWrap: 'wrap' }}>
+          <div className="row gap settingsTabs" style={{ flexWrap: 'wrap' }}>
             <button className={activeTab === 'llm' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('llm')}>
               LLM
             </button>
@@ -463,12 +463,13 @@ Rules:
             </button>
           </div>
 
-          {!bot ? (
-            <div className="muted">
-              <LoadingSpinner />
-            </div>
-          ) : (
-            <>
+          <div className="settingsContent">
+            {!bot ? (
+              <div className="muted">
+                <LoadingSpinner />
+              </div>
+            ) : (
+              <>
               {activeTab === 'llm' ? (
                 <>
                   <div className="formRow">
@@ -656,7 +657,7 @@ Rules:
                   </div>
                   <div className="formRow">
                     <label>Enable Data Agent</label>
-                    <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                    <label className="checkRow">
                       <input
                         type="checkbox"
                         checked={Boolean(bot.enable_data_agent)}
@@ -669,7 +670,7 @@ Rules:
                     <>
                       <div className="formRow">
                         <label>Prewarm Data Agent on conversation start</label>
-                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                        <label className="checkRow">
                           <input
                             type="checkbox"
                             checked={Boolean(bot.data_agent_prewarm_on_start)}
@@ -697,7 +698,7 @@ Rules:
                       </div>
                       <div className="formRow">
                         <label>Return Data Agent result directly</label>
-                        <label className="row gap" style={{ justifyContent: 'flex-start' }}>
+                        <label className="checkRow">
                           <input
                             type="checkbox"
                             checked={Boolean(bot.data_agent_return_result_directly)}
@@ -919,8 +920,9 @@ Rules:
                   )}
                 </details>
               ) : null}
-            </>
-          )}
+              </>
+            )}
+          </div>
         </section>
           </div>
         </div>
