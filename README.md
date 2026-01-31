@@ -1,74 +1,86 @@
-# Intelligravex VoiceBot
+# GravexStudio
 
-Continuous, end-to-end AI voice bot + Studio:
-- **ASR:** OpenAI (`gpt-4o-mini-transcribe`)
-- **LLM:** OpenAI (configurable)
-- **TTS:** OpenAI (`gpt-4o-mini-tts`)
+GravexStudio is a desktop studio for building assistants that listen, reason, speak, and run real work across tools and long‑running tasks—without juggling separate servers.
 
-## Features
+## One‑line build (macOS / Linux)
 
-- **Studio UI (React)** to create bots, manage API keys, run mic tests, and inspect conversations.
-- **Multiple model slots per bot**:
-  - `openai_model` (main chat)
-  - `web_search_model` (system tool: web_search)
-  - `codex_model` (HTTP tools with “Use Codex for response”)
-- **System tools** (built-in): `set_metadata`, `web_search`.
-- **Per-bot tool enable/disable** from the bot page:
-  - Disable/enable built-in system tools (except `set_metadata`).
-  - Disable/enable each HTTP integration tool.
-- **HTTP integration tools** (LLM tool-calling → HTTP → metadata templating), with optional:
-  - JSON Schema for tool args
-  - JSON Schema for the HTTP response
-  - Response-to-metadata mapping
-  - Static reply templates (Jinja2)
-  - “Use Codex for response” post-processing
-- **Embeddable widget** (text chat) with client keys and a public WebSocket API.
+Choose your platform and run the single build command:
 
-## End‑user setup (no CLI)
+```bash
+./scripts/package_macos.sh
+```
 
-On first launch, the Studio UI walks you through setup:
-1) **OpenAI API key** (required for ASR, LLM, and TTS).
-2) **ScrapingBee key** (optional; enables `web_search`).
-3) **Data Agent** (optional; requires Docker installed). The UI will detect Docker and guide you. The first run pulls a prebuilt container image (override with `IGX_DATA_AGENT_IMAGE` if needed).
+```bash
+./scripts/package_linux_appimage.sh
+```
 
-Default Data Agent image:
-- `ghcr.io/mornville/data-agent:latest`
+Outputs:
+- macOS: `dist/GravexStudio.app`
+- Linux: `dist/GravexStudio-x86_64.AppImage`
 
-### Test from UI / API
+## Quick start
 
-- Mic conversation test is in the React Studio bot page. Conversations are stored in the DB with `test_flag=true`.
-- The bot page uses a **WebSocket** for mic audio + live status + streamed TTS audio:
-  - `WS /ws/bots/<uuid>/talk`
-  - Client protocol:
-    - send JSON `{type:"start", req_id, conversation_id?, test_flag, speak}`
-    - send binary **PCM16 @ 16kHz mono** (one or more frames)
-    - send JSON `{type:"stop", req_id}`
-  - Server events (JSON): `status`, `conversation`, `asr`, `text_delta`, `audio_wav`, `error`, `done`.
-- REST endpoints:
-- `POST /api/bots/<uuid>/talk/stream` (WAV upload → OpenAI ASR → streaming LLM → streaming TTS, NDJSON)
-  - `POST /api/bots/<uuid>/chat` (text → LLM → optional TTS; JSON)
+1) Open the app (`dist/GravexStudio.app` or the AppImage).
+2) The UI walks you through first‑time setup.
+3) Create your first assistant and start a conversation.
 
-## Variables (Metadata Templating)
+## What GravexStudio can do
 
+### Assistant studio
+- Create, configure, and manage multiple assistants.
+- Per‑assistant personality, system prompt, and response style.
+- Central dashboard for assistants, chats, and developer settings.
+
+### Multi‑model orchestration (per assistant)
+- **LLM model** for main chat and reasoning.
+- **ASR model** for voice input.
+- **TTS model + voice** for spoken replies.
+- **Web search model** for live information retrieval.
+- **Codex model** for post‑processing tool responses.
+- **Summary model** for long‑context rollups.
+- Adjustable history window (keep last N turns verbatim).
+
+### Real‑time conversations
+- Streamed responses (text and audio) with latency metrics.
+- Live mic test and talk loop built into the UI.
+- Continuous session support (start / stop, new conversation).
+
+### Data Agent (optional, Docker)
+- Run each conversation in its **own isolated workspace**.
+- Long‑running tasks that persist across turns.
+- Files, logs, and outputs stored per workspace.
+- Multiple concurrent containers for parallel work.
+- Container monitor with status and kill controls.
+- Automatic respawn of the workspace when needed.
+
+### Tools & integrations
+- Built‑in system tools: **metadata** + **web search**.
+- HTTP integration tools that let assistants call external APIs.
+- Tool args schemas (JSON Schema or required args lists).
+- Response schemas for validation and structured extraction.
+- Response‑to‑metadata mapping for durable memory.
+- Static reply templates (Jinja2) for deterministic outputs.
+- Optional “Use Codex for response” post‑processing.
+
+### Variables (metadata templating)
 Prompts and replies can reference conversation metadata using `{{...}}` placeholders.
 
 - Shorthand metadata lookup:
   - `{{.first_name}}`
   - `{{.user.profile.firstName}}` (nested)
 - Other contexts (used by integrations):
-  - `{{args.user_id}}` / `{{params.user_id}}` (tool-call arguments)
+  - `{{args.user_id}}` / `{{params.user_id}}` (tool‑call arguments)
   - `{{response.data.first_name}}` (HTTP response JSON)
 
 Where variables are applied:
-- Bot `system_prompt` is rendered with metadata before every LLM call.
+- Assistant `system_prompt` is rendered with metadata before every LLM call.
 - Message history is rendered with metadata before sending to the LLM.
 - Tool `next_reply` is rendered with metadata before sending back to the user.
 
 Missing variables resolve to an empty string.
 
-## Integration Tools (HTTP → Metadata)
-
-You can attach HTTP API “integration tools” to a bot. The LLM can call them, and the backend will:
+### Integration tools (HTTP → metadata)
+You can attach HTTP API “integration tools” to an assistant. When a tool is called, GravexStudio will:
 1) Execute the HTTP request.
 2) Map selected response fields into conversation metadata (via a response mapper).
 3) Return a tool result to the chat model, which then replies to the user.
@@ -77,9 +89,8 @@ Important:
 - Raw HTTP responses are **not** sent back to the LLM.
 - Only the mapped keys are merged into conversation metadata.
 
-### Tool call schema (LLM-facing)
-
-Each integration tool is exposed to the LLM as a function tool with a top-level shape:
+#### Tool call schema (LLM‑facing)
+Each integration tool is exposed to the LLM as a function tool with a top‑level shape:
 
 ```json
 {
@@ -92,18 +103,16 @@ Each integration tool is exposed to the LLM as a function tool with a top-level 
 Notes:
 - `args` is always required.
 - `next_reply` is required when **Codex is NOT enabled** (to avoid a second LLM call).
-- If “Use Codex for response” is enabled, `next_reply` is not required; the backend runs a Codex post-processor and returns a result to the main chat model to rephrase.
+- If “Use Codex for response” is enabled, `next_reply` is not required; the backend runs a Codex post‑processor and returns a result to the main chat model to rephrase.
 
-### Args schema (required args + JSON schema)
-
+#### Args schema (required args + JSON schema)
 You can define `args` in two ways:
-- **Required args list** (comma-separated in UI): the backend generates a permissive schema and requires those keys.
+- **Required args list** (comma‑separated in UI): the backend generates a permissive schema and requires those keys.
 - **Args schema (JSON Schema)**: the backend uses this as the schema for `args`.
 
 If both are present, required args are appended to the schema (they are not removed), so the integration still has all the fields needed to call the API.
 
-### Static reply (optional, Jinja2) — takes priority
-
+#### Static reply (optional, Jinja2) — takes priority
 Integrations can be configured with an optional `static_reply_template`.
 
 If `static_reply_template` is set:
@@ -114,158 +123,53 @@ If `static_reply_template` is set:
 Template context:
 - `meta`: current conversation metadata (after response mapping)
 - `response`: raw HTTP response JSON
-- `args` / `params`: tool-call arguments (excluding `next_reply`)
+- `args` / `params`: tool‑call arguments (excluding `next_reply`)
 
-### Use Codex for response (optional)
-
-If enabled, the backend runs a separate Codex “one-shot” agent after the HTTP request:
+#### Use Codex for response (optional)
+If enabled, the backend runs a separate Codex “one‑shot” agent after the HTTP request:
 1) The HTTP response is saved to a temp file.
 2) The Codex model receives:
-   - the response JSON schema (from the tool config, or a best-effort derived schema)
+   - the response JSON schema (from the tool config, or a best‑effort derived schema)
    - the response file path (so its generated Python script can read locally)
    - intent fields inside `args`:
      - `fields_required`: what fields are needed to build the response
      - `why_api_was_called`: why this API call happened (user intent)
 3) Codex returns a Python script that extracts/aggregates the required info and writes a `result.txt`.
-4) The tool result includes `codex_result_text` and file paths; the **main chat model** rephrases the final user-facing reply.
+4) The tool result includes `codex_result_text` and file paths; the **main chat model** rephrases the final user‑facing reply.
 
-### Tool enabling/disabling
+### Context control
+- Metadata templating in prompts and tool replies.
+- Automatic conversation summarization as context grows.
+- Keeps long sessions fast while retaining key facts.
 
-From the bot page in Studio:
-- System tools can be toggled per bot (click “Update tools” to save). `set_metadata` cannot be disabled.
-- Each HTTP integration tool has an `Enabled` toggle; disabled tools are not exposed to the LLM.
+### Local‑first and secure
+- Workspaces, configs, and conversation history stored locally.
+- Provider secrets encrypted at rest.
+- You decide what gets shared externally.
 
-### Response mapper
+### Embeddable chat widget
+- Public text‑chat widget you can embed in websites.
+- Client key support and WebSocket transport.
 
-Response mapper is a JSON object: `metadata_key -> template`.
+### Git + SSH tooling (inside Data Agent)
+- Secure repo access for data‑agent workflows.
+- Useful for code tasks, automation, and structured work.
 
-Example:
-```json
-{
-  "firstName": "{{response.data.first_name}}",
-  "user.id": "{{response.data.id}}"
-}
-```
+## First‑time setup (no CLI)
 
-Notes:
-- Keys with dots (e.g. `user.id`) are stored as nested objects in `metadata_json`.
-- Templates can return raw JSON values if the whole value is a single placeholder.
+The app guides you through everything:
 
-### GET query params (explicit in URL)
+1) **OpenAI API key** (required) — for ASR, LLM, and TTS.
+2) **ScrapingBee key** (optional) — enables web search.
+3) **Data Agent** (optional) — requires Docker installed and running.
 
-For `GET` integrations, query parameters are taken from the URL template itself (the backend does not auto-append
-unused tool args as query params). This prevents accidental duplication like:
+Default Data Agent image:
+- `ghcr.io/mornville/data-agent:latest`
 
-`/individuals/1730174632?npi=1730174632`
+Override the Data Agent image if needed:
+- `IGX_DATA_AGENT_IMAGE=...`
 
-Example:
+## Notes
 
-`https://analytics.candorhealth.com/api/individuals/{{args.npi}}?include_reviews={{args.include_reviews}}`
-
-### UI / API
-
-- React Studio: Bot page → “Integrations (HTTP tools)” → Add integration.
-- REST:
-  - `GET /api/bots/<bot_uuid>/tools`
-  - `POST /api/bots/<bot_uuid>/tools`
-  - `PUT /api/bots/<bot_uuid>/tools/<tool_uuid>`
-  - `DELETE /api/bots/<bot_uuid>/tools/<tool_uuid>`
-
-## Context / Architecture (for handoff)
-
-- Local loop (mic): `voicebot/dialog/session.py` (VAD → OpenAI ASR → OpenAI Responses stream → OpenAI TTS → playback)
-- Studio server: `voicebot/web/app.py` (FastAPI JSON + WebSocket APIs)
-- DB: SQLite by default (`VOICEBOT_DB_URL`), models in `voicebot/models.py` (`Bot`, `ApiKey`, `Conversation`, `ConversationMessage`)
-- Secrets: encrypted with Fernet using `VOICEBOT_SECRET_KEY` (auto-generated unless overridden); UI only shows masked hints for keys.
-
-## Production notes
-
-- This is a **local** voice loop (mic + speakers). For web/telephony deployment, build a streaming server
-  (WebRTC/WebSocket) around the same pipeline.
-- For safety/quality, add policy checks and user authentication if you ship beyond local use.
-
-## Maintainer packaging
-
-These steps are for maintainers building distributable binaries (end users should not need a terminal).
-
-### macOS (PyInstaller .app)
-
-```bash
-./scripts/package_macos.sh
-```
-
-Codesign + notarize (Developer ID required):
-
-```bash
-codesign --force --deep --options runtime --sign "Developer ID Application: <Team Name>" dist/IntelligravexStudio.app
-xcrun notarytool submit dist/IntelligravexStudio.app --keychain-profile "<profile>" --wait
-xcrun stapler staple dist/IntelligravexStudio.app
-```
-
-### Linux (AppImage)
-
-```bash
-./scripts/package_linux_appimage.sh
-```
-
-Output: `dist/IntelligravexStudio-x86_64.AppImage` (AppImage tool is downloaded by the script).
-
-Note: AppImage packaging is currently scripted for x86_64 Linux. For arm64, swap in the appropriate appimagetool binary.
-
-### Data Agent image (prebuilt)
-
-Build the Data Agent container image and push it to your registry:
-
-```bash
-IGX_DATA_AGENT_IMAGE=ghcr.io/mornville/data-agent:latest ./scripts/build_data_agent_image.sh
-docker push ghcr.io/mornville/data-agent:latest
-```
-
-## Embed (Text-only)
-
-You can embed a bot on a third-party website using:
-- A **Client Key** (generated in Studio → Keys → “Add client key”)
-- A WebSocket endpoint that streams assistant replies
-- A plug-and-play widget script (`/public/widget.js` or `/static/embed-widget.js`)
-
-### Client Key
-
-Client keys are separate from OpenAI keys and are used to authenticate embeds.
-They can be restricted by allowed origins and (optionally) allowed bot ids.
-
-### WebSocket API
-
-Endpoint:
-- `GET /public/v1/ws/bots/<bot_uuid>/chat?key=<client_key>&user_conversation_id=<stable_user_id>`
-
-Messages (client → server):
-- Start (assistant speaks first): `{"type":"start","req_id":"<uuid>"}`
-- User reply: `{"type":"chat","req_id":"<uuid>","text":"Hello"}`
-
-Events (server → client):
-- `conversation`: includes `conversation_id` (internal UUID)
-- `status`: `llm` / `idle`
-- `text_delta`: streaming assistant tokens
-- `done`: final turn text + `metrics` (model, token estimates, cost, latencies)
-
-Tool calls/results are executed server-side but **not exposed** over the public WebSocket.
-
-### Widget script
-
-Load:
-- `GET /public/widget.js` (same contents as `/static/embed-widget.js`)
-
-Auto-init (script tag):
-```html
-<div id="igx-voicebot"></div>
-<script
-  src="http://127.0.0.1:8000/public/widget.js"
-  data-target="#igx-voicebot"
-  data-bot-id="BOT_UUID"
-  data-api-key="igx_..."
-  data-user-conversation-id="user_123"
-></script>
-```
-
-Demo page:
-- `examples/embed_demo.html`
+- Docker is only needed if you enable the Data Agent.
+- All core features work without Docker.
