@@ -8313,6 +8313,33 @@ def create_app() -> FastAPI:
             pass
         return {"ok": True}
 
+    @app.delete("/api/group-conversations/{conversation_id}")
+    def api_delete_group_conversation(
+        conversation_id: UUID,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        conv = get_conversation(session, conversation_id)
+        if not bool(conv.is_group):
+            raise HTTPException(status_code=404, detail="Group conversation not found")
+
+        mapping = _ensure_group_individual_conversations(session, conv)
+
+        # Delete group messages + conversation.
+        session.exec(delete(ConversationMessage).where(ConversationMessage.conversation_id == conv.id))
+        session.delete(conv)
+
+        # Delete individual logs for the group.
+        for cid in mapping.values():
+            try:
+                child = get_conversation(session, UUID(cid))
+            except Exception:
+                continue
+            session.exec(delete(ConversationMessage).where(ConversationMessage.conversation_id == child.id))
+            session.delete(child)
+
+        session.commit()
+        return {"ok": True}
+
     @app.websocket("/ws/groups/{conversation_id}")
     async def ws_group(conversation_id: UUID, ws: WebSocket) -> None:
         await ws.accept()

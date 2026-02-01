@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { CpuChipIcon, UserIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/solid'
+import {
+  CpuChipIcon,
+  MicrophoneIcon,
+  SpeakerWaveIcon,
+  SpeakerXMarkIcon,
+  UserIcon,
+  WrenchScrewdriverIcon,
+} from '@heroicons/react/24/solid'
 import { apiGet, BACKEND_URL } from '../api/client'
 import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
@@ -22,6 +29,7 @@ type ChatItem = {
   id: string
   role: 'user' | 'assistant' | 'tool'
   text: string
+  created_at?: string
   details?: any
   timings?: Timings
 }
@@ -46,7 +54,21 @@ function wsBase(): string {
   return `${proto}//${u.host}`
 }
 
-export default function MicTest({ botId, initialConversationId }: { botId: string; initialConversationId?: string }) {
+export default function MicTest({
+  botId,
+  initialConversationId,
+  layout = 'default',
+  startToken,
+  onConversationIdChange,
+  hideWorkspace = false,
+}: {
+  botId: string
+  initialConversationId?: string
+  layout?: 'default' | 'whatsapp'
+  startToken?: number
+  onConversationIdChange?: (id: string | null) => void
+  hideWorkspace?: boolean
+}) {
   const [stage, setStage] = useState<Stage>('disconnected')
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [speak, setSpeak] = useState(true)
@@ -74,6 +96,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
   const activeReqIdRef = useRef<string | null>(null)
   const recordingRef = useRef(false)
   const draftAssistantIdRef = useRef<string | null>(null)
+  const pendingUserIdRef = useRef<string | null>(null)
   const toolProgressIdRef = useRef<Record<string, string>>({})
   const timingsByReq = useRef<Record<string, Timings>>({})
   const scrollerRef = useRef<HTMLDivElement | null>(null)
@@ -124,6 +147,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           id: m.id,
           role,
           text,
+          created_at: m.created_at,
           details: m.role === 'tool' ? m.tool : undefined,
           timings: m.metrics
             ? {
@@ -180,7 +204,10 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
   }
 
   const canInit = useMemo(() => stage === 'idle' || stage === 'disconnected' || stage === 'error', [stage])
-  const canRecord = useMemo(() => speak && stage === 'idle' && !!conversationId, [speak, stage, conversationId])
+  const canRecord = useMemo(() => {
+    if (layout === 'whatsapp') return stage === 'idle' && !!conversationId
+    return speak && stage === 'idle' && !!conversationId
+  }, [layout, speak, stage, conversationId])
 
   useEffect(() => {
     const token = getBasicAuthToken()
@@ -216,6 +243,11 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           activeReqIdRef.current = null
           draftAssistantIdRef.current = null
           toolProgressIdRef.current = {}
+          if (pendingUserIdRef.current) {
+            const pendingId = pendingUserIdRef.current
+            setItems((prev) => prev.filter((it) => it.id !== pendingId || it.text.trim()))
+            pendingUserIdRef.current = null
+          }
         }
         return
       }
@@ -238,13 +270,27 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
       if (msg.type === 'asr') {
         const text = String(msg.text || '').trim()
         if (text) {
-        setItems((prev) => [...prev, { id: makeId(), role: 'user', text }])
+        const pendingId = pendingUserIdRef.current
+        if (pendingId) {
+          setItems((prev) =>
+            prev.map((it) => (it.id === pendingId ? { ...it, text, created_at: new Date().toISOString() } : it)),
+          )
+          pendingUserIdRef.current = null
+        } else {
+          setItems((prev) => [...prev, { id: makeId(), role: 'user', text, created_at: new Date().toISOString() }])
+        }
         }
         return
       }
       if (msg.type === 'tool_call') {
         const details = normalizeToolEventForDisplay(msg)
-        const toolItem = { id: makeId(), role: 'tool' as const, text: `[tool_call] ${msg.name}`, details }
+        const toolItem = {
+          id: makeId(),
+          role: 'tool' as const,
+          text: `[tool_call] ${msg.name}`,
+          details,
+          created_at: new Date().toISOString(),
+        }
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
           if (!draftId) return [...prev, toolItem]
@@ -256,7 +302,13 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
       }
       if (msg.type === 'tool_result') {
         const details = normalizeToolEventForDisplay(msg)
-        const toolItem = { id: makeId(), role: 'tool' as const, text: `[tool_result] ${msg.name}`, details }
+        const toolItem = {
+          id: makeId(),
+          role: 'tool' as const,
+          text: `[tool_result] ${msg.name}`,
+          details,
+          created_at: new Date().toISOString(),
+        }
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
           if (!draftId) return [...prev, toolItem]
@@ -276,7 +328,12 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           const draftId = draftAssistantIdRef.current
           const hasItem = prev.some((it) => it.id === toolId)
           if (!hasItem) {
-            const toolItem = { id: toolId, role: 'tool' as const, text: `[tool_progress] ${text}` }
+            const toolItem = {
+              id: toolId,
+              role: 'tool' as const,
+              text: `[tool_progress] ${text}`,
+              created_at: new Date().toISOString(),
+            }
             if (!draftId) return [...prev, toolItem]
             const idx = prev.findIndex((it) => it.id === draftId)
             if (idx === -1) return [...prev, toolItem]
@@ -289,7 +346,7 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
       if (msg.type === 'interim') {
         const text = String(msg.text || '').trim()
         if (!text) return
-        setItems((prev) => [...prev, { id: makeId(), role: 'assistant', text }])
+        setItems((prev) => [...prev, { id: makeId(), role: 'assistant', text, created_at: new Date().toISOString() }])
         return
       }
       if (msg.type === 'text_delta') {
@@ -299,7 +356,8 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
           const hasDraft = prev.some((it) => it.id === draftId)
-          if (!hasDraft) return [...prev, { id: draftId, role: 'assistant', text: delta }]
+          if (!hasDraft)
+            return [...prev, { id: draftId, role: 'assistant', text: delta, created_at: new Date().toISOString() }]
           return prev.map((it) => (it.id === draftId ? { ...it, text: it.text + delta } : it))
         })
         return
@@ -317,7 +375,10 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
         const errorText = String(msg.error || 'Unknown error')
         setErr(errorText)
         setStage('error')
-        setItems((prev) => [...prev, { id: makeId(), role: 'assistant', text: `Error: ${errorText}` }])
+        setItems((prev) => [
+          ...prev,
+          { id: makeId(), role: 'assistant', text: `Error: ${errorText}`, created_at: new Date().toISOString() },
+        ])
         return
       }
       if (msg.type === 'done') {
@@ -330,7 +391,10 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
           if (doneText.trim() && (!draftId || !hasDraft)) {
             const newId = makeId()
             draftAssistantIdRef.current = newId
-            return [...prev, { id: newId, role: 'assistant', text: doneText, timings: t }]
+            return [
+              ...prev,
+              { id: newId, role: 'assistant', text: doneText, timings: t, created_at: new Date().toISOString() },
+            ]
           }
           if (draftId && hasDraft) {
             return prev.map((it) => {
@@ -361,8 +425,8 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
 
   useEffect(() => {
     if (!initialConversationId) return
-    if (conversationId) return
     if (ignoreInitialConversationRef.current) return
+    if (conversationId === initialConversationId) return
     setErr(null)
     setConversationId(initialConversationId)
     setItems([])
@@ -370,6 +434,22 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
     draftAssistantIdRef.current = null
     void hydrateConversation(initialConversationId)
   }, [initialConversationId, conversationId])
+
+  useEffect(() => {
+    if (!onConversationIdChange) return
+    onConversationIdChange(conversationId)
+  }, [conversationId, onConversationIdChange])
+
+  useEffect(() => {
+    if (layout !== 'whatsapp') return
+    if (startToken === undefined) return
+    void initConversation()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startToken])
+
+  useEffect(() => {
+    if (hideWorkspace) setShowFilesPane(false)
+  }, [hideWorkspace])
 
   useEffect(() => {
     if (!conversationId) return
@@ -425,7 +505,12 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
     setChatText('')
     const draftId = makeId()
     draftAssistantIdRef.current = draftId
-    setItems((prev) => [...prev, { id: makeId(), role: 'user', text }, { id: draftId, role: 'assistant', text: '' }])
+    const now = new Date().toISOString()
+    setItems((prev) => [
+      ...prev,
+      { id: makeId(), role: 'user', text, created_at: now },
+      { id: draftId, role: 'assistant', text: '', created_at: now },
+    ])
     const reqId = makeId()
     activeReqIdRef.current = reqId
     wsRef.current.send(
@@ -453,6 +538,14 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
     if (!canRecord) return
     setErr(null)
     draftAssistantIdRef.current = null
+    if (!pendingUserIdRef.current) {
+      const userId = makeId()
+      pendingUserIdRef.current = userId
+      setItems((prev) => [
+        ...prev,
+        { id: userId, role: 'user', text: '…', created_at: new Date().toISOString() },
+      ])
+    }
     const reqId = makeId()
     activeReqIdRef.current = reqId
     wsRef.current.send(
@@ -523,6 +616,154 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
     setExpandedPaths(next)
   }, [showFilesPane, tree, expandedPaths])
 
+  const messages = (
+    <>
+      {items.map((it) => {
+        const role = it.role
+        return (
+          <div key={it.id} className={`msgRow ${role}`}>
+            <div className={`avatar ${role}`} aria-hidden="true">
+              <RoleIcon role={role} />
+            </div>
+            <div className={role === 'user' ? 'bubble user' : role === 'assistant' ? 'bubble assistant' : 'bubble tool'}>
+              <div className="bubbleText">{it.text || '…'}</div>
+              {it.timings ? (
+                <details className="details">
+                  <summary>metrics</summary>
+                  <div className="bubbleMeta">
+                    ASR {fmtMs(it.timings.asr)} | LLM 1st {fmtMs(it.timings.llm_ttfb)} | LLM {fmtMs(it.timings.llm_total)} | TTS 1st{' '}
+                    {fmtMs(it.timings.tts_first_audio)} | total {fmtMs(it.timings.total)}
+                  </div>
+                </details>
+              ) : null}
+              {it.details ? (
+                <details className="details">
+                  <summary>details</summary>
+                  <pre className="pre">{JSON.stringify(it.details, null, 2)}</pre>
+                </details>
+              ) : null}
+              {it.created_at ? <div className="bubbleTime" title={it.created_at}>{fmtTime(it.created_at)}</div> : null}
+            </div>
+          </div>
+        )
+      })}
+    </>
+  )
+
+  const workspacePane =
+    conversationId && showFilesPane ? (
+      <aside className="filesPane">
+        <div className="paneHeader">
+          <div>
+            <div className="paneTitle">Workspace</div>
+            <div className="muted mono">container: {statusLabel}</div>
+          </div>
+          <button
+            className="btn iconBtn"
+            onClick={() => {
+              void loadContainerStatus()
+              void loadFiles()
+            }}
+            disabled={containerLoading || filesLoading}
+            aria-label="Refresh"
+          >
+            {containerLoading || filesLoading ? <LoadingSpinner label="Refreshing" /> : '⟳'}
+          </button>
+        </div>
+        {containerErr ? <div className="muted">{containerErr}</div> : null}
+        {filesErr ? <div className="alert" style={{ marginTop: 8 }}>{filesErr}</div> : null}
+        <div className="row gap" style={{ marginTop: 8, alignItems: 'center' }}>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={filesRecursive}
+              onChange={(e) => void loadFiles(conversationId || undefined, e.target.checked, filesHidden)}
+            />{' '}
+            recursive
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={filesHidden}
+              onChange={(e) => void loadFiles(conversationId || undefined, filesRecursive, e.target.checked)}
+            />{' '}
+            hidden
+          </label>
+          <div className="spacer" />
+          <div className="muted mono">{files?.items ? `${modalItems.length} items` : '—'}</div>
+        </div>
+        {!files ? (
+          <div className="muted" style={{ marginTop: 10 }}>
+            <LoadingSpinner />
+          </div>
+        ) : (
+          <div className="tree">
+            {modalItems.length === 0 ? (
+              <div className="muted">No files found.</div>
+            ) : (
+              renderTree(tree, 0, expandedPaths, setExpandedPaths)
+            )}
+          </div>
+        )}
+      </aside>
+    ) : null
+
+  const micButton = recording ? (
+    <button className="iconBtn danger" onClick={() => void stopRecording()} title="Stop recording">
+      Stop
+    </button>
+  ) : (
+    <button className="iconBtn" onClick={() => void startRecording()} disabled={!canRecord} title="Record">
+      <MicrophoneIcon />
+    </button>
+  )
+  const voiceToggle = (
+    <button
+      className={`iconBtn ${speak ? 'active' : ''}`}
+      onClick={() => setSpeak((v) => !v)}
+      title={speak ? 'Voice output on' : 'Voice output off'}
+    >
+      {speak ? <SpeakerWaveIcon /> : <SpeakerXMarkIcon />}
+    </button>
+  )
+
+  if (layout === 'whatsapp') {
+    return (
+      <div className="assistantChat">
+        {err ? <div className="alert">{err}</div> : null}
+        <div className={`assistantSplit ${hideWorkspace || !conversationId || !showFilesPane ? 'full' : ''}`}>
+          <div className="assistantChatPane">
+            <div className="chatArea" ref={scrollerRef}>
+              {messages}
+            </div>
+            <div className="chatComposerBar">
+              {voiceToggle}
+              {micButton}
+              <div className="assistantComposerInput">
+                <textarea
+                  value={chatText}
+                  onChange={(e) => setChatText(e.target.value)}
+                  placeholder="Type a message…"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      void sendChat()
+                    }
+                  }}
+                  disabled={!conversationId || stage !== 'idle'}
+                />
+              </div>
+              <button className="btn primary" onClick={() => void sendChat()} disabled={!conversationId || stage !== 'idle' || !chatText.trim()}>
+                Send
+              </button>
+            </div>
+          </div>
+          {hideWorkspace ? null : workspacePane}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <section className="card">
       <div className="cardTitleRow">
@@ -585,93 +826,11 @@ export default function MicTest({ botId, initialConversationId }: { botId: strin
       </details>
 
       <div className={`chatSplit ${!conversationId || !showFilesPane ? 'full' : ''}`}>
-        {conversationId && showFilesPane ? (
-          <aside className="filesPane">
-            <div className="paneHeader">
-              <div>
-                <div className="paneTitle">Workspace</div>
-                <div className="muted mono">container: {statusLabel}</div>
-              </div>
-              <button
-                className="btn iconBtn"
-                onClick={() => {
-                  void loadContainerStatus()
-                  void loadFiles()
-                }}
-                disabled={containerLoading || filesLoading}
-                aria-label="Refresh"
-              >
-                {containerLoading || filesLoading ? <LoadingSpinner label="Refreshing" /> : '⟳'}
-              </button>
-            </div>
-            {containerErr ? <div className="muted">{containerErr}</div> : null}
-            {filesErr ? <div className="alert" style={{ marginTop: 8 }}>{filesErr}</div> : null}
-            <div className="row gap" style={{ marginTop: 8, alignItems: 'center' }}>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={filesRecursive}
-                  onChange={(e) => void loadFiles(conversationId || undefined, e.target.checked, filesHidden)}
-                />{' '}
-                recursive
-              </label>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={filesHidden}
-                  onChange={(e) => void loadFiles(conversationId || undefined, filesRecursive, e.target.checked)}
-                />{' '}
-                hidden
-              </label>
-              <div className="spacer" />
-              <div className="muted mono">{files?.items ? `${modalItems.length} items` : '—'}</div>
-            </div>
-            {!files ? (
-              <div className="muted" style={{ marginTop: 10 }}>
-                <LoadingSpinner />
-              </div>
-            ) : (
-              <div className="tree">
-                {modalItems.length === 0 ? (
-                  <div className="muted">No files found.</div>
-                ) : (
-                  renderTree(tree, 0, expandedPaths, setExpandedPaths)
-                )}
-              </div>
-            )}
-          </aside>
-        ) : null}
+        {workspacePane}
 
         <div className="chatPane">
           <div className="chat" ref={scrollerRef}>
-            {items.map((it) => {
-              const role = it.role
-              return (
-                <div key={it.id} className={`msgRow ${role}`}>
-                  <div className={`avatar ${role}`} aria-hidden="true">
-                    <RoleIcon role={role} />
-                  </div>
-                  <div className={role === 'user' ? 'bubble user' : role === 'assistant' ? 'bubble assistant' : 'bubble tool'}>
-                    <div className="bubbleText">{it.text || '…'}</div>
-                    {it.timings ? (
-                      <details className="details">
-                        <summary>metrics</summary>
-                        <div className="bubbleMeta">
-                          ASR {fmtMs(it.timings.asr)} | LLM 1st {fmtMs(it.timings.llm_ttfb)} | LLM {fmtMs(it.timings.llm_total)} | TTS 1st{' '}
-                          {fmtMs(it.timings.tts_first_audio)} | total {fmtMs(it.timings.total)}
-                        </div>
-                      </details>
-                    ) : null}
-                    {it.details ? (
-                      <details className="details">
-                        <summary>details</summary>
-                        <pre className="pre">{JSON.stringify(it.details, null, 2)}</pre>
-                      </details>
-                    ) : null}
-                  </div>
-                </div>
-              )
-            })}
+            {messages}
           </div>
         </div>
       </div>
@@ -719,6 +878,15 @@ function RoleIcon({ role }: { role: ChatItem['role'] }) {
     return <WrenchScrewdriverIcon aria-hidden="true" />
   }
   return <UserIcon aria-hidden="true" />
+}
+
+function fmtTime(iso: string): string {
+  try {
+    const d = new Date(iso)
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return ''
+  }
 }
 
 type TreeNode = {

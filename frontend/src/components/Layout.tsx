@@ -4,6 +4,11 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 export default function Layout({ children }: { children: ReactNode }) {
   const location = useLocation()
   const isLanding = location.pathname === '/'
+  const hideTopbar =
+    location.pathname.startsWith('/groups/') ||
+    location.pathname.startsWith('/dashboard') ||
+    location.pathname === '/bots' ||
+    location.pathname.startsWith('/bots/')
   const nav = useNavigate()
   const go = (to: string) => {
     const target = to.startsWith('/') ? to : `/${to}`
@@ -21,57 +26,66 @@ export default function Layout({ children }: { children: ReactNode }) {
     }
   }
   return (
-    <div className="app">
-      <header className={`topbar ${isLanding ? 'landingTopbar' : ''}`}>
-        <div className="brand">GravexStudio</div>
-        <nav className="nav">
-          {isLanding ? (
-            <>
-              <button className="navLink" onClick={() => scrollToSection('capabilities')}>
-                Capabilities
-              </button>
-              <button className="navLink" onClick={() => scrollToSection('workflow')}>
-                Workflow
-              </button>
-              <NavLink to="/dashboard" className="navPill" onClick={(e) => { e.preventDefault(); go('/dashboard') }}>
-                Dashboard
-              </NavLink>
-            </>
-          ) : (
-            <>
-              <NavLink
-                to="/bots"
-                className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
-                onClick={(e) => { e.preventDefault(); go('/bots') }}
-              >
-                Assistants
-              </NavLink>
-              <NavLink
-                to="/conversations"
-                className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
-                onClick={(e) => { e.preventDefault(); go('/conversations') }}
-              >
-                Chats
-              </NavLink>
-              <NavLink
-                to="/keys"
-                className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
-                onClick={(e) => { e.preventDefault(); go('/keys') }}
-              >
-                Keys
-              </NavLink>
-              <NavLink
-                to="/developer"
-                className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
-                onClick={(e) => { e.preventDefault(); go('/developer') }}
-              >
-                Developer
-              </NavLink>
-            </>
-          )}
-        </nav>
-      </header>
-      <main className="content">
+    <div className={`app ${hideTopbar ? 'chatShell' : ''}`}>
+      {hideTopbar ? null : (
+        <header className={`topbar ${isLanding ? 'landingTopbar' : ''}`}>
+          <div className="brand">GravexStudio</div>
+          <nav className="nav">
+            {isLanding ? (
+              <>
+                <button className="navLink" onClick={() => scrollToSection('capabilities')}>
+                  Capabilities
+                </button>
+                <button className="navLink" onClick={() => scrollToSection('workflow')}>
+                  Workflow
+                </button>
+                <NavLink to="/dashboard" className="navPill" onClick={(e) => { e.preventDefault(); go('/dashboard') }}>
+                  Dashboard
+                </NavLink>
+              </>
+            ) : (
+              <>
+                <NavLink
+                  to="/dashboard"
+                  className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
+                  onClick={(e) => { e.preventDefault(); go('/dashboard') }}
+                >
+                  Dashboard
+                </NavLink>
+                <NavLink
+                  to="/bots"
+                  className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
+                  onClick={(e) => { e.preventDefault(); go('/bots') }}
+                >
+                  Assistants
+                </NavLink>
+                <NavLink
+                  to="/conversations"
+                  className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
+                  onClick={(e) => { e.preventDefault(); go('/conversations') }}
+                >
+                  Chats
+                </NavLink>
+                <NavLink
+                  to="/keys"
+                  className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
+                  onClick={(e) => { e.preventDefault(); go('/keys') }}
+                >
+                  Keys
+                </NavLink>
+                <NavLink
+                  to="/developer"
+                  className={({ isActive }) => (isActive ? 'navLink active' : 'navLink')}
+                  onClick={(e) => { e.preventDefault(); go('/developer') }}
+                >
+                  Developer
+                </NavLink>
+              </>
+            )}
+          </nav>
+        </header>
+      )}
+      <main className={`content ${hideTopbar ? 'chatContent' : ''}`}>
         {children}
       </main>
     </div>

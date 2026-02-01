@@ -27,6 +27,9 @@ export default function BotDetailPage() {
   const [options, setOptions] = useState<Options | null>(null)
   const [tools, setTools] = useState<IntegrationTool[]>([])
   const [systemTools, setSystemTools] = useState<SystemTool[]>([])
+  const [allBots, setAllBots] = useState<Bot[]>([])
+  const [listErr, setListErr] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
   const [showToolModal, setShowToolModal] = useState(false)
   const [gitSshKeyPath, setGitSshKeyPath] = useState('')
   const [preferredRepoUrl, setPreferredRepoUrl] = useState('')
@@ -118,6 +121,18 @@ Rules:
   useEffect(() => {
     void reload()
   }, [botId])
+
+  useEffect(() => {
+    void (async () => {
+      setListErr(null)
+      try {
+        const b = await apiGet<{ items: Bot[] }>('/api/bots')
+        setAllBots(b.items)
+      } catch (e: any) {
+        setListErr(String(e?.message || e))
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     const obj = parseAuthJson(bot?.data_agent_auth_json)
@@ -400,42 +415,71 @@ Rules:
     return false
   }, [bot?.disabled_tools, systemTools])
 
+  const q = search.trim().toLowerCase()
+  const filteredBots = q
+    ? allBots.filter((b) => b.name.toLowerCase().includes(q) || b.openai_model.toLowerCase().includes(q))
+    : allBots
+
   return (
-    <div className="page">
-      <div className="pageHeader">
-        <div>
-          <h1>{bot?.name || 'Bot'}</h1>
+    <div className="chatLayout">
+      <aside className="chatSidebar">
+        <div className="chatSidebarHeader">
+          <div className="chatBrand">
+            <span className="chatBrandDot" />
+            GravexStudio
+          </div>
+          <input
+            className="chatSearch"
+            placeholder="Search assistants"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
-        <div className="row gap">
-          <button className="btn" onClick={() => setShowSettings(true)}>
-            Settings
-          </button>
-          <button
-            className="btn iconBtn danger"
-            onClick={() => void onDelete()}
-            disabled={!bot}
-            aria-label="Delete bot"
-            title="Delete bot"
-          >
-            <TrashIcon aria-hidden="true" />
-          </button>
-          <button
-            className="btn"
-            onClick={() => {
-              nav('/bots')
-              window.setTimeout(() => {
-                if (window.location.pathname !== '/bots') window.location.assign('/bots')
-              }, 0)
-            }}
-          >
-            Back
-          </button>
+        <div className="chatSectionLabel">Assistants</div>
+        <div className="chatSidebarScroll">
+          {listErr ? <div className="alert">{listErr}</div> : null}
+          {filteredBots.map((b) => (
+            <button
+              key={b.id}
+              className={`dashboardListItem ${b.id === bot?.id ? 'active' : ''}`}
+              onClick={() => nav(`/bots/${b.id}`)}
+            >
+              <div className="dashboardListTitle">{b.name}</div>
+              <div className="dashboardListMeta">Model: {b.openai_model}</div>
+            </button>
+          ))}
         </div>
-      </div>
+      </aside>
 
-      {err ? <div className="alert">{err}</div> : null}
+      <main className="chatMain">
+        <div className="chatHeader">
+          <div>
+            <h2>{bot?.name || 'Assistant'}</h2>
+            <div className="muted">{bot?.openai_model || '—'}</div>
+          </div>
+          <div className="chatHeaderActions">
+            <button className="btn" onClick={() => setShowSettings(true)}>
+              Settings
+            </button>
+            <button
+              className="btn iconBtn danger"
+              onClick={() => void onDelete()}
+              disabled={!bot}
+              aria-label="Delete bot"
+              title="Delete bot"
+            >
+              <TrashIcon aria-hidden="true" />
+            </button>
+            <button className="btn" onClick={() => nav('/dashboard')}>
+              Back
+            </button>
+          </div>
+        </div>
 
-      <MicTest botId={botId} initialConversationId={initialConversationId} />
+        {err ? <div className="alert">{err}</div> : null}
+
+        <MicTest botId={botId} initialConversationId={initialConversationId} layout="whatsapp" />
+      </main>
 
       {showSettings ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">

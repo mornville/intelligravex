@@ -1,9 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { CpuChipIcon, UserIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/solid'
+import {
+  Cog6ToothIcon,
+  CpuChipIcon,
+  MicrophoneIcon,
+  PaperClipIcon,
+  UserIcon,
+  WrenchScrewdriverIcon,
+} from '@heroicons/react/24/solid'
 import LoadingSpinner from '../components/LoadingSpinner'
-import { apiGet, apiPost } from '../api/client'
-import type { ConversationMessage, GroupBot, GroupConversationDetail } from '../types'
+import { apiDelete, apiGet, apiPost } from '../api/client'
+import type {
+  ConversationFiles,
+  ConversationMessage,
+  DataAgentStatus,
+  GroupBot,
+  GroupConversationDetail,
+  GroupConversationSummary,
+} from '../types'
 import { fmtIso } from '../utils/format'
 
 type MentionState = {
@@ -25,10 +39,22 @@ export default function GroupConversationPage() {
   const [sendErr, setSendErr] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
   const [resetErr, setResetErr] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteErr, setDeleteErr] = useState<string | null>(null)
   const [workingBots, setWorkingBots] = useState<Record<string, string>>({})
   const [mention, setMention] = useState<MentionState | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const [groupList, setGroupList] = useState<GroupConversationSummary[]>([])
+  const [groupListErr, setGroupListErr] = useState<string | null>(null)
+  const [groupListLoading, setGroupListLoading] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [workspaceOpen, setWorkspaceOpen] = useState(true)
+  const [agentStatus, setAgentStatus] = useState<DataAgentStatus | null>(null)
+  const [agentErr, setAgentErr] = useState<string | null>(null)
+  const [files, setFiles] = useState<ConversationFiles | null>(null)
+  const [filesErr, setFilesErr] = useState<string | null>(null)
+  const [filesLoading, setFilesLoading] = useState(false)
 
   function wsBase() {
     try {
@@ -51,6 +77,50 @@ export default function GroupConversationPage() {
         setErr(String(e?.message || e))
       } finally {
         setLoading(false)
+      }
+    })()
+  }, [groupId])
+
+  useEffect(() => {
+    void (async () => {
+      setGroupListLoading(true)
+      setGroupListErr(null)
+      try {
+        const g = await apiGet<{ items: GroupConversationSummary[] }>('/api/group-conversations')
+        setGroupList(g.items)
+      } catch (e: any) {
+        setGroupListErr(String(e?.message || e))
+      } finally {
+        setGroupListLoading(false)
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (!groupId) return
+    void (async () => {
+      setAgentErr(null)
+      try {
+        const s = await apiGet<DataAgentStatus>(`/api/conversations/${groupId}/data-agent`)
+        setAgentStatus(s)
+      } catch (e: any) {
+        setAgentErr(String(e?.message || e))
+      }
+    })()
+  }, [groupId])
+
+  useEffect(() => {
+    if (!groupId) return
+    void (async () => {
+      setFilesLoading(true)
+      setFilesErr(null)
+      try {
+        const f = await apiGet<ConversationFiles>(`/api/conversations/${groupId}/files?path=`)
+        setFiles(f)
+      } catch (e: any) {
+        setFilesErr(String(e?.message || e))
+      } finally {
+        setFilesLoading(false)
       }
     })()
   }, [groupId])
@@ -110,6 +180,16 @@ export default function GroupConversationPage() {
     if (!data?.conversation) return null
     return bots.find((b) => b.id === data.conversation.default_bot_id) || null
   }, [bots, data?.conversation])
+  const lastByBot = useMemo(() => {
+    const out: Record<string, ConversationMessage | undefined> = {}
+    for (const b of bots) {
+      const msg = [...(data?.messages || [])].reverse().find((m) => m.sender_bot_id === b.id)
+      out[b.id] = msg
+    }
+    return out
+  }, [bots, data?.messages])
+  const workspaceEnabled = Boolean(agentStatus?.exists || agentStatus?.running)
+  const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
   const mentionOptions = useMemo(() => {
     if (!mention?.active) return []
@@ -202,6 +282,23 @@ export default function GroupConversationPage() {
     }
   }
 
+  async function deleteConversation() {
+    if (!groupId) return
+    if (!window.confirm('Delete this group chat? This will remove the group and all individual logs.')) {
+      return
+    }
+    setDeleting(true)
+    setDeleteErr(null)
+    try {
+      await apiDelete(`/api/group-conversations/${groupId}`)
+      nav('/conversations')
+    } catch (e: any) {
+      setDeleteErr(String(e?.message || e))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (mention?.active && mentionOptions.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -234,128 +331,222 @@ export default function GroupConversationPage() {
   }
 
   return (
-    <div className="page">
-      <div className="pageHeader">
-        <div>
-          <h1>{data?.conversation.title || 'Group chat'}</h1>
-          <div className="muted">
-            Default assistant: {defaultBot ? `${defaultBot.name} (@${defaultBot.slug})` : '—'}
+    <div className={`chatLayout ${workspaceEnabled ? 'withWorkspace' : ''}`}>
+      <aside className="chatSidebar">
+        <div className="chatSidebarHeader">
+          <div className="chatBrand">
+            <span className="chatBrandDot" />
+            GravexStudio
           </div>
+          <input className="chatSearch" placeholder="Search assistants or conversations" />
         </div>
-        <div className="row gap">
-          <button className="btn" disabled={resetting} onClick={() => void resetConversation()}>
-            {resetting ? <LoadingSpinner label="Resetting" /> : 'Reset chat'}
-          </button>
-          <button className="btn" onClick={() => nav('/conversations')}>
-            Back
-          </button>
+        <div className="chatFilters">
+          <span className="chatPill active">All</span>
+          <span className="chatPill">Assistants</span>
+          <span className="chatPill">Groups</span>
         </div>
-      </div>
-
-      {resetErr ? <div className="alert">{resetErr}</div> : null}
-      {err ? <div className="alert">{err}</div> : null}
-
-      {loading ? (
-        <div className="muted">
-          <LoadingSpinner />
-        </div>
-      ) : (
-        <>
-          <section className="card">
-            <div className="cardTitleRow">
-              <div className="cardTitle">Assistants</div>
-            </div>
-            <div className="groupMemberRow">
-              {bots.map((b) => (
-                <span key={b.id} className={`pill ${b.id === data?.conversation.default_bot_id ? 'accent' : ''}`}>
-                  @{b.slug}
-                </span>
-              ))}
-            </div>
-          </section>
-
-          {data?.conversation.individual_conversations?.length ? (
-            <section className="card">
-              <div className="cardTitleRow">
-                <div className="cardTitle">Individual logs</div>
-              </div>
-              <div className="groupMemberRow">
-                {data.conversation.individual_conversations.map((item) => {
-                  const bot = bots.find((b) => b.id === item.bot_id)
-                  return (
-                    <button
-                      key={item.conversation_id}
-                      type="button"
-                      className="btn ghost"
-                      onClick={() => nav(`/conversations/${item.conversation_id}`)}
-                    >
-                      {bot ? bot.name : item.bot_id}
-                    </button>
-                  )
-                })}
-              </div>
-            </section>
-          ) : null}
-
-          <section className="card">
-            <div className="cardTitle">Conversation</div>
-            <div className="chat">
-              {(data?.messages || []).map((m) => (
-                <GroupMessageRow key={m.id} m={m} />
-              ))}
-            </div>
-            {Object.keys(workingBots).length ? (
-              <div className="muted" style={{ marginTop: 8 }}>
-                Working: {Object.values(workingBots).join(', ')}
-              </div>
-            ) : null}
-            <div className="chatComposer">
-              <div className="composerInput">
-                {mention?.active && mentionOptions.length > 0 ? (
-                  <div className="mentionMenu">
-                    {mentionOptions.map((b, idx) => (
-                      <button
-                        key={b.id}
-                        type="button"
-                        className={`mentionItem ${idx === mention.index ? 'active' : ''}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault()
-                          applyMention(b)
-                        }}
-                      >
-                        <span>@{b.slug}</span>
-                        <span className="muted">{b.name}</span>
-                      </button>
-                    ))}
+        <div className="chatSectionLabel">Assistants</div>
+        <div className="chatSidebarScroll">
+          {bots.map((b) => {
+            const lastMsg = lastByBot[b.id]
+            return (
+              <div key={b.id} className={`assistantCard ${b.id === defaultBot?.id ? 'active' : ''}`}>
+                <div className="assistantHeader">
+                  <div className="assistantAvatar">{b.name.slice(0, 2).toUpperCase()}</div>
+                  <div>
+                    <strong>{b.name}</strong>
+                    <div className="assistantMeta">1 conversation · {workingBots[b.id] ? '1 running task' : 'idle'}</div>
                   </div>
-                ) : null}
-                <textarea
-                  ref={inputRef}
-                  placeholder="Message the group (use @slug to mention an assistant)"
-                  value={text}
-                  onChange={(e) => {
-                    const next = e.target.value
-                    setText(next)
-                    updateMentionState(next)
-                  }}
-                  onKeyDown={handleKeyDown}
-                  onClick={() => updateMentionState(text)}
-                  onKeyUp={() => updateMentionState(text)}
-                  rows={3}
-                />
+                  {b.id === defaultBot?.id ? <span className="assistantBadge">Default</span> : null}
+                </div>
+                <div className="assistantConversationRow">
+                  <strong>{data?.conversation.title || 'Conversation'}</strong>
+                  {lastMsg?.content ? lastMsg.content : 'No recent messages.'}
+                </div>
               </div>
-              <button
-                className="btn primary"
-                disabled={sending || !text.trim() || !data?.conversation?.default_bot_id}
-                onClick={() => void sendMessage()}
+            )
+          })}
+        </div>
+      </aside>
+
+      <main className="chatMain">
+        <div className="chatHeader">
+          <div>
+            <h2>{data?.conversation.title || 'Group chat'}</h2>
+            <div className="muted">@{bots.map((b) => b.slug).join(' @')}</div>
+          </div>
+          <div className="chatHeaderActions">
+            <div className="conversationSwitch">
+              <select
+                value={groupId}
+                onChange={(e) => {
+                  const nextId = e.target.value
+                  if (nextId) nav(`/groups/${nextId}`)
+                }}
               >
-                {sending ? <LoadingSpinner label="Sending" /> : 'Send'}
+                {groupListLoading ? <option>Loading…</option> : null}
+                {groupList.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.title || 'Group chat'}
+                  </option>
+                ))}
+              </select>
+              <button className="btn navPill" onClick={() => nav('/conversations')}>
+                New conversation
               </button>
             </div>
-            {sendErr ? <div className="alert">{sendErr}</div> : null}
-          </section>
-        </>
-      )}
+            <div className="settingsWrapper">
+              <button className="settingsBtn" onClick={() => setSettingsOpen((v) => !v)}>
+                <Cog6ToothIcon />
+              </button>
+              {settingsOpen ? (
+                <div className="settingsMenu">
+                  <button className="settingsItem" onClick={() => nav('/dashboard')}>
+                    Dashboard
+                  </button>
+                  <button className="settingsItem" onClick={() => nav('/keys')}>
+                    Keys
+                  </button>
+                  <button className="settingsItem" onClick={() => nav('/developer')}>
+                    Developer
+                  </button>
+                  <button className="settingsItem" onClick={() => nav('/bots')}>
+                    Assistants
+                  </button>
+                  <button className="settingsItem" disabled={resetting} onClick={() => void resetConversation()}>
+                    {resetting ? 'Resetting…' : 'Reset chat'}
+                  </button>
+                  <button className="settingsItem danger" disabled={deleting} onClick={() => void deleteConversation()}>
+                    {deleting ? 'Deleting…' : 'Delete group'}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        {groupListErr ? <div className="alert">{groupListErr}</div> : null}
+        {err ? <div className="alert">{err}</div> : null}
+        {resetErr ? <div className="alert">{resetErr}</div> : null}
+        {deleteErr ? <div className="alert">{deleteErr}</div> : null}
+
+        <div className="chatShell">
+          <div className="chatArea">
+            {loading ? (
+              <div className="muted">
+                <LoadingSpinner />
+              </div>
+            ) : (
+              (data?.messages || []).map((m) => <GroupMessageRow key={m.id} m={m} />)
+            )}
+          </div>
+          <div className="chatComposerBar">
+            <button className="iconBtn" title="Record">
+              <MicrophoneIcon />
+            </button>
+            <div className="composerInput">
+              {mention?.active && mentionOptions.length > 0 ? (
+                <div className="mentionMenu">
+                  {mentionOptions.map((b, idx) => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      className={`mentionItem ${idx === mention.index ? 'active' : ''}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        applyMention(b)
+                      }}
+                    >
+                      <span>@{b.slug}</span>
+                      <span className="muted">{b.name}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <textarea
+                ref={inputRef}
+                placeholder="Message the group (use @slug to mention an assistant)"
+                value={text}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setText(next)
+                  updateMentionState(next)
+                }}
+                onKeyDown={handleKeyDown}
+                onClick={() => updateMentionState(text)}
+                onKeyUp={() => updateMentionState(text)}
+                rows={2}
+              />
+            </div>
+            <button className="iconBtn" title="Attach">
+              <PaperClipIcon />
+            </button>
+            <button
+              className="btn primary"
+              disabled={sending || !text.trim() || !data?.conversation?.default_bot_id}
+              onClick={() => void sendMessage()}
+            >
+              {sending ? <LoadingSpinner label="Sending" /> : 'Send'}
+            </button>
+          </div>
+          {Object.keys(workingBots).length ? (
+            <div className="muted chatWorking">Working: {Object.values(workingBots).join(', ')}</div>
+          ) : null}
+          {sendErr ? <div className="alert">{sendErr}</div> : null}
+        </div>
+      </main>
+
+      {workspaceEnabled ? (
+        <aside className={`chatWorkspace ${workspaceOpen ? '' : 'collapsed'}`}>
+          <div className="workspaceHeader">
+            <div>
+              <h3>Workspace</h3>
+              <div className="muted">Container: {agentStatus?.running ? 'running' : 'idle'}</div>
+            </div>
+            <button className="collapseBtn" onClick={() => setWorkspaceOpen((v) => !v)}>
+              {workspaceOpen ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          <div className="workspaceBody">
+            {agentErr ? <div className="alert">{agentErr}</div> : null}
+            <div className="workspaceCard">
+              <div className="workspaceTitle">Status</div>
+              <div className="workspaceRow">
+                <strong>Runtime</strong>
+                <span>{agentStatus?.exists ? 'Data Agent' : '—'}</span>
+              </div>
+              <div className="workspaceRow">
+                <strong>Status</strong>
+                <span>{agentStatus?.running ? 'running' : agentStatus?.status || 'idle'}</span>
+              </div>
+              <div className="workspaceRow">
+                <strong>Container</strong>
+                <span>{agentStatus?.container_name || '—'}</span>
+              </div>
+            </div>
+            <div className="workspaceCard">
+              <div className="workspaceTitle">Files</div>
+              {filesLoading ? (
+                <div className="muted">
+                  <LoadingSpinner />
+                </div>
+              ) : filesErr ? (
+                <div className="alert">{filesErr}</div>
+              ) : (
+                <div className="workspaceFiles">
+                  {visibleFiles.length === 0 ? <div className="muted">No files yet.</div> : null}
+                  {visibleFiles.map((f) => (
+                    <div key={f.path} className="workspaceRow">
+                      <strong>{f.name}</strong>
+                      <span>{f.is_dir ? 'folder' : f.size_bytes ? `${f.size_bytes} B` : '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+      ) : null}
     </div>
   )
 }
