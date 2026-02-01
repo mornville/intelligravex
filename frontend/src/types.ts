@@ -101,12 +101,43 @@ export type ConversationMessage = {
   tool: Record<string, unknown> | null
   tool_name: string | null
   tool_kind: 'call' | 'result' | null
+  sender_bot_id?: UUID | null
+  sender_name?: string | null
   metrics: MessageMetrics
 }
 
 export type ConversationDetail = {
   conversation: ConversationSummary
   bot: Bot
+  messages: ConversationMessage[]
+}
+
+export type GroupBot = {
+  id: UUID
+  name: string
+  slug: string
+}
+
+export type GroupConversationSummary = {
+  id: UUID
+  title: string
+  default_bot_id: UUID
+  group_bots: GroupBot[]
+  created_at: string
+  updated_at: string
+}
+
+export type GroupConversationDetail = {
+  conversation: {
+    id: UUID
+    title: string
+    default_bot_id: UUID
+    default_bot_name: string | null
+    group_bots: GroupBot[]
+    individual_conversations?: { bot_id: UUID; conversation_id: UUID }[]
+    created_at: string
+    updated_at: string
+  }
   messages: ConversationMessage[]
 }
 

@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session, delete, select
 
 from voicebot.config import Settings
 from voicebot.crypto import CryptoError, build_hint, get_crypto_box
@@ -39,7 +39,7 @@ from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
-from voicebot.models import Bot, Conversation
+from voicebot.models import Bot, Conversation, ConversationMessage
 from voicebot.store import (
     create_bot,
     create_conversation,
@@ -78,6 +78,9 @@ from voicebot.store import (
 from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.utils.python_postprocess import run_python_postprocessor
+
+# Backwards-compatible alias used in legacy tool handlers.
+run_python_postprocess = run_python_postprocessor
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
 from voicebot.tools.data_agent import give_command_to_data_agent_tool_def
@@ -473,9 +476,245 @@ def _should_followup_llm_for_tool(*, tool: IntegrationTool | None, static_render
     return not static_rendered.strip()
 
 
+def _safe_json_list(raw: str) -> list:
+    try:
+        obj = json.loads(raw or "")
+        return obj if isinstance(obj, list) else []
+    except Exception:
+        return []
+
+
+def _slugify(value: str) -> str:
+    s = (value or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    return s or "assistant"
+
+
+def _group_bots_from_conv(conv: Conversation) -> list[dict[str, str]]:
+    bots = _safe_json_list(getattr(conv, "group_bots_json", "") or "[]")
+    out: list[dict[str, str]] = []
+    for b in bots:
+        if not isinstance(b, dict):
+            continue
+        bid = str(b.get("id") or "").strip()
+        name = str(b.get("name") or "").strip()
+        slug = str(b.get("slug") or "").strip().lower()
+        if not bid or not name:
+            continue
+        if not slug:
+            slug = _slugify(name)
+        out.append({"id": bid, "name": name, "slug": slug})
+    return out
+
+
+def _group_individual_map_from_conv(conv: Conversation) -> dict[str, str]:
+    meta = safe_json_loads(conv.metadata_json or "{}") or {}
+    if not isinstance(meta, dict):
+        return {}
+    mapping = meta.get("group_individual_conversations")
+    if not isinstance(mapping, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for k, v in mapping.items():
+        bid = str(k or "").strip()
+        cid = str(v or "").strip()
+        if bid and cid:
+            cleaned[bid] = cid
+    return cleaned
+
+
+def _ensure_group_individual_conversations(session: Session, conv: Conversation) -> dict[str, str]:
+    mapping = _group_individual_map_from_conv(conv)
+    changed = False
+    for b in _group_bots_from_conv(conv):
+        bid = str(b.get("id") or "").strip()
+        if not bid:
+            continue
+        existing = mapping.get(bid)
+        if existing:
+            try:
+                _ = get_conversation(session, UUID(existing))
+                continue
+            except Exception:
+                pass
+        now = dt.datetime.now(dt.timezone.utc)
+        child = Conversation(
+            bot_id=UUID(bid),
+            test_flag=bool(conv.test_flag),
+            is_group=False,
+            metadata_json=json.dumps(
+                {
+                    "group_parent_id": str(conv.id),
+                    "group_bot_id": bid,
+                    "group_bot_name": str(b.get("name") or ""),
+                },
+                ensure_ascii=False,
+            ),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(child)
+        session.commit()
+        session.refresh(child)
+        mapping[bid] = str(child.id)
+        changed = True
+    if changed:
+        merge_conversation_metadata(
+            session,
+            conversation_id=conv.id,
+            patch={"group_individual_conversations": mapping},
+        )
+    return mapping
+
+
+def _mirror_group_message(
+    session: Session,
+    *,
+    conv: Conversation,
+    msg: ConversationMessage,
+) -> None:
+    if not bool(conv.is_group):
+        return
+    if not msg.sender_bot_id:
+        return
+    if msg.role not in ("assistant", "tool"):
+        return
+    mapping = _ensure_group_individual_conversations(session, conv)
+    target_id = mapping.get(str(msg.sender_bot_id))
+    if not target_id:
+        return
+    try:
+        target_uuid = UUID(str(target_id))
+    except Exception:
+        return
+    mirror = add_message_with_metrics(
+        session,
+        conversation_id=target_uuid,
+        role=msg.role,
+        content=msg.content,
+        sender_bot_id=msg.sender_bot_id,
+        sender_name=msg.sender_name,
+        input_tokens_est=msg.input_tokens_est,
+        output_tokens_est=msg.output_tokens_est,
+        cost_usd_est=msg.cost_usd_est,
+        asr_ms=msg.asr_ms,
+        llm_ttfb_ms=msg.llm_ttfb_ms,
+        llm_total_ms=msg.llm_total_ms,
+        tts_first_audio_ms=msg.tts_first_audio_ms,
+        total_ms=msg.total_ms,
+    )
+    if mirror.role == "assistant":
+        update_conversation_metrics(
+            session,
+            conversation_id=target_uuid,
+            add_input_tokens_est=msg.input_tokens_est or 0,
+            add_output_tokens_est=msg.output_tokens_est or 0,
+            add_cost_usd_est=msg.cost_usd_est or 0.0,
+            last_asr_ms=msg.asr_ms,
+            last_llm_ttfb_ms=msg.llm_ttfb_ms,
+            last_llm_total_ms=msg.llm_total_ms,
+            last_tts_first_audio_ms=msg.tts_first_audio_ms,
+            last_total_ms=msg.total_ms,
+        )
+
+
+def _reset_conversation_state(session: Session, conv: Conversation, keep_meta: dict) -> None:
+    session.exec(delete(ConversationMessage).where(ConversationMessage.conversation_id == conv.id))
+    conv.llm_input_tokens_est = 0
+    conv.llm_output_tokens_est = 0
+    conv.cost_usd_est = 0.0
+    conv.last_asr_ms = None
+    conv.last_llm_ttfb_ms = None
+    conv.last_llm_total_ms = None
+    conv.last_tts_first_audio_ms = None
+    conv.last_total_ms = None
+    conv.metadata_json = json.dumps(keep_meta or {}, ensure_ascii=False)
+    conv.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(conv)
+    session.commit()
+
+
+def _group_bot_name_lookup(conv: Conversation) -> dict[str, str]:
+    return {b["id"]: b["name"] for b in _group_bots_from_conv(conv)}
+
+
+def _group_bot_slugs(conv: Conversation) -> dict[str, str]:
+    return {b["slug"].lower(): b["id"] for b in _group_bots_from_conv(conv)}
+
+
+
+group_ws_clients: dict[str, set[WebSocket]] = {}
+group_ws_lock = asyncio.Lock()
+
+
+async def _group_ws_broadcast(conversation_id: UUID, payload: dict) -> None:
+    key = str(conversation_id)
+    async with group_ws_lock:
+        clients = list(group_ws_clients.get(key, set()))
+    if not clients:
+        return
+    dead: list[WebSocket] = []
+    for ws in clients:
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        async with group_ws_lock:
+            live = group_ws_clients.get(key, set())
+            for ws in dead:
+                live.discard(ws)
+            if live:
+                group_ws_clients[key] = live
+            else:
+                group_ws_clients.pop(key, None)
+
+
+def _assert_bot_in_conversation(conv: Conversation, bot_id: UUID) -> None:
+    if not bool(getattr(conv, "is_group", False)):
+        if conv.bot_id != bot_id:
+            raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
+        return
+    bot_ids = {b["id"] for b in _group_bots_from_conv(conv)}
+    if bot_ids and str(bot_id) not in bot_ids:
+        raise HTTPException(status_code=400, detail="Bot is not a member of this group")
+
+
+def _format_group_message_prefix(
+    *,
+    conv: Conversation,
+    sender_bot_id: Optional[UUID],
+    sender_name: Optional[str],
+    fallback_role: str,
+) -> str:
+    if not bool(getattr(conv, "is_group", False)):
+        return ""
+    name = (sender_name or "").strip()
+    if not name and sender_bot_id:
+        name = _group_bot_name_lookup(conv).get(str(sender_bot_id), "")
+    if not name:
+        name = "User" if fallback_role == "user" else "Assistant"
+    return f"[{name}] "
+
+
 class ChatRequest(BaseModel):
     text: str
     speak: bool = True
+
+
+class GroupConversationCreateRequest(BaseModel):
+    title: str
+    bot_ids: list[str]
+    default_bot_id: str
+    test_flag: bool = False
+
+
+class GroupMessageRequest(BaseModel):
+    text: str
+    sender_role: str = "user"
+    sender_bot_id: Optional[str] = None
+    sender_name: Optional[str] = None
 
 
 class TalkResponseEvent(BaseModel):
@@ -911,8 +1150,7 @@ def create_app() -> FastAPI:
         if not conversation_id:
             return messages
         conv = get_conversation(session, conversation_id)
-        if conv.bot_id != bot.id:
-            raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
+        _assert_bot_in_conversation(conv, bot.id)
         meta = safe_json_loads(conv.metadata_json or "{}") or {}
         ctx = {"meta": meta}
         # Render system prompt with metadata variables (if any)
@@ -923,10 +1161,30 @@ def create_app() -> FastAPI:
             )
         ]
         if meta:
-            messages.append(Message(role="system", content=f"Conversation metadata (JSON): {json.dumps(meta, ensure_ascii=False)}"))
+            messages.append(
+                Message(role="system", content=f"Conversation metadata (JSON): {json.dumps(meta, ensure_ascii=False)}")
+            )
+        if bool(conv.is_group):
+            slugs = ", ".join(f"@{b['slug']}" for b in _group_bots_from_conv(conv))
+            messages.append(
+                Message(
+                    role="system",
+                    content=(
+                        "Group routing: assistants should only respond when explicitly mentioned with @slug in the latest message. "
+                        "If you have nothing to add, respond with <no_reply> (this will be hidden). "
+                        f"Available: {slugs}"
+                    ),
+                )
+            )
         for m in list_messages(session, conversation_id=conversation_id):
+            prefix = _format_group_message_prefix(
+                conv=conv,
+                sender_bot_id=m.sender_bot_id,
+                sender_name=m.sender_name,
+                fallback_role=m.role,
+            )
             if m.role in ("user", "assistant"):
-                messages.append(Message(role=m.role, content=render_template(m.content, ctx=ctx)))
+                messages.append(Message(role=m.role, content=render_template(f"{prefix}{m.content}", ctx=ctx)))
             elif m.role == "tool":
                 # Store tool calls/results as system breadcrumbs to prevent repeated calls.
                 try:
@@ -935,7 +1193,12 @@ def create_app() -> FastAPI:
                         continue
                 except Exception:
                     pass
-                messages.append(Message(role="system", content=render_template(f"Tool event: {m.content}", ctx=ctx)))
+                messages.append(
+                    Message(
+                        role="system",
+                        content=render_template(f"{prefix}Tool event: {m.content}", ctx=ctx),
+                    )
+                )
         return messages
 
     def _build_history_budgeted(
@@ -965,8 +1228,7 @@ def create_app() -> FastAPI:
             return [Message(role="system", content=_system_prompt_with_runtime(prompt=bot.system_prompt))]
 
         conv = get_conversation(session, conversation_id)
-        if conv.bot_id != bot.id:
-            raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
+        _assert_bot_in_conversation(conv, bot.id)
 
         meta = safe_json_loads(conv.metadata_json or "{}") or {}
         if not isinstance(meta, dict):
@@ -1005,7 +1267,13 @@ def create_app() -> FastAPI:
             if role == "tool":
                 # Avoid huge tool payloads; keep a short breadcrumb.
                 content = content[:2000]
-            return f"{role.upper()}: {content}"
+            prefix = _format_group_message_prefix(
+                conv=conv,
+                sender_bot_id=m.sender_bot_id,
+                sender_name=m.sender_name,
+                fallback_role=role,
+            )
+            return f"{role.upper()}: {prefix}{content}"
 
         # Update rolling summary for messages that will be dropped from the prompt.
         old_msgs = db_msgs[:start_idx]
@@ -1083,14 +1351,34 @@ def create_app() -> FastAPI:
 
         # Build prompt messages: system prompt + summary + recent window.
         messages: list[Message] = [Message(role="system", content=system_prompt)]
+        if bool(conv.is_group):
+            slugs = ", ".join(f"@{b['slug']}" for b in _group_bots_from_conv(conv))
+            messages.append(
+                Message(
+                    role="system",
+                    content=(
+                        "Group routing: assistants should only respond when explicitly mentioned with @slug in the latest message. "
+                        "If you have nothing to add, respond with <no_reply> (this will be hidden). "
+                        f"Available: {slugs}"
+                    ),
+                )
+            )
         if memory_summary:
             messages.append(Message(role="system", content=f"Conversation summary:\n{memory_summary}"))
         if pinned_facts:
             messages.append(Message(role="system", content=f"Pinned facts:\n{pinned_facts}"))
 
         for m in db_msgs[start_idx:]:
+            prefix = _format_group_message_prefix(
+                conv=conv,
+                sender_bot_id=m.sender_bot_id,
+                sender_name=m.sender_name,
+                fallback_role=m.role,
+            )
             if m.role in ("user", "assistant"):
-                messages.append(Message(role=m.role, content=render_template(m.content, ctx={"meta": meta})))
+                messages.append(
+                    Message(role=m.role, content=render_template(f"{prefix}{m.content}", ctx={"meta": meta}))
+                )
             elif m.role == "tool":
                 try:
                     obj = json.loads(m.content or "")
@@ -1103,7 +1391,7 @@ def create_app() -> FastAPI:
                 messages.append(
                     Message(
                         role="system",
-                        content=render_template(f"Tool event: {m.content or ''}", ctx={"meta": meta}),
+                        content=render_template(f"{prefix}Tool event: {m.content or ''}", ctx={"meta": meta}),
                     )
                 )
 
@@ -1153,6 +1441,638 @@ def create_app() -> FastAPI:
         conv = get_conversation(session, conversation_id)
         meta = safe_json_loads(conv.metadata_json or "{}") or {}
         return meta if isinstance(meta, dict) else {}
+
+    def _extract_group_mentions(text: str, conv: Conversation) -> list[UUID]:
+        slug_map = _group_bot_slugs(conv)
+        if not slug_map:
+            return []
+        hits: list[UUID] = []
+        for m in re.finditer(r"@([a-zA-Z0-9][a-zA-Z0-9_-]{0,48})", text or ""):
+            slug = m.group(1).lower()
+            bot_id = slug_map.get(slug)
+            if not bot_id:
+                continue
+            try:
+                bid = UUID(bot_id)
+            except Exception:
+                continue
+            if bid not in hits:
+                hits.append(bid)
+        return hits
+
+    async def _run_group_bot_turn(
+        *,
+        bot_id: UUID,
+        conversation_id: UUID,
+    ) -> str:
+        req_id = f"group_{secrets.token_hex(6)}"
+        with Session(engine) as session:
+            bot = get_bot(session, bot_id)
+            conv = get_conversation(session, conversation_id)
+            api_key = _get_openai_api_key_for_bot(session, bot=bot)
+            if not api_key:
+                raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+            history = await _build_history_budgeted_async(
+                bot_id=bot.id,
+                conversation_id=conversation_id,
+                api_key=api_key,
+                status_cb=None,
+            )
+            tools_defs = _build_tools_for_bot(session, bot.id)
+            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+
+        t0 = time.time()
+        first_token_ts: Optional[float] = None
+        tool_calls: list[ToolCall] = []
+        full_text_parts: list[str] = []
+        dispatch_targets: list[UUID] = []
+
+        async for ev in _aiter_from_blocking_iterator(
+            lambda: llm.stream_text_or_tool(messages=history, tools=tools_defs)
+        ):
+            if isinstance(ev, ToolCall):
+                tool_calls.append(ev)
+                continue
+            d = str(ev)
+            if d:
+                if first_token_ts is None:
+                    first_token_ts = time.time()
+                full_text_parts.append(d)
+
+        llm_end_ts = time.time()
+        rendered_reply = "".join(full_text_parts).strip()
+
+        llm_ttfb_ms: Optional[int] = None
+        if first_token_ts is not None:
+            llm_ttfb_ms = int(round((first_token_ts - t0) * 1000.0))
+        elif tool_calls and tool_calls[0].first_event_ts is not None:
+            llm_ttfb_ms = int(round((tool_calls[0].first_event_ts - t0) * 1000.0))
+        llm_total_ms = int(round((llm_end_ts - t0) * 1000.0))
+
+        if tool_calls:
+            with Session(engine) as session:
+                bot = get_bot(session, bot_id)
+                conv = get_conversation(session, conversation_id)
+                meta_current = _get_conversation_meta(session, conversation_id=conversation_id)
+                disabled_tools = _disabled_tool_names(bot)
+                final = ""
+                needs_followup_llm = False
+                tool_failed = False
+                followup_streamed = False
+
+                for tc in tool_calls:
+                    tool_name = tc.name
+                    if tool_name == "set_variable":
+                        tool_name = "set_metadata"
+
+                    try:
+                        tool_args = json.loads(tc.arguments_json or "{}")
+                        if not isinstance(tool_args, dict):
+                            tool_args = {}
+                    except Exception:
+                        tool_args = {}
+
+                    tool_call_msg = add_message_with_metrics(
+                        session,
+                        conversation_id=conversation_id,
+                        role="tool",
+                        content=json.dumps({"tool": tool_name, "arguments": tool_args}, ensure_ascii=False),
+                        sender_bot_id=bot.id,
+                        sender_name=bot.name,
+                    )
+                    _mirror_group_message(session, conv=conv, msg=tool_call_msg)
+
+                    next_reply = str(tool_args.get("next_reply") or "").strip()
+                    wait_reply = str(tool_args.get("wait_reply") or "").strip()
+                    raw_args = tool_args.get("args")
+                    if isinstance(raw_args, dict):
+                        patch = dict(raw_args)
+                    else:
+                        patch = dict(tool_args)
+                        patch.pop("next_reply", None)
+                        patch.pop("wait_reply", None)
+                        patch.pop("args", None)
+
+                    tool_cfg: IntegrationTool | None = None
+                    response_json: Any | None = None
+                    if tool_name in disabled_tools:
+                        tool_result = {
+                            "ok": False,
+                            "error": {"message": f"Tool '{tool_name}' is disabled for this bot."},
+                        }
+                        tool_failed = True
+                        needs_followup_llm = True
+                        final = ""
+                    elif tool_name == "set_metadata":
+                        new_meta = merge_conversation_metadata(session, conversation_id=conversation_id, patch=patch)
+                        tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+                    elif tool_name == "web_search":
+                        scrapingbee_key = _get_scrapingbee_api_key(session)
+                        search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
+                        vector_queries = str(
+                            patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
+                        ).strip()
+                        why = str(patch.get("why") or patch.get("reason") or "").strip()
+                        top_k_arg = patch.get("top_k")
+                        max_results_arg = patch.get("max_results")
+                        try:
+                            top_k_val = int(top_k_arg) if top_k_arg is not None else None
+                        except Exception:
+                            top_k_val = None
+                        try:
+                            max_results_val = int(max_results_arg) if max_results_arg is not None else None
+                        except Exception:
+                            max_results_val = None
+
+                        if not scrapingbee_key:
+                            tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
+                            tool_failed = True
+                            needs_followup_llm = True
+                            final = ""
+                        else:
+                            try:
+                                ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
+                                summary_text = await asyncio.to_thread(
+                                    run_web_search,
+                                    search_term=search_term,
+                                    vector_search_queries=vector_queries,
+                                    why=why,
+                                    openai_api_key=api_key or "",
+                                    scrapingbee_api_key=scrapingbee_key,
+                                    model=ws_model,
+                                    top_k=top_k_val,
+                                    max_results=max_results_val,
+                                )
+                                tool_result = str(summary_text or "").strip()
+                            except Exception as exc:
+                                tool_result = f"WEB_SEARCH_ERROR: {exc}"
+                                tool_failed = True
+                        if tool_failed or not next_reply:
+                            needs_followup_llm = True
+                            final = ""
+                    elif tool_name == "give_command_to_data_agent":
+                        if not bool(getattr(bot, "enable_data_agent", False)):
+                            tool_result = {"ok": False, "error": {"message": "Data Agent is disabled for this bot."}}
+                            tool_failed = True
+                            needs_followup_llm = True
+                            final = ""
+                        elif not docker_available():
+                            tool_result = {
+                                "ok": False,
+                                "error": {"message": "Docker is not available. Install Docker to use Data Agent."},
+                            }
+                            tool_failed = True
+                            needs_followup_llm = True
+                            final = ""
+                        else:
+                            what_to_do = str(patch.get("what_to_do") or "").strip()
+                            if not what_to_do:
+                                tool_result = {"ok": False, "error": {"message": "Missing required tool arg: what_to_do"}}
+                                tool_failed = True
+                                needs_followup_llm = True
+                                final = ""
+                            else:
+                                try:
+                                    logger.info(
+                                        "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                        conversation_id,
+                                        bot_id,
+                                        (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
+                                    )
+                                    da = _data_agent_meta(meta_current)
+                                    workspace_dir = (
+                                        str(da.get("workspace_dir") or "").strip()
+                                        or default_workspace_dir_for_conversation(conversation_id)
+                                    )
+                                    container_id = str(da.get("container_id") or "").strip()
+                                    session_id = str(da.get("session_id") or "").strip()
+                                    auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
+                                    git_token = (
+                                        _get_git_token_plaintext(session, provider="github")
+                                        if _git_auth_mode(auth_json_raw) == "token"
+                                        else ""
+                                    )
+
+                                    if not container_id:
+                                        container_id = await asyncio.to_thread(
+                                            ensure_conversation_container,
+                                            conversation_id=conversation_id,
+                                            workspace_dir=workspace_dir,
+                                            openai_api_key=api_key,
+                                            git_token=git_token,
+                                            auth_json=auth_json_raw,
+                                        )
+                                        meta_current = merge_conversation_metadata(
+                                            session,
+                                            conversation_id=conversation_id,
+                                            patch={
+                                                "data_agent.container_id": container_id,
+                                                "data_agent.workspace_dir": workspace_dir,
+                                            },
+                                        )
+
+                                    ctx = _build_data_agent_conversation_context(
+                                        session,
+                                        bot=bot,
+                                        conversation_id=conversation_id,
+                                        meta=meta_current,
+                                    )
+                                    api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
+                                    auth_json = _merge_git_token_auth(auth_json_raw, git_token)
+                                    sys_prompt = (
+                                        (getattr(bot, "data_agent_system_prompt", "") or "").strip()
+                                        or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
+                                    )
+
+                                    da_res = await asyncio.to_thread(
+                                        run_data_agent,
+                                        conversation_id=conversation_id,
+                                        container_id=container_id,
+                                        session_id=session_id,
+                                        workspace_dir=workspace_dir,
+                                        api_spec_text=api_spec_text,
+                                        auth_json=auth_json,
+                                        system_prompt=sys_prompt,
+                                        conversation_context=ctx,
+                                        what_to_do=what_to_do,
+                                        on_stream=lambda _t: None,
+                                    )
+                                    if da_res.session_id and da_res.session_id != session_id:
+                                        meta_current = merge_conversation_metadata(
+                                            session,
+                                            conversation_id=conversation_id,
+                                            patch={"data_agent.session_id": da_res.session_id},
+                                        )
+                                    tool_result = {
+                                        "ok": bool(da_res.ok),
+                                        "result_text": da_res.result_text,
+                                        "data_agent_container_id": da_res.container_id,
+                                        "data_agent_session_id": da_res.session_id,
+                                        "data_agent_output_file": da_res.output_file,
+                                        "data_agent_debug_file": da_res.debug_file,
+                                        "error": da_res.error,
+                                    }
+                                    tool_failed = not bool(da_res.ok)
+                                    if (
+                                        bool(getattr(bot, "data_agent_return_result_directly", False))
+                                        and bool(da_res.ok)
+                                        and str(da_res.result_text or "").strip()
+                                    ):
+                                        needs_followup_llm = False
+                                        final = str(da_res.result_text or "").strip()
+                                    else:
+                                        needs_followup_llm = True
+                                        final = ""
+                                except Exception as exc:
+                                    logger.exception(
+                                        "Data Agent tool failed conv=%s bot=%s",
+                                        conversation_id,
+                                        bot_id,
+                                    )
+                                    tool_result = {"ok": False, "error": {"message": str(exc)}}
+                                    tool_failed = True
+                                    needs_followup_llm = True
+                                    final = ""
+                    else:
+                        tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
+                        if not tool_cfg:
+                            raise RuntimeError(f"Unknown tool: {tool_name}")
+                        if not bool(getattr(tool_cfg, "enabled", True)):
+                            response_json = {
+                                "__tool_args_error__": {
+                                    "missing": [],
+                                    "message": f"Tool '{tool_name}' is disabled for this bot.",
+                                }
+                            }
+                        else:
+                            response_json = await asyncio.to_thread(
+                                _execute_integration_http, tool=tool_cfg, meta=meta_current, tool_args=patch
+                            )
+                        if isinstance(response_json, dict) and "__tool_args_error__" in response_json:
+                            err = response_json["__tool_args_error__"] or {}
+                            tool_result = {"ok": False, "error": err}
+                            tool_failed = True
+                            needs_followup_llm = True
+                            final = ""
+                        elif isinstance(response_json, dict) and "__http_error__" in response_json:
+                            err = response_json["__http_error__"] or {}
+                            tool_result = {"ok": False, "error": err}
+                            tool_failed = True
+                            needs_followup_llm = True
+                            final = ""
+                        else:
+                            pagination_info = None
+                            if isinstance(response_json, dict) and "__igx_pagination__" in response_json:
+                                pagination_info = response_json.pop("__igx_pagination__", None)
+                            if bool(getattr(tool_cfg, "use_codex_response", False)):
+                                tool_result = {"ok": True}
+                                new_meta = meta_current
+                            else:
+                                mapped = _apply_response_mapper(
+                                    mapper_json=tool_cfg.response_mapper_json,
+                                    response_json=response_json,
+                                    meta=meta_current,
+                                    tool_args=patch,
+                                )
+                                new_meta = merge_conversation_metadata(
+                                    session, conversation_id=conversation_id, patch=mapped
+                                )
+                                meta_current = new_meta
+                                tool_result = {"ok": True, "updated": mapped, "metadata": new_meta}
+                            if pagination_info:
+                                tool_result["pagination"] = pagination_info
+
+                            static_preview = ""
+                            if (tool_cfg.static_reply_template or "").strip():
+                                try:
+                                    static_preview = _render_static_reply(
+                                        template_text=tool_cfg.static_reply_template,
+                                        meta=new_meta or meta_current,
+                                        response_json=response_json,
+                                        tool_args=patch,
+                                    ).strip()
+                                except Exception:
+                                    static_preview = ""
+                            if (not static_preview) and bool(getattr(tool_cfg, "use_codex_response", False)):
+                                fields_required = str(patch.get("fields_required") or "").strip()
+                                why_api_was_called = str(patch.get("why_api_was_called") or "").strip()
+                                what_to_search_for = str(patch.get("what_to_search_for") or "").strip()
+                                if not fields_required:
+                                    fields_required = what_to_search_for
+                                if not fields_required or not why_api_was_called:
+                                    tool_result["codex_error"] = "Missing fields_required / why_api_was_called."
+                                else:
+                                    fields_required_for_codex = fields_required
+                                    if what_to_search_for and what_to_search_for not in fields_required_for_codex:
+                                        fields_required_for_codex = (
+                                            f"{fields_required_for_codex}\n\n(what_to_search_for) {what_to_search_for}"
+                                        )
+                                    did_postprocess = False
+                                    if (tool_cfg.postprocess_python or "").strip():
+                                        try:
+                                            py_res = await asyncio.to_thread(
+                                                run_python_postprocess,
+                                                python_code=tool_cfg.postprocess_python,
+                                                response_json=response_json,
+                                                meta=new_meta or meta_current,
+                                                args=patch,
+                                                fields_required=fields_required_for_codex,
+                                                why_api_was_called=why_api_was_called,
+                                                timeout_s=60,
+                                            )
+                                            tool_result["python_ok"] = bool(getattr(py_res, "ok", False))
+                                            tool_result["python_duration_ms"] = int(getattr(py_res, "duration_ms", 0) or 0)
+                                            if getattr(py_res, "error", None):
+                                                tool_result["python_error"] = str(getattr(py_res, "error"))
+                                            if getattr(py_res, "stderr", None):
+                                                tool_result["python_stderr"] = str(getattr(py_res, "stderr"))
+                                            if py_res.ok:
+                                                did_postprocess = True
+                                                tool_result["postprocess_mode"] = "python"
+                                                tool_result["codex_ok"] = True
+                                                tool_result["codex_result_text"] = str(
+                                                    getattr(py_res, "result_text", "") or ""
+                                                )
+                                                mp = getattr(py_res, "metadata_patch", None)
+                                                if isinstance(mp, dict) and mp:
+                                                    try:
+                                                        meta_current = merge_conversation_metadata(
+                                                            session,
+                                                            conversation_id=conversation_id,
+                                                            patch=mp,
+                                                        )
+                                                        tool_result["python_metadata_patch"] = mp
+                                                    except Exception:
+                                                        pass
+                                        except Exception as exc:
+                                            tool_result["python_ok"] = False
+                                            tool_result["python_error"] = str(exc)
+
+                                    if not did_postprocess:
+                                        codex_model = (
+                                            (getattr(bot, "codex_model", "") or "gpt-5.1-codex-mini").strip()
+                                            or "gpt-5.1-codex-mini"
+                                        )
+                                        try:
+                                            agent_res = await asyncio.to_thread(
+                                                run_codex_http_agent_one_shot,
+                                                api_key=api_key or "",
+                                                model=codex_model,
+                                                response_json=response_json,
+                                                fields_required=fields_required_for_codex,
+                                                why_api_was_called=why_api_was_called,
+                                                response_schema_json=getattr(tool_cfg, "response_schema_json", "") or "",
+                                                conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                                req_id=req_id,
+                                                tool_codex_prompt=getattr(tool_cfg, "codex_prompt", "") or "",
+                                                progress_fn=lambda _p: None,
+                                            )
+                                            tool_result["postprocess_mode"] = "codex"
+                                            tool_result["codex_ok"] = bool(getattr(agent_res, "ok", False))
+                                            tool_result["codex_output_dir"] = getattr(agent_res, "output_dir", "")
+                                            tool_result["codex_output_file"] = getattr(agent_res, "result_text_path", "")
+                                            tool_result["codex_debug_file"] = getattr(agent_res, "debug_json_path", "")
+                                            tool_result["codex_result_text"] = getattr(agent_res, "result_text", "")
+                                            tool_result["codex_stop_reason"] = getattr(agent_res, "stop_reason", "")
+                                            tool_result["codex_continue_reason"] = getattr(agent_res, "continue_reason", "")
+                                            tool_result["codex_next_step"] = getattr(agent_res, "next_step", "")
+                                            err = getattr(agent_res, "error", None)
+                                            if err:
+                                                tool_result["codex_error"] = str(err)
+                                        except Exception as exc:
+                                            tool_result["codex_ok"] = False
+                                            tool_result["codex_error"] = str(exc)
+
+                    tool_result_msg = add_message_with_metrics(
+                        session,
+                        conversation_id=conversation_id,
+                        role="tool",
+                        content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                        sender_bot_id=bot.id,
+                        sender_name=bot.name,
+                    )
+                    _mirror_group_message(session, conv=conv, msg=tool_result_msg)
+                    if isinstance(tool_result, dict):
+                        meta_current = tool_result.get("metadata") or meta_current
+
+                    if tool_failed:
+                        break
+
+                    candidate = ""
+                    if tool_name != "set_metadata" and tool_cfg:
+                        static_text = ""
+                        if (tool_cfg.static_reply_template or "").strip():
+                            static_text = _render_static_reply(
+                                template_text=tool_cfg.static_reply_template,
+                                meta=meta_current,
+                                response_json=response_json,
+                                tool_args=patch,
+                            ).strip()
+                        if static_text:
+                            needs_followup_llm = False
+                            final = static_text
+                        else:
+                            if bool(getattr(tool_cfg, "use_codex_response", False)):
+                                if bool(getattr(tool_cfg, "return_result_directly", False)) and isinstance(tool_result, dict):
+                                    direct = str(tool_result.get("codex_result_text") or "").strip()
+                                    if direct:
+                                        needs_followup_llm = False
+                                        final = direct
+                                    else:
+                                        needs_followup_llm = True
+                                        final = ""
+                                else:
+                                    needs_followup_llm = True
+                                    final = ""
+                            else:
+                                needs_followup_llm = _should_followup_llm_for_tool(
+                                    tool=tool_cfg, static_rendered=static_text
+                                )
+                                candidate = _render_with_meta(next_reply, meta_current).strip()
+                                if candidate:
+                                    final = candidate
+                                    needs_followup_llm = False
+                                else:
+                                    final = ""
+                    else:
+                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                        final = candidate or final
+
+                if needs_followup_llm:
+                    followup_history = await _build_history_budgeted_async(
+                        bot_id=bot.id,
+                        conversation_id=conversation_id,
+                        api_key=api_key,
+                        status_cb=None,
+                    )
+                    followup_history.append(
+                        Message(
+                            role="system",
+                            content=(
+                                ("The previous tool call failed. " if tool_failed else "")
+                                + "Using the latest tool result(s) above, write the next assistant reply. "
+                                "If the tool result contains codex_result_text, rephrase it for the user and do not mention file paths. "
+                                "Do not call any tools."
+                            ),
+                        )
+                    )
+                    text2 = ""
+                    async for d in _aiter_from_blocking_iterator(lambda: llm.stream_text(messages=followup_history)):
+                        if d:
+                            text2 += str(d)
+                    rendered_reply = text2.strip()
+                    followup_streamed = True
+                    llm_ttfb_ms = None
+                    llm_total_ms = None
+                else:
+                    rendered_reply = final
+
+        in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+            bot=bot, history=history, assistant_text=rendered_reply
+        )
+        payload = None
+        suppress_reply = "<no_reply>" in rendered_reply.lower()
+        with Session(engine) as session:
+            conv = get_conversation(session, conversation_id)
+            assistant_msg = None
+            if suppress_reply:
+                if bool(conv.is_group):
+                    mapping = _ensure_group_individual_conversations(session, conv)
+                    target_id = mapping.get(str(bot.id))
+                    if target_id:
+                        add_message_with_metrics(
+                            session,
+                            conversation_id=UUID(target_id),
+                            role="assistant",
+                            content=rendered_reply,
+                            sender_bot_id=bot.id,
+                            sender_name=bot.name,
+                            input_tokens_est=in_tok,
+                            output_tokens_est=out_tok,
+                            cost_usd_est=cost,
+                            llm_ttfb_ms=llm_ttfb_ms,
+                            llm_total_ms=llm_total_ms,
+                            total_ms=llm_total_ms,
+                        )
+            else:
+                assistant_msg = add_message_with_metrics(
+                    session,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=rendered_reply,
+                    sender_bot_id=bot.id,
+                    sender_name=bot.name,
+                    input_tokens_est=in_tok,
+                    output_tokens_est=out_tok,
+                    cost_usd_est=cost,
+                    llm_ttfb_ms=llm_ttfb_ms,
+                    llm_total_ms=llm_total_ms,
+                    total_ms=llm_total_ms,
+                )
+                _mirror_group_message(session, conv=conv, msg=assistant_msg)
+            update_conversation_metrics(
+                session,
+                conversation_id=conversation_id,
+                add_input_tokens_est=in_tok,
+                add_output_tokens_est=out_tok,
+                add_cost_usd_est=cost,
+                last_asr_ms=None,
+                last_llm_ttfb_ms=llm_ttfb_ms,
+                last_llm_total_ms=llm_total_ms,
+                last_tts_first_audio_ms=None,
+                last_total_ms=llm_total_ms,
+            )
+
+            if assistant_msg is not None:
+                payload = _group_message_payload(assistant_msg)
+            if assistant_msg is not None:
+                dispatch_targets = _extract_group_mentions(rendered_reply, conv)
+                dispatch_targets = [bid for bid in dispatch_targets if str(bid) != str(bot.id)]
+
+        if payload:
+            await _group_ws_broadcast(conversation_id, {"type": "message", "message": payload})
+        if dispatch_targets:
+            _schedule_group_bots(conversation_id, dispatch_targets)
+
+        return rendered_reply
+
+    def _schedule_group_bots(conversation_id: UUID, targets: list[UUID]) -> None:
+        if not targets:
+            return
+        with Session(engine) as session:
+            conv = get_conversation(session, conversation_id)
+            bot_map = {b["id"]: b for b in _group_bots_from_conv(conv)}
+
+        async def _run_target(target_id: UUID) -> None:
+            binfo = bot_map.get(str(target_id), {})
+            await _group_ws_broadcast(
+                conversation_id,
+                {
+                    "type": "status",
+                    "bot_id": str(target_id),
+                    "bot_name": binfo.get("name") or "assistant",
+                    "state": "working",
+                },
+            )
+            try:
+                await _run_group_bot_turn(bot_id=target_id, conversation_id=conversation_id)
+            finally:
+                await _group_ws_broadcast(
+                    conversation_id,
+                    {
+                        "type": "status",
+                        "bot_id": str(target_id),
+                        "bot_name": binfo.get("name") or "assistant",
+                        "state": "idle",
+                    },
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+            for bid in targets:
+                loop.create_task(_run_target(bid))
+        except Exception:
+            pass
 
     def _get_openai_api_key(session: Session) -> str:
         def _read_openai_key_from_env_file() -> str:
@@ -4932,6 +5852,8 @@ def create_app() -> FastAPI:
                     "tool": tool_obj,
                     "tool_name": tool_name,
                     "tool_kind": tool_kind,
+                    "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
+                    "sender_name": m.sender_name,
                 }
             )
 
@@ -4941,6 +5863,9 @@ def create_app() -> FastAPI:
                 "bot_id": str(conv.bot_id),
                 "bot_name": bot.name,
                 "external_id": conv.external_id,
+                "is_group": bool(conv.is_group),
+                "group_title": conv.group_title or "",
+                "group_bots_json": conv.group_bots_json or "[]",
                 "created_at": conv.created_at.isoformat(),
                 "updated_at": conv.updated_at.isoformat(),
             },
@@ -7003,13 +7928,21 @@ def create_app() -> FastAPI:
         page_size: int = 50,
         bot_id: Optional[UUID] = None,
         test_flag: Optional[bool] = None,
+        include_groups: bool = False,
         session: Session = Depends(get_session),
     ) -> dict:
         page = max(1, int(page))
         page_size = min(200, max(10, int(page_size)))
         offset = (page - 1) * page_size
-        total = count_conversations(session, bot_id=bot_id, test_flag=test_flag)
-        convs = list_conversations(session, bot_id=bot_id, test_flag=test_flag, limit=page_size, offset=offset)
+        total = count_conversations(session, bot_id=bot_id, test_flag=test_flag, include_groups=include_groups)
+        convs = list_conversations(
+            session,
+            bot_id=bot_id,
+            test_flag=test_flag,
+            include_groups=include_groups,
+            limit=page_size,
+            offset=offset,
+        )
         bots_by_id = {b.id: b for b in list_bots(session)}
         items = []
         for c in convs:
@@ -7050,6 +7983,8 @@ def create_app() -> FastAPI:
 
         messages: list[dict] = []
         for m in msgs_raw:
+            if m.role == "tool":
+                continue
             tool_obj = _safe_json_loads(m.content) if m.role == "tool" else None
             tool_name = tool_obj.get("tool") if tool_obj and isinstance(tool_obj.get("tool"), str) else None
             tool_kind = None
@@ -7067,6 +8002,8 @@ def create_app() -> FastAPI:
                     "tool": tool_obj,
                     "tool_name": tool_name,
                     "tool_kind": tool_kind,
+                    "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
+                    "sender_name": m.sender_name,
                     "metrics": {
                         "in": m.input_tokens_est,
                         "out": m.output_tokens_est,
@@ -7087,6 +8024,9 @@ def create_app() -> FastAPI:
                 "bot_name": bot.name,
                 "test_flag": bool(conv.test_flag),
                 "metadata_json": conv.metadata_json or "{}",
+                "is_group": bool(conv.is_group),
+                "group_title": conv.group_title or "",
+                "group_bots_json": conv.group_bots_json or "[]",
                 "llm_input_tokens_est": int(conv.llm_input_tokens_est or 0),
                 "llm_output_tokens_est": int(conv.llm_output_tokens_est or 0),
                 "cost_usd_est": float(conv.cost_usd_est or 0.0),
@@ -7101,6 +8041,271 @@ def create_app() -> FastAPI:
             "bot": _bot_to_dict(bot),
             "messages": messages,
         }
+
+    def _group_message_payload(m: ConversationMessage) -> dict | None:
+        if m.role == "tool":
+            return None
+        tool_obj = safe_json_loads(m.content or "{}") if m.role == "tool" else None
+        tool_name = tool_obj.get("tool") if tool_obj and isinstance(tool_obj.get("tool"), str) else None
+        tool_kind = None
+        if tool_obj:
+            if "arguments" in tool_obj:
+                tool_kind = "call"
+            elif "result" in tool_obj:
+                tool_kind = "result"
+        return {
+            "id": str(m.id),
+            "role": m.role,
+            "content": m.content,
+            "created_at": m.created_at.isoformat(),
+            "tool": tool_obj,
+            "tool_name": tool_name,
+            "tool_kind": tool_kind,
+            "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
+            "sender_name": m.sender_name,
+            "metrics": {
+                "in": m.input_tokens_est,
+                "out": m.output_tokens_est,
+                "cost": m.cost_usd_est,
+                "asr": m.asr_ms,
+                "llm1": m.llm_ttfb_ms,
+                "llm": m.llm_total_ms,
+                "tts1": m.tts_first_audio_ms,
+                "total": m.total_ms,
+            },
+        }
+
+    def _group_conversation_payload(session: Session, conv: Conversation) -> dict:
+        bots = _group_bots_from_conv(conv)
+        bot_lookup = {b["id"]: b for b in bots}
+        msgs_raw = list_messages(session, conversation_id=conv.id)
+        messages: list[dict] = []
+        for m in msgs_raw:
+            payload = _group_message_payload(m)
+            if payload is not None:
+                messages.append(payload)
+
+        default_bot = bot_lookup.get(str(conv.bot_id))
+        individual_map = _ensure_group_individual_conversations(session, conv)
+        individual_items = [
+            {"bot_id": bid, "conversation_id": cid} for bid, cid in individual_map.items()
+        ]
+        return {
+            "conversation": {
+                "id": str(conv.id),
+                "title": conv.group_title or "",
+                "default_bot_id": str(conv.bot_id),
+                "default_bot_name": default_bot.get("name") if default_bot else None,
+                "group_bots": bots,
+                "individual_conversations": individual_items,
+                "created_at": conv.created_at.isoformat(),
+                "updated_at": conv.updated_at.isoformat(),
+            },
+            "messages": messages,
+        }
+
+    @app.get("/api/group-conversations")
+    def api_list_group_conversations(session: Session = Depends(get_session)) -> dict:
+        stmt = select(Conversation).where(Conversation.is_group == True).order_by(Conversation.updated_at.desc())  # noqa: E712
+        convs = list(session.exec(stmt))
+        items = []
+        for c in convs:
+            bots = _group_bots_from_conv(c)
+            items.append(
+                {
+                    "id": str(c.id),
+                    "title": c.group_title or "",
+                    "default_bot_id": str(c.bot_id),
+                    "group_bots": bots,
+                    "created_at": c.created_at.isoformat(),
+                    "updated_at": c.updated_at.isoformat(),
+                }
+            )
+        return {"items": items}
+
+    @app.post("/api/group-conversations")
+    def api_create_group_conversation(
+        payload: GroupConversationCreateRequest = Body(...),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        title = (payload.title or "").strip()
+        bot_ids = [str(b).strip() for b in (payload.bot_ids or []) if str(b).strip()]
+        default_bot_id = str(payload.default_bot_id or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title is required")
+        if not bot_ids:
+            raise HTTPException(status_code=400, detail="At least one assistant is required")
+        if not default_bot_id:
+            raise HTTPException(status_code=400, detail="Default assistant is required")
+        if default_bot_id not in bot_ids:
+            raise HTTPException(status_code=400, detail="Default assistant must be in the group")
+
+        bots: list[Bot] = []
+        for bid in bot_ids:
+            try:
+                bots.append(get_bot(session, UUID(bid)))
+            except Exception:
+                raise HTTPException(status_code=404, detail=f"Assistant not found: {bid}")
+
+        used_slugs: set[str] = set()
+        group_bots: list[dict[str, str]] = []
+        for b in bots:
+            base = _slugify(b.name)
+            slug = base
+            i = 2
+            while slug in used_slugs:
+                slug = f"{base}-{i}"
+                i += 1
+            used_slugs.add(slug)
+            group_bots.append({"id": str(b.id), "name": b.name, "slug": slug})
+
+        now = dt.datetime.now(dt.timezone.utc)
+        conv = Conversation(
+            bot_id=UUID(default_bot_id),
+            test_flag=bool(payload.test_flag),
+            is_group=True,
+            group_title=title,
+            group_bots_json=json.dumps(group_bots, ensure_ascii=False),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(conv)
+        session.commit()
+        session.refresh(conv)
+        return _group_conversation_payload(session, conv)
+
+    @app.get("/api/group-conversations/{conversation_id}")
+    def api_group_conversation_detail(conversation_id: UUID, session: Session = Depends(get_session)) -> dict:
+        conv = get_conversation(session, conversation_id)
+        if not bool(conv.is_group):
+            raise HTTPException(status_code=404, detail="Group conversation not found")
+        return _group_conversation_payload(session, conv)
+
+    @app.post("/api/group-conversations/{conversation_id}/messages")
+    async def api_group_conversation_message(
+        conversation_id: UUID,
+        payload: GroupMessageRequest = Body(...),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        conv = get_conversation(session, conversation_id)
+        if not bool(conv.is_group):
+            raise HTTPException(status_code=404, detail="Group conversation not found")
+
+        text = str(payload.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Empty text")
+
+        sender_role = str(payload.sender_role or "user").strip().lower()
+        if sender_role not in ("user", "assistant"):
+            raise HTTPException(status_code=400, detail="Invalid sender_role")
+
+        sender_bot_id: Optional[UUID] = None
+        sender_name = (payload.sender_name or "").strip()
+        if sender_role == "assistant":
+            if not payload.sender_bot_id:
+                raise HTTPException(status_code=400, detail="sender_bot_id is required for assistant messages")
+            try:
+                sender_bot_id = UUID(str(payload.sender_bot_id))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid sender_bot_id")
+            if str(sender_bot_id) not in {b["id"] for b in _group_bots_from_conv(conv)}:
+                raise HTTPException(status_code=400, detail="Assistant is not a member of this group")
+            if not sender_name:
+                try:
+                    sender_name = get_bot(session, sender_bot_id).name
+                except Exception:
+                    sender_name = "Assistant"
+        else:
+            if not sender_name:
+                sender_name = "User"
+
+        msg = add_message_with_metrics(
+            session,
+            conversation_id=conversation_id,
+            role=sender_role,
+            content=text,
+            sender_bot_id=sender_bot_id,
+            sender_name=sender_name,
+        )
+        if msg.role == "assistant":
+            _mirror_group_message(session, conv=conv, msg=msg)
+
+        payload = _group_message_payload(msg)
+        if payload:
+            await _group_ws_broadcast(conversation_id, {"type": "message", "message": payload})
+
+        targets = _extract_group_mentions(text, conv)
+        if sender_bot_id:
+            targets = [bid for bid in targets if str(bid) != str(sender_bot_id)]
+        if sender_role == "user" and not targets:
+            if not conv.bot_id:
+                raise HTTPException(status_code=400, detail="Default assistant is not configured")
+            targets = [conv.bot_id]
+
+        if targets:
+            _schedule_group_bots(conversation_id, targets)
+
+        return _group_conversation_payload(session, conv)
+
+    @app.post("/api/group-conversations/{conversation_id}/reset")
+    def api_group_conversation_reset(
+        conversation_id: UUID,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        conv = get_conversation(session, conversation_id)
+        if not bool(conv.is_group):
+            raise HTTPException(status_code=404, detail="Group conversation not found")
+
+        mapping = _ensure_group_individual_conversations(session, conv)
+        meta = safe_json_loads(conv.metadata_json or "{}") or {}
+        keep = {}
+        if isinstance(meta, dict):
+            if "demo_seed" in meta:
+                keep["demo_seed"] = meta["demo_seed"]
+        keep["group_individual_conversations"] = mapping
+        _reset_conversation_state(session, conv, keep)
+
+        for bid, cid in mapping.items():
+            try:
+                child = get_conversation(session, UUID(cid))
+            except Exception:
+                continue
+            child_meta = safe_json_loads(child.metadata_json or "{}") or {}
+            keep_child = {}
+            if isinstance(child_meta, dict):
+                for key in ("group_parent_id", "group_bot_id", "group_bot_name"):
+                    if key in child_meta:
+                        keep_child[key] = child_meta[key]
+            _reset_conversation_state(session, child, keep_child)
+
+        try:
+            asyncio.get_running_loop()
+            asyncio.create_task(_group_ws_broadcast(conversation_id, {"type": "reset"}))
+        except Exception:
+            pass
+        return {"ok": True}
+
+    @app.websocket("/ws/groups/{conversation_id}")
+    async def ws_group(conversation_id: UUID, ws: WebSocket) -> None:
+        await ws.accept()
+        key = str(conversation_id)
+        async with group_ws_lock:
+            group_ws_clients.setdefault(key, set()).add(ws)
+        try:
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            async with group_ws_lock:
+                clients = group_ws_clients.get(key, set())
+                clients.discard(ws)
+                if clients:
+                    group_ws_clients[key] = clients
+                else:
+                    group_ws_clients.pop(key, None)
 
     @app.get("/api/conversations/{conversation_id}/data-agent")
     def api_conversation_data_agent(conversation_id: UUID, session: Session = Depends(get_session)) -> dict:

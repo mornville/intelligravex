@@ -419,7 +419,15 @@ Rules:
           >
             <TrashIcon aria-hidden="true" />
           </button>
-          <button className="btn" onClick={() => nav('/bots')}>
+          <button
+            className="btn"
+            onClick={() => {
+              nav('/bots')
+              window.setTimeout(() => {
+                if (window.location.pathname !== '/bots') window.location.assign('/bots')
+              }, 0)
+            }}
+          >
             Back
           </button>
         </div>

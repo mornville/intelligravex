@@ -61,6 +61,9 @@ class Conversation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     bot_id: UUID = Field(foreign_key="bot.id", index=True)
     test_flag: bool = Field(default=True, index=True)
+    is_group: bool = Field(default=False, index=True)
+    group_title: str = Field(default="")
+    group_bots_json: str = Field(default="[]")
     # External, client-provided stable conversation id (used for embeds).
     external_id: Optional[str] = Field(default=None, index=True)
     client_key_id: Optional[UUID] = Field(default=None, index=True)
@@ -86,6 +89,8 @@ class ConversationMessage(SQLModel, table=True):
     conversation_id: UUID = Field(foreign_key="conversation.id", index=True)
     role: str = Field(index=True)  # system/user/assistant
     content: str
+    sender_bot_id: Optional[UUID] = Field(default=None, index=True)
+    sender_name: Optional[str] = Field(default=None)
     # Optional per-message metrics (typically set on assistant messages)
     input_tokens_est: Optional[int] = Field(default=None)
     output_tokens_est: Optional[int] = Field(default=None)

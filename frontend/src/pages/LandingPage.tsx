@@ -386,6 +386,13 @@ export default function LandingPage() {
     },
   ]
 
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
   return (
     <div className="landing">
       <section className="landingSection hero" id="top">
@@ -401,9 +408,9 @@ export default function LandingPage() {
               <Link className="btn primary" to="/dashboard">
                 Go to dashboard <ArrowRightIcon aria-hidden="true" />
               </Link>
-              <a className="btn ghost" href="#capabilities">
+              <button className="btn ghost" onClick={() => scrollToSection('capabilities')}>
                 Explore capabilities
-              </a>
+              </button>
             </div>
             <div className="heroBadges">
               <span>Parallel workspaces</span>

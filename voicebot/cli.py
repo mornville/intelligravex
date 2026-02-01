@@ -111,7 +111,27 @@ def web(
     except Exception as exc:
         raise RuntimeError("Missing web dependencies. Install: pip install -e '.[web]'") from exc
 
-    uvicorn.run("voicebot.web.app:create_app", host=host, port=port, reload=reload, factory=True)
+    from voicebot.web.app import create_app
+
+    try:
+        fastapi_app = create_app()
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("Failed to initialize FastAPI app.") from exc
+
+    async def _asgi_app(scope, receive, send):
+        await fastapi_app(scope, receive, send)
+
+    config = uvicorn.Config(
+        _asgi_app,
+        host=host,
+        port=port,
+        reload=reload,
+        proxy_headers=False,
+        server_header=False,
+        date_header=False,
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 
 if __name__ == "__main__":

@@ -334,6 +334,7 @@ def list_conversations(
     *,
     bot_id: Optional[UUID] = None,
     test_flag: Optional[bool] = None,
+    include_groups: bool = True,
     limit: int = 50,
     offset: int = 0,
 ) -> List[Conversation]:
@@ -342,11 +343,19 @@ def list_conversations(
         stmt = stmt.where(Conversation.bot_id == bot_id)
     if test_flag is not None:
         stmt = stmt.where(Conversation.test_flag == bool(test_flag))
+    if not include_groups:
+        stmt = stmt.where(Conversation.is_group == False)  # noqa: E712
     stmt = stmt.order_by(Conversation.updated_at.desc())
     stmt = stmt.offset(int(offset)).limit(int(limit))
     return list(session.exec(stmt))
 
-def count_conversations(session: Session, *, bot_id: Optional[UUID] = None, test_flag: Optional[bool] = None) -> int:
+def count_conversations(
+    session: Session,
+    *,
+    bot_id: Optional[UUID] = None,
+    test_flag: Optional[bool] = None,
+    include_groups: bool = True,
+) -> int:
     from sqlmodel import func
 
     stmt = select(func.count(Conversation.id))
@@ -354,6 +363,8 @@ def count_conversations(session: Session, *, bot_id: Optional[UUID] = None, test
         stmt = stmt.where(Conversation.bot_id == bot_id)
     if test_flag is not None:
         stmt = stmt.where(Conversation.test_flag == bool(test_flag))
+    if not include_groups:
+        stmt = stmt.where(Conversation.is_group == False)  # noqa: E712
     return int(session.exec(stmt).one())
 
 
@@ -364,8 +375,22 @@ def get_conversation(session: Session, conversation_id: UUID) -> Conversation:
     return conv
 
 
-def add_message(session: Session, *, conversation_id: UUID, role: str, content: str) -> ConversationMessage:
-    msg = ConversationMessage(conversation_id=conversation_id, role=role, content=content)
+def add_message(
+    session: Session,
+    *,
+    conversation_id: UUID,
+    role: str,
+    content: str,
+    sender_bot_id: Optional[UUID] = None,
+    sender_name: Optional[str] = None,
+) -> ConversationMessage:
+    msg = ConversationMessage(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        sender_bot_id=sender_bot_id,
+        sender_name=sender_name,
+    )
     session.add(msg)
     session.commit()
     session.refresh(msg)
@@ -381,6 +406,8 @@ def add_message_with_metrics(
     conversation_id: UUID,
     role: str,
     content: str,
+    sender_bot_id: Optional[UUID] = None,
+    sender_name: Optional[str] = None,
     input_tokens_est: Optional[int] = None,
     output_tokens_est: Optional[int] = None,
     cost_usd_est: Optional[float] = None,
@@ -394,6 +421,8 @@ def add_message_with_metrics(
         conversation_id=conversation_id,
         role=role,
         content=content,
+        sender_bot_id=sender_bot_id,
+        sender_name=sender_name,
         input_tokens_est=input_tokens_est,
         output_tokens_est=output_tokens_est,
         cost_usd_est=cost_usd_est,
