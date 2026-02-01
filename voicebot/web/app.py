@@ -643,6 +643,28 @@ def _group_bot_slugs(conv: Conversation) -> dict[str, str]:
     return {b["slug"].lower(): b["id"] for b in _group_bots_from_conv(conv)}
 
 
+def _sanitize_group_reply(text: str, conv: Conversation, bot_id: UUID) -> str:
+    if not text:
+        return text
+    bots = _group_bots_from_conv(conv)
+    id_to_slug = {b["id"]: b["slug"].lower() for b in bots}
+    id_to_name = {b["id"]: str(b.get("name") or "").strip().lower() for b in bots}
+    self_slug = id_to_slug.get(str(bot_id), "")
+    self_name = id_to_name.get(str(bot_id), "")
+
+    # Drop leading tag like "[SDE2]" if it doesn't match the author.
+    m = re.match(r"^\s*\[([A-Za-z0-9 _-]{1,40})\]\s*", text)
+    if m:
+        tag = m.group(1).strip().lower()
+        if tag and tag != self_slug and tag != self_name:
+            text = text[m.end():].lstrip()
+
+    # Remove self-mentions to avoid confusing triggers.
+    if self_slug:
+        text = re.sub(rf"@{re.escape(self_slug)}\b", self_slug, text, flags=re.IGNORECASE)
+    return text
+
+
 
 group_ws_clients: dict[str, set[WebSocket]] = {}
 group_ws_lock = asyncio.Lock()
@@ -1966,6 +1988,12 @@ def create_app() -> FastAPI:
                     llm_total_ms = None
                 else:
                     rendered_reply = final
+
+        if rendered_reply:
+            with Session(engine) as session:
+                conv = get_conversation(session, conversation_id)
+            if bool(conv.is_group):
+                rendered_reply = _sanitize_group_reply(rendered_reply, conv, bot_id)
 
         in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
             bot=bot, history=history, assistant_text=rendered_reply

@@ -369,13 +369,14 @@ function GroupMessageRow({ m }: { m: ConversationMessage }) {
   const sender = m.sender_name || (isUser ? 'You' : isAssistant ? 'Assistant' : 'System')
   const label = `~${sender}`
   const body = isTool ? (m.tool_name ? `${m.tool_name}` : m.content) : m.content
+  const bubbleStyle = isAssistant ? assistantBubbleStyle(m.sender_bot_id || sender) : undefined
 
   return (
     <div className={rowCls}>
       <div className={`avatar ${isAssistant ? 'assistant' : isTool ? 'tool' : 'user'}`}>
         {isUser ? <UserIcon /> : isTool ? <WrenchScrewdriverIcon /> : <CpuChipIcon />}
       </div>
-      <div className={cls}>
+      <div className={cls} style={bubbleStyle}>
         <div className="bubbleMeta" style={{ marginBottom: 6 }}>
           <span>{label}</span> <span className="muted">• {fmtIso(m.created_at)}</span>
         </div>
@@ -389,4 +390,26 @@ function GroupMessageRow({ m }: { m: ConversationMessage }) {
       </div>
     </div>
   )
+}
+
+function assistantBubbleStyle(key: string): React.CSSProperties {
+  const palette = [
+    { bg: 'rgba(129, 140, 248, 0.18)', border: 'rgba(129, 140, 248, 0.42)', glow: 'rgba(99, 102, 241, 0.2)' },
+    { bg: 'rgba(56, 189, 248, 0.16)', border: 'rgba(56, 189, 248, 0.42)', glow: 'rgba(14, 165, 233, 0.18)' },
+    { bg: 'rgba(74, 222, 128, 0.16)', border: 'rgba(74, 222, 128, 0.38)', glow: 'rgba(34, 197, 94, 0.18)' },
+    { bg: 'rgba(251, 191, 36, 0.16)', border: 'rgba(251, 191, 36, 0.38)', glow: 'rgba(245, 158, 11, 0.18)' },
+    { bg: 'rgba(244, 114, 182, 0.16)', border: 'rgba(244, 114, 182, 0.38)', glow: 'rgba(236, 72, 153, 0.18)' },
+    { bg: 'rgba(167, 139, 250, 0.16)', border: 'rgba(167, 139, 250, 0.38)', glow: 'rgba(139, 92, 246, 0.18)' },
+  ]
+  let hash = 0
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) | 0
+  }
+  const idx = Math.abs(hash) % palette.length
+  const color = palette[idx]
+  return {
+    ['--assistant-bg' as any]: color.bg,
+    ['--assistant-border' as any]: color.border,
+    ['--assistant-glow' as any]: color.glow,
+  }
 }

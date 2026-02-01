@@ -221,12 +221,62 @@ def _seed_demo_group(engine) -> None:
             select(Conversation).where(Conversation.is_group == True, Conversation.group_title == demo_title)  # noqa: E712
         ).first()
         if existing:
-            logger.info("init_db: demo seed skipped (already exists)")
+            logger.info("init_db: demo seed exists; checking prompts")
+            # Update demo bot prompts if needed.
+            def ensure_prompt(name: str, system_prompt: str, enable_data_agent: bool) -> None:
+                bot = session.exec(select(Bot).where(Bot.name == name)).first()
+                if not bot:
+                    return
+                existing_prompt = bot.system_prompt or ""
+                needs_update = (
+                    "dispatch_assistants" in existing_prompt
+                    or "facilitator" in existing_prompt.lower()
+                    or "mention @sde2" in existing_prompt.lower()
+                    or "mention @pm" in existing_prompt.lower()
+                    or "<no_reply>" not in existing_prompt
+                )
+                if needs_update:
+                    bot.system_prompt = system_prompt
+                    bot.updated_at = dt.datetime.now(dt.timezone.utc)
+                    session.add(bot)
+                    session.commit()
+                    session.refresh(bot)
+            pm_prompt = (
+                "You are the PM in a multi-assistant group chat. Clarify goals, define success criteria, and break work "
+                "into actionable steps. To ask another assistant for work, mention them with @slug in your message "
+                "(example: @sde1 please gather sources). If you have nothing to add, respond with <no_reply>."
+            )
+            sde1_prompt = (
+                "You are SDE1. Implement tasks using the Data Agent and available tools. State your plan, execute, and "
+                "report results clearly. If requirements are unclear, ask the user or another assistant using @slug. "
+                "If you have nothing to add, respond with <no_reply>."
+            )
+            sde2_prompt = (
+                "You are SDE2. Review other assistant output against requirements. Identify gaps or confirm completion. "
+                "Ask questions using @slug when needed. If you have nothing to add, respond with <no_reply>."
+            )
+            ensure_prompt("PM", pm_prompt, enable_data_agent=False)
+            ensure_prompt("SDE1", sde1_prompt, enable_data_agent=True)
+            ensure_prompt("SDE2", sde2_prompt, enable_data_agent=False)
             return
 
         def get_or_create_bot(name: str, system_prompt: str, enable_data_agent: bool) -> Bot:
             bot = session.exec(select(Bot).where(Bot.name == name)).first()
             if bot:
+                existing = bot.system_prompt or ""
+                needs_update = (
+                    "dispatch_assistants" in existing
+                    or "facilitator" in existing.lower()
+                    or "mention @sde2" in existing.lower()
+                    or "mention @pm" in existing.lower()
+                    or "<no_reply>" not in existing
+                )
+                if needs_update:
+                    bot.system_prompt = system_prompt
+                    bot.updated_at = dt.datetime.now(dt.timezone.utc)
+                    session.add(bot)
+                    session.commit()
+                    session.refresh(bot)
                 return bot
             bot = Bot(
                 name=name,

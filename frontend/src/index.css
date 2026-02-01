@@ -1417,8 +1417,9 @@ label {
 }
 .bubble.assistant {
   margin-right: auto;
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--assistant-bg, rgba(255, 255, 255, 0.04));
+  border-color: var(--assistant-border, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 12px 22px var(--assistant-glow, rgba(0, 0, 0, 0.2));
 }
 .bubble.tool {
   margin-right: auto;
