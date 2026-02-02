@@ -322,6 +322,90 @@ a {
   color: rgba(231, 233, 238, 0.72);
   font-size: 13px;
 }
+.mediaGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 28px;
+}
+.mediaSlider {
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  background: rgba(15, 18, 24, 0.7);
+  padding: 18px;
+  overflow: hidden;
+  position: relative;
+}
+.mediaTrack {
+  display: flex;
+  transition: transform 420ms ease;
+}
+.mediaSlide {
+  flex: 0 0 100%;
+  padding: 6px;
+}
+.mediaSlide img {
+  width: 100%;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 60px rgba(6, 12, 22, 0.55);
+}
+.mediaDots {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mediaDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: transparent;
+  cursor: pointer;
+}
+.mediaDot.active {
+  background: rgba(129, 140, 248, 0.8);
+  border-color: rgba(129, 140, 248, 0.8);
+}
+.mediaCaption {
+  margin-top: 14px;
+}
+.mediaCaption h3 {
+  margin: 0 0 6px;
+}
+.mediaCaption p {
+  margin: 0;
+  color: rgba(231, 233, 238, 0.78);
+}
+.videoCard {
+  border-radius: 22px;
+  border: 1px solid var(--border);
+  background: rgba(12, 14, 20, 0.7);
+  padding: 18px;
+}
+.videoFrame {
+  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(8, 11, 16, 0.8);
+}
+.videoFrame video {
+  width: 100%;
+  display: block;
+}
+.videoOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 16px;
+  background: linear-gradient(180deg, rgba(8, 11, 16, 0) 40%, rgba(8, 11, 16, 0.8) 100%);
+  pointer-events: none;
+}
+.videoTitle {
+  font-weight: 600;
+}
 .sectionHeader h2 {
   margin: 0;
   font-size: clamp(26px, 4vw, 36px);
@@ -1579,6 +1663,9 @@ label {
 }
 
 @media (max-width: 980px) {
+  .mediaGrid {
+    grid-template-columns: 1fr;
+  }
   .chatSplit {
     grid-template-columns: 1fr;
   }

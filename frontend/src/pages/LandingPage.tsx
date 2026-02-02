@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet } from '../api/client'
+import slide1 from '../assets/landing/landing-1.png'
+import slide2 from '../assets/landing/landing-2.png'
+import slide3 from '../assets/landing/landing-3.png'
+import slide4 from '../assets/landing/landing-4.png'
 import {
   ArrowRightIcon,
   CpuChipIcon,
@@ -300,7 +304,7 @@ export default function LandingPage() {
   const heroHighlights = [
     {
       title: 'A personal automation studio',
-      body: 'Set it up once and let your assistants handle the busywork.',
+      body: 'Set it up once and let your EMPLOYEES handle the busywork.',
     },
     {
       title: 'Parallel workspaces per task',
@@ -348,6 +352,35 @@ export default function LandingPage() {
       body: 'Connect repos securely for data‑agent workflows.',
     },
   ]
+  const slides = [
+    {
+      src: slide1,
+      title: 'Mission control chat',
+      body: 'Keep every employee conversation, tools, and context in one view.',
+    },
+    {
+      src: slide2,
+      title: 'Workspace snapshots',
+      body: 'See container status and outputs without leaving the flow.',
+    },
+    {
+      src: slide3,
+      title: 'Tune employees',
+      body: 'Set voice, models, prompts, and behaviors per employee.',
+    },
+    {
+      src: slide4,
+      title: 'Data Agent control',
+      body: 'Enable long‑running jobs with workspace‑aware tooling.',
+    },
+  ]
+  const [slideIndex, setSlideIndex] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setSlideIndex((i) => (i + 1) % slides.length)
+    }, 4800)
+    return () => window.clearInterval(id)
+  }, [slides.length])
   const useCases = [
     {
       title: 'Personal ops',
@@ -399,9 +432,9 @@ export default function LandingPage() {
         <div className="heroGrid">
           <div className="heroCopy">
             <div className="heroKicker">GravexStudio</div>
-            <h1>One studio. Many assistants. Unlimited parallel work.</h1>
+            <h1>One studio. Many EMPLOYEES. Unlimited parallel work.</h1>
             <p className="muted">
-              Build your personal automation layer with assistants that spin up isolated workspaces, run tasks in
+              Build your personal automation layer with EMPLOYEES that spin up isolated workspaces, run tasks in
               parallel, and keep project data anchored on your device.
             </p>
             <div className="heroActions">
@@ -430,13 +463,12 @@ export default function LandingPage() {
             </div>
           </div>
         </div>
-        <div className="scrollHint">Scroll to explore</div>
       </section>
 
       <section className="landingSection" id="capabilities">
         <div className="sectionHeader">
           <div className="sectionKicker">Capabilities</div>
-          <h2>Everything you need to go from idea → shipped assistant.</h2>
+          <h2>Everything you need to go from idea → shipped EMPLOYEE.</h2>
         </div>
         <div className="featureGrid">
           {capabilities.map((cap, idx) => (
@@ -446,6 +478,53 @@ export default function LandingPage() {
               <p>{cap.body}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="landingSection" id="studio">
+        <div className="sectionHeader">
+          <div className="sectionKicker">Studio tour</div>
+          <h2>See GravexStudio in action.</h2>
+        </div>
+        <div className="mediaGrid">
+          <div className="mediaSlider">
+            <div className="mediaTrack" style={{ transform: `translateX(-${slideIndex * 100}%)` }}>
+              {slides.map((s) => (
+                <div key={s.title} className="mediaSlide">
+                  <img src={s.src} alt={s.title} />
+                </div>
+              ))}
+            </div>
+            <div className="mediaDots">
+              {slides.map((s, idx) => (
+                <button
+                  key={s.title}
+                  className={`mediaDot ${idx === slideIndex ? 'active' : ''}`}
+                  onClick={() => setSlideIndex(idx)}
+                  aria-label={`Show ${s.title}`}
+                />
+              ))}
+            </div>
+            <div className="mediaCaption">
+              <h3>{slides[slideIndex].title}</h3>
+              <p>{slides[slideIndex].body}</p>
+            </div>
+          </div>
+          <div className="videoCard">
+            <div className="videoFrame">
+              <video controls poster={slide1} preload="none">
+                <source src="/assets/landing/flow-demo.mp4" type="video/mp4" />
+              </video>
+              <div className="videoOverlay">
+                <div className="videoTitle">Flow walkthrough</div>
+                <div className="muted">Drop your demo video at /assets/landing/flow-demo.mp4</div>
+              </div>
+            </div>
+            <div className="mediaCaption">
+              <h3>One task, many employees</h3>
+              <p>Watch how a request fans out to specialized employees and returns as a finished deliverable.</p>
+            </div>
+          </div>
         </div>
       </section>
 
