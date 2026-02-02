@@ -16,6 +16,8 @@ export type Bot = {
   data_agent_return_result_directly?: boolean
   data_agent_prewarm_on_start?: boolean
   data_agent_prewarm_prompt?: string
+  enable_host_actions?: boolean
+  enable_host_shell?: boolean
   system_prompt: string
   language: string
   openai_tts_model: string
@@ -154,6 +156,23 @@ export type DataAgentStatus = {
   workspace_dir?: string
   session_id?: string
   error?: string
+}
+
+export type HostAction = {
+  id: UUID
+  conversation_id: UUID
+  requested_by_bot_id?: UUID | null
+  requested_by_name?: string | null
+  action_type: string
+  payload: Record<string, any>
+  status: string
+  stdout?: string
+  stderr?: string
+  exit_code?: number | null
+  error?: string
+  created_at?: string
+  updated_at?: string
+  executed_at?: string | null
 }
 
 export type ConversationFileItem = {

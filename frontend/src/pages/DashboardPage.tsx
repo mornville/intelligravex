@@ -16,6 +16,7 @@ import type {
   GroupConversationDetail,
   GroupConversationSummary,
   ConversationFiles,
+  HostAction,
   Options,
 } from '../types'
 import { fmtIso } from '../utils/format'
@@ -109,6 +110,9 @@ export default function DashboardPage() {
   const [files, setFiles] = useState<ConversationFiles | null>(null)
   const [filesErr, setFilesErr] = useState<string | null>(null)
   const [filesLoading, setFilesLoading] = useState(false)
+  const [hostActions, setHostActions] = useState<HostAction[]>([])
+  const [hostActionsErr, setHostActionsErr] = useState<string | null>(null)
+  const [hostActionsLoading, setHostActionsLoading] = useState(false)
 
   useEffect(() => {
     void (async () => {
@@ -374,8 +378,6 @@ export default function DashboardPage() {
     })()
   }, [selectedType, selectedGroupId, assistantConversationId])
 
-  const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
-
   const groupMessages = (groupDetail?.messages || []).filter((m) => m.role !== 'tool' && m.role !== 'system')
   const activeConversationId = selectedType === 'group' ? selectedGroupId : assistantConversationId
   const activeBotId =
@@ -389,6 +391,24 @@ export default function DashboardPage() {
     : !activeConversationId
       ? 'Start a conversation to upload files.'
       : ''
+  const hostActionsEnabled =
+    selectedType === 'group'
+      ? groupBots.some((b) => bots.find((bot) => bot.id === b.id)?.enable_host_actions)
+      : Boolean(activeBot?.enable_host_actions)
+
+  useEffect(() => {
+    if (!activeConversationId) {
+      setHostActions([])
+      return
+    }
+    void loadHostActions(activeConversationId)
+    const id = window.setInterval(() => {
+      void loadHostActions(activeConversationId)
+    }, 5000)
+    return () => window.clearInterval(id)
+  }, [activeConversationId])
+
+  const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
   async function reloadLists() {
     try {
@@ -417,6 +437,30 @@ export default function DashboardPage() {
       setFilesErr(String(e?.message || e))
     } finally {
       setFilesLoading(false)
+    }
+  }
+
+  async function loadHostActions(convId?: string) {
+    const id = convId || activeConversationId
+    if (!id) return
+    setHostActionsLoading(true)
+    setHostActionsErr(null)
+    try {
+      const res = await apiGet<{ items: HostAction[] }>(`/api/conversations/${id}/host-actions`)
+      setHostActions(res.items || [])
+    } catch (e: any) {
+      setHostActionsErr(String(e?.message || e))
+    } finally {
+      setHostActionsLoading(false)
+    }
+  }
+
+  async function runHostAction(actionId: string) {
+    try {
+      await apiPost(`/api/host-actions/${actionId}/run`, {})
+      await loadHostActions()
+    } catch (e: any) {
+      setHostActionsErr(String(e?.message || e))
     }
   }
 
@@ -970,6 +1014,46 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="workspaceCard">
+              <div className="workspaceTitle">Action queue</div>
+              {!hostActionsEnabled ? (
+                <div className="muted">Enable Host Actions in settings to queue actions.</div>
+              ) : hostActionsLoading ? (
+                <div className="muted">
+                  <LoadingSpinner label="Loading actions" />
+                </div>
+              ) : hostActionsErr ? (
+                <div className="alert">{hostActionsErr}</div>
+              ) : hostActions.length === 0 ? (
+                <div className="muted">No pending actions.</div>
+              ) : (
+                <div className="workspaceFiles">
+                  {hostActions.map((a) => {
+                    const label = formatHostActionLabel(a)
+                    return (
+                      <div key={a.id} className="workspaceRow" style={{ alignItems: 'flex-start', gap: 10 }}>
+                        <div style={{ flex: 1 }}>
+                          <strong>{label.title}</strong>
+                          <div className="muted" title={label.detail}>
+                            {label.detail}
+                          </div>
+                          <div className="muted" style={{ marginTop: 2 }}>
+                            {a.status}
+                          </div>
+                        </div>
+                        <div>
+                          {a.status === 'pending' ? (
+                            <button className="btn" onClick={() => void runHostAction(a.id)}>
+                              Run
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="workspaceCard">
               <div className="workspaceTitle">Files</div>
               {filesLoading ? (
                 <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1235,4 +1319,22 @@ function buildSlugMap(bots: Bot[]): Record<string, string> {
     map[b.id] = slug
   }
   return map
+}
+
+function formatHostActionLabel(action: HostAction): { title: string; detail: string } {
+  const payload = action.payload || {}
+  switch (action.action_type) {
+    case 'run_shell':
+      return {
+        title: 'Shell command',
+        detail: String(payload.command || ''),
+      }
+    case 'run_applescript':
+      return {
+        title: 'AppleScript',
+        detail: String(payload.script || ''),
+      }
+    default:
+      return { title: action.action_type || 'Host action', detail: '' }
+  }
 }

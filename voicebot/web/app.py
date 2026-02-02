@@ -12,6 +12,8 @@ import queue
 import re
 import secrets
 import shutil
+import subprocess
+import sys
 import threading
 import time
 from functools import lru_cache
@@ -40,7 +42,7 @@ from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
-from voicebot.models import Bot, Conversation, ConversationMessage
+from voicebot.models import Bot, Conversation, ConversationMessage, HostAction
 from voicebot.store import (
     create_bot,
     create_conversation,
@@ -666,6 +668,192 @@ def _sanitize_group_reply(text: str, conv: Conversation, bot_id: UUID) -> str:
     return text
 
 
+def _sanitize_upload_path(raw_name: str) -> str:
+    name = (raw_name or "").replace("\\", "/").strip()
+    # Drop any drive letters (Windows paths).
+    if re.match(r"^[A-Za-z]:/", name):
+        name = name[2:]
+    name = name.lstrip("/").strip()
+    if not name:
+        return ""
+    parts = []
+    for part in name.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            return ""
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _parse_host_action_args(patch: dict) -> tuple[str, dict]:
+    action = str(patch.get("action") or patch.get("action_type") or "").strip().lower()
+    if action not in {"run_shell", "run_applescript"}:
+        raise ValueError("Unsupported host action")
+    if action == "run_shell":
+        command = str(patch.get("command") or patch.get("cmd") or "").strip()
+        if not command:
+            raise ValueError("Missing command")
+        return action, {"command": command}
+    script = str(patch.get("script") or patch.get("applescript") or "").strip()
+    if not script:
+        raise ValueError("Missing script")
+    return action, {"script": script}
+
+
+def _host_action_payload(action: HostAction) -> dict:
+    return {
+        "id": str(action.id),
+        "conversation_id": str(action.conversation_id),
+        "requested_by_bot_id": str(action.requested_by_bot_id) if action.requested_by_bot_id else None,
+        "requested_by_name": action.requested_by_name,
+        "action_type": action.action_type,
+        "payload": safe_json_loads(action.payload_json or "{}") or {},
+        "status": action.status,
+        "stdout": action.stdout,
+        "stderr": action.stderr,
+        "exit_code": action.exit_code,
+        "error": action.error,
+        "created_at": action.created_at.isoformat() if action.created_at else None,
+        "updated_at": action.updated_at.isoformat() if action.updated_at else None,
+        "executed_at": action.executed_at.isoformat() if action.executed_at else None,
+    }
+
+
+def _create_host_action(
+    session: Session,
+    *,
+    conv: Conversation,
+    bot: Bot,
+    action_type: str,
+    payload: dict,
+) -> HostAction:
+    now = dt.datetime.now(dt.timezone.utc)
+    action = HostAction(
+        conversation_id=conv.id,
+        requested_by_bot_id=bot.id,
+        requested_by_name=bot.name,
+        action_type=action_type,
+        payload_json=json.dumps(payload, ensure_ascii=False),
+        status="pending",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(action)
+    session.commit()
+    session.refresh(action)
+    return action
+
+
+def _summarize_screenshot_tool_def() -> dict:
+    return {
+        "type": "function",
+        "name": "summarize_screenshot",
+        "description": "Summarize an image stored in the Data Agent workspace (e.g., a captured screenshot).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path to the image file in the workspace (e.g. screenshots/screenshot-123.png).",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Optional prompt to guide the summary.",
+                },
+                "next_reply": {
+                    "type": "string",
+                    "description": "Optional reply to the user after summarizing the image.",
+                },
+            },
+            "required": ["path"],
+        },
+        "strict": False,
+    }
+
+
+def _summarize_screenshot(
+    session: Session,
+    *,
+    conv: Conversation,
+    bot: Bot,
+    path: str,
+    prompt: str,
+) -> tuple[bool, str, Optional[str]]:
+    if not bool(getattr(bot, "enable_data_agent", False)):
+        return False, "Data Agent is disabled for this bot.", None
+    api_key = _get_openai_api_key(session)
+    if not api_key:
+        return False, "OpenAI API key not configured.", None
+    if not path:
+        return False, "Missing path.", None
+    _root, req_rel, target = _resolve_data_agent_target(
+        session,
+        conversation_id=conv.id,
+        path=path,
+        include_hidden=False,
+    )
+    if not target.exists() or not target.is_file():
+        return False, "Image file not found.", None
+    mt, _ = mimetypes.guess_type(str(target))
+    if not mt or not mt.startswith("image/"):
+        ext = str(target.suffix or "").lower()
+        if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            return False, "Unsupported image type.", None
+        mt = "image/png" if ext == ".png" else "image/jpeg"
+    try:
+        data = target.read_bytes()
+    except Exception:
+        return False, "Failed to read image.", None
+    if not data:
+        return False, "Image is empty.", None
+    b64 = base64.b64encode(data).decode("ascii")
+    image_url = f"data:{mt};base64,{b64}"
+    model = (getattr(bot, "openai_model", "") or "o4-mini").strip() or "o4-mini"
+    summary_prompt = (prompt or "").strip() or "Summarize the screenshot. Be concise and structured."
+    try:
+        llm = OpenAILLM(model=model, api_key=api_key)
+        text = llm.complete_vision(prompt=summary_prompt, image_url=image_url)
+        return True, text.strip(), req_rel
+    except Exception as exc:
+        return False, f"Vision summary failed: {exc}", req_rel
+
+
+def _execute_host_action(
+    action: HostAction,
+    *,
+    workspace_dir: Optional[str] = None,
+) -> tuple[bool, str, str, Optional[int], str, dict]:
+    payload = safe_json_loads(action.payload_json or "{}") or {}
+    action_type = str(action.action_type or "").strip()
+    stdout = ""
+    stderr = ""
+    exit_code: Optional[int] = None
+    error = ""
+    result_payload: dict = {}
+    try:
+        if action_type == "run_shell":
+            command = str(payload.get("command") or "").strip()
+            res = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
+            stdout, stderr, exit_code = res.stdout or "", res.stderr or "", res.returncode
+        elif action_type == "run_applescript":
+            if sys.platform != "darwin":
+                raise RuntimeError("AppleScript is only supported on macOS")
+            script = str(payload.get("script") or "").strip()
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=60)
+            stdout, stderr, exit_code = res.stdout or "", res.stderr or "", res.returncode
+        else:
+            raise RuntimeError("Unknown host action")
+        if exit_code is None:
+            exit_code = 0
+        ok = exit_code == 0
+        if not ok:
+            error = stderr or stdout or "Host action failed"
+        return ok, stdout, stderr, exit_code, error, result_payload
+    except Exception as exc:
+        return False, stdout, stderr, exit_code, str(exc), result_payload
+
+
 
 group_ws_clients: dict[str, set[WebSocket]] = {}
 group_ws_lock = asyncio.Lock()
@@ -777,6 +965,8 @@ class BotCreateRequest(BaseModel):
     data_agent_return_result_directly: bool = False
     data_agent_prewarm_on_start: bool = False
     data_agent_prewarm_prompt: str = ""
+    enable_host_actions: bool = False
+    enable_host_shell: bool = False
     system_prompt: str
     language: str = "en"
     openai_tts_model: str = "gpt-4o-mini-tts"
@@ -801,6 +991,8 @@ class BotUpdateRequest(BaseModel):
     data_agent_return_result_directly: Optional[bool] = None
     data_agent_prewarm_on_start: Optional[bool] = None
     data_agent_prewarm_prompt: Optional[str] = None
+    enable_host_actions: Optional[bool] = None
+    enable_host_shell: Optional[bool] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     openai_tts_model: Optional[str] = None
@@ -1659,6 +1851,67 @@ def create_app() -> FastAPI:
                         if tool_failed or not next_reply:
                             needs_followup_llm = True
                             final = ""
+                    elif tool_name == "summarize_screenshot":
+                        ok, summary_text, rel_path = _summarize_screenshot(
+                            session,
+                            conv=conv,
+                            bot=bot,
+                            path=str(patch.get("path") or "").strip(),
+                            prompt=str(patch.get("prompt") or "").strip(),
+                        )
+                        if not ok:
+                            tool_result = {"ok": False, "error": {"message": summary_text}}
+                            tool_failed = True
+                            needs_followup_llm = True
+                            final = ""
+                        else:
+                            tool_result = {"ok": True, "summary": summary_text, "path": rel_path}
+                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                            if candidate:
+                                final = candidate
+                                needs_followup_llm = False
+                            else:
+                                final = summary_text
+                                needs_followup_llm = False
+                    elif tool_name == "request_host_action":
+                        if not bool(getattr(bot, "enable_host_actions", False)):
+                            tool_result = {"ok": False, "error": {"message": "Host actions are disabled for this bot."}}
+                            tool_failed = True
+                            needs_followup_llm = True
+                            final = ""
+                        else:
+                            try:
+                                action_type, payload = _parse_host_action_args(patch)
+                            except Exception as exc:
+                                tool_result = {"ok": False, "error": {"message": str(exc) or "Invalid host action"}}
+                                tool_failed = True
+                                needs_followup_llm = True
+                                final = ""
+                            else:
+                                if action_type == "run_shell" and not bool(getattr(bot, "enable_host_shell", False)):
+                                    tool_result = {
+                                        "ok": False,
+                                        "error": {"message": "Shell commands are disabled for this bot."},
+                                    }
+                                    tool_failed = True
+                                    needs_followup_llm = True
+                                    final = ""
+                                else:
+                                    action = _create_host_action(
+                                        session,
+                                        conv=conv,
+                                        bot=bot,
+                                        action_type=action_type,
+                                        payload=payload,
+                                    )
+                                    tool_result = {"ok": True, "action_id": str(action.id)}
+                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                    if candidate:
+                                        final = candidate
+                                        needs_followup_llm = False
+                                    else:
+                                        needs_followup_llm = True
+                                        final = ""
                     elif tool_name == "give_command_to_data_agent":
                         if not bool(getattr(bot, "enable_data_agent", False)):
                             tool_result = {"ok": False, "error": {"message": "Data Agent is disabled for this bot."}}
@@ -2546,6 +2799,34 @@ def create_app() -> FastAPI:
     def _web_search_tool_def() -> dict:
         return web_search_tool_def()
 
+    def _host_action_tool_def() -> dict:
+        return {
+            "type": "function",
+            "name": "request_host_action",
+            "description": (
+                "Queue a host action for user approval. Use this when a task requires running local shell commands or AppleScript. "
+                "The action will appear in the Action Queue and only runs after user confirmation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["run_shell", "run_applescript"],
+                        "description": "Type of host action.",
+                    },
+                    "command": {"type": "string", "description": "Shell command to run (for run_shell)."},
+                    "script": {"type": "string", "description": "AppleScript to run (for run_applescript)."},
+                    "next_reply": {
+                        "type": "string",
+                        "description": "Optional reply to the user after queuing the action.",
+                    },
+                },
+                "required": ["action"],
+            },
+            "strict": False,
+        }
+
     def _disabled_tool_names(bot: Bot) -> set[str]:
         raw = (getattr(bot, "disabled_tools_json", "") or "[]").strip() or "[]"
         try:
@@ -2574,6 +2855,9 @@ def create_app() -> FastAPI:
         ]
         if bool(getattr(bot, "enable_data_agent", False)):
             tools.append(give_command_to_data_agent_tool_def())
+            tools.append(_summarize_screenshot_tool_def())
+        if bool(getattr(bot, "enable_host_actions", False)):
+            tools.append(_host_action_tool_def())
         return tools
 
     def _system_tools_public_list(*, bot: Bot, disabled: set[str]) -> list[dict[str, Any]]:
@@ -3997,6 +4281,70 @@ def create_app() -> FastAPI:
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
+                                    elif tool_name == "summarize_screenshot":
+                                        ok, summary_text, rel_path = _summarize_screenshot(
+                                            session,
+                                            conv=conv,
+                                            bot=bot,
+                                            path=str(patch.get("path") or "").strip(),
+                                            prompt=str(patch.get("prompt") or "").strip(),
+                                        )
+                                        if not ok:
+                                            tool_result = {"ok": False, "error": {"message": summary_text}}
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            tool_result = {"ok": True, "summary": summary_text, "path": rel_path}
+                                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                                            if candidate:
+                                                rendered_reply = candidate
+                                                needs_followup_llm = False
+                                            else:
+                                                rendered_reply = summary_text
+                                                needs_followup_llm = False
+                                    elif tool_name == "request_host_action":
+                                        if not bool(getattr(bot, "enable_host_actions", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Host actions are disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            try:
+                                                action_type, payload = _parse_host_action_args(patch)
+                                            except Exception as exc:
+                                                tool_result = {"ok": False, "error": {"message": str(exc) or "Invalid host action"}}
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                if action_type == "run_shell" and not bool(getattr(bot, "enable_host_shell", False)):
+                                                    tool_result = {
+                                                        "ok": False,
+                                                        "error": {"message": "Shell commands are disabled for this bot."},
+                                                    }
+                                                    tool_failed = True
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
+                                                else:
+                                                    action = _create_host_action(
+                                                        session,
+                                                        conv=conv,
+                                                        bot=bot,
+                                                        action_type=action_type,
+                                                        payload=payload,
+                                                    )
+                                                    tool_result = {"ok": True, "action_id": str(action.id)}
+                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                    if candidate:
+                                                        rendered_reply = candidate
+                                                        needs_followup_llm = False
+                                                    else:
+                                                        needs_followup_llm = True
+                                                        rendered_reply = ""
                                     elif tool_name == "give_command_to_data_agent":
                                         if not bool(getattr(bot, "enable_data_agent", False)):
                                             tool_result = {
@@ -5157,6 +5505,70 @@ def create_app() -> FastAPI:
                                         if tool_failed or not next_reply:
                                             needs_followup_llm = True
                                             rendered_reply = ""
+                                    elif tool_name == "summarize_screenshot":
+                                        ok, summary_text, rel_path = _summarize_screenshot(
+                                            session,
+                                            conv=conv,
+                                            bot=bot2,
+                                            path=str(patch.get("path") or "").strip(),
+                                            prompt=str(patch.get("prompt") or "").strip(),
+                                        )
+                                        if not ok:
+                                            tool_result = {"ok": False, "error": {"message": summary_text}}
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            tool_result = {"ok": True, "summary": summary_text, "path": rel_path}
+                                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                                            if candidate:
+                                                rendered_reply = candidate
+                                                needs_followup_llm = False
+                                            else:
+                                                rendered_reply = summary_text
+                                                needs_followup_llm = False
+                                    elif tool_name == "request_host_action":
+                                        if not bool(getattr(bot2, "enable_host_actions", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Host actions are disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            try:
+                                                action_type, payload = _parse_host_action_args(patch)
+                                            except Exception as exc:
+                                                tool_result = {"ok": False, "error": {"message": str(exc) or "Invalid host action"}}
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                if action_type == "run_shell" and not bool(getattr(bot2, "enable_host_shell", False)):
+                                                    tool_result = {
+                                                        "ok": False,
+                                                        "error": {"message": "Shell commands are disabled for this bot."},
+                                                    }
+                                                    tool_failed = True
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
+                                                else:
+                                                    action = _create_host_action(
+                                                        session,
+                                                        conv=conv,
+                                                        bot=bot2,
+                                                        action_type=action_type,
+                                                        payload=payload,
+                                                    )
+                                                    tool_result = {"ok": True, "action_id": str(action.id)}
+                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                    if candidate:
+                                                        rendered_reply = candidate
+                                                        needs_followup_llm = False
+                                                    else:
+                                                        needs_followup_llm = True
+                                                        rendered_reply = ""
                                     elif tool_name == "give_command_to_data_agent":
                                         if not bool(getattr(bot2, "enable_data_agent", False)):
                                             tool_result = {
@@ -6195,23 +6607,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="Path not allowed")
         return root, req_rel, target
 
-    def _sanitize_upload_path(raw_name: str) -> str:
-        name = (raw_name or "").replace("\\", "/").strip()
-        # Drop any drive letters (Windows paths).
-        if re.match(r"^[A-Za-z]:/", name):
-            name = name[2:]
-        name = name.lstrip("/").strip()
-        if not name:
-            return ""
-        parts = []
-        for part in name.split("/"):
-            if part in ("", "."):
-                continue
-            if part == "..":
-                return ""
-            parts.append(part)
-        return "/".join(parts)
-
     def _conversation_files_payload(
         *,
         session: Session,
@@ -6574,6 +6969,60 @@ def create_app() -> FastAPI:
             saved.append(rel)
 
         return {"ok": True, "files": saved, "workspace_dir": str(root)}
+
+    @app.get("/api/conversations/{conversation_id}/host-actions")
+    def api_conversation_host_actions(
+        conversation_id: UUID,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        _ = get_conversation(session, conversation_id)
+        stmt = select(HostAction).where(HostAction.conversation_id == conversation_id).order_by(HostAction.created_at.desc())
+        items = list(session.exec(stmt))
+        return {"items": [_host_action_payload(a) for a in items]}
+
+    @app.post("/api/host-actions/{action_id}/run")
+    def api_run_host_action(
+        action_id: UUID,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        action = session.get(HostAction, action_id)
+        if not action:
+            raise HTTPException(status_code=404, detail="Host action not found")
+        conv = get_conversation(session, action.conversation_id)
+        req_bot_id = action.requested_by_bot_id or conv.bot_id
+        bot = get_bot(session, req_bot_id)
+        if not bool(getattr(bot, "enable_host_actions", False)):
+            raise HTTPException(status_code=400, detail="Host actions are disabled for this assistant.")
+        if action.action_type == "run_shell" and not bool(getattr(bot, "enable_host_shell", False)):
+            raise HTTPException(status_code=400, detail="Shell commands are disabled for this assistant.")
+
+        action.status = "running"
+        action.updated_at = dt.datetime.now(dt.timezone.utc)
+        session.add(action)
+        session.commit()
+
+        ok, stdout, stderr, exit_code, error, result_payload = _execute_host_action(action)
+        action.status = "done" if ok else "error"
+        action.stdout = stdout or ""
+        action.stderr = stderr or ""
+        action.exit_code = exit_code
+        action.error = error or ""
+        if result_payload:
+            payload = safe_json_loads(action.payload_json or "{}") or {}
+            payload.update(result_payload)
+            if result_payload.get("result_path"):
+                payload["result_download_url"] = (
+                    f"/api/conversations/{action.conversation_id}/files/download?path="
+                    f"{_url_quote(str(result_payload.get('result_path') or ''))}"
+                )
+            action.payload_json = json.dumps(payload, ensure_ascii=False)
+        action.executed_at = dt.datetime.now(dt.timezone.utc)
+        action.updated_at = action.executed_at
+        session.add(action)
+        session.commit()
+        session.refresh(action)
+
+        return _host_action_payload(action)
 
     async def _public_send_done(ws: WebSocket, *, req_id: str, text: str, metrics: dict) -> None:
         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": text, "metrics": metrics})
@@ -6981,6 +7430,70 @@ def create_app() -> FastAPI:
                                     if tool_failed or not next_reply:
                                         needs_followup_llm = True
                                         final = ""
+                                elif tool_name == "summarize_screenshot":
+                                    ok, summary_text, rel_path = _summarize_screenshot(
+                                        session,
+                                        conv=conv,
+                                        bot=bot,
+                                        path=str(patch.get("path") or "").strip(),
+                                        prompt=str(patch.get("prompt") or "").strip(),
+                                    )
+                                    if not ok:
+                                        tool_result = {"ok": False, "error": {"message": summary_text}}
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        final = ""
+                                    else:
+                                        tool_result = {"ok": True, "summary": summary_text, "path": rel_path}
+                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                        if candidate:
+                                            final = candidate
+                                            needs_followup_llm = False
+                                        else:
+                                            final = summary_text
+                                            needs_followup_llm = False
+                                elif tool_name == "request_host_action":
+                                    if not bool(getattr(bot, "enable_host_actions", False)):
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": "Host actions are disabled for this bot."},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        final = ""
+                                    else:
+                                        try:
+                                            action_type, payload = _parse_host_action_args(patch)
+                                        except Exception as exc:
+                                            tool_result = {"ok": False, "error": {"message": str(exc) or "Invalid host action"}}
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            final = ""
+                                        else:
+                                            if action_type == "run_shell" and not bool(getattr(bot, "enable_host_shell", False)):
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {"message": "Shell commands are disabled for this bot."},
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                final = ""
+                                            else:
+                                                action = _create_host_action(
+                                                    session,
+                                                    conv=conv,
+                                                    bot=bot,
+                                                    action_type=action_type,
+                                                    payload=payload,
+                                                )
+                                                tool_result = {"ok": True, "action_id": str(action.id)}
+                                                candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                if candidate:
+                                                    final = candidate
+                                                    needs_followup_llm = False
+                                                else:
+                                                    needs_followup_llm = True
+                                                    final = ""
                                 elif tool_name == "give_command_to_data_agent":
                                     if not bool(getattr(bot, "enable_data_agent", False)):
                                         tool_result = {
@@ -7680,6 +8193,8 @@ def create_app() -> FastAPI:
             "data_agent_return_result_directly": bool(getattr(bot, "data_agent_return_result_directly", False)),
             "data_agent_prewarm_on_start": bool(getattr(bot, "data_agent_prewarm_on_start", False)),
             "data_agent_prewarm_prompt": getattr(bot, "data_agent_prewarm_prompt", "") or "",
+            "enable_host_actions": bool(getattr(bot, "enable_host_actions", False)),
+            "enable_host_shell": bool(getattr(bot, "enable_host_shell", False)),
             "disabled_tools": sorted(disabled),
             "system_prompt": bot.system_prompt,
             "language": bot.language,
@@ -7760,6 +8275,8 @@ def create_app() -> FastAPI:
             data_agent_return_result_directly=bool(getattr(payload, "data_agent_return_result_directly", False)),
             data_agent_prewarm_on_start=bool(getattr(payload, "data_agent_prewarm_on_start", False)),
             data_agent_prewarm_prompt=(payload.data_agent_prewarm_prompt or ""),
+            enable_host_actions=bool(getattr(payload, "enable_host_actions", False)),
+            enable_host_shell=bool(getattr(payload, "enable_host_shell", False)),
             system_prompt=payload.system_prompt,
             language=payload.language,
             openai_tts_model=(payload.openai_tts_model or "gpt-4o-mini-tts").strip() or "gpt-4o-mini-tts",
@@ -7780,7 +8297,14 @@ def create_app() -> FastAPI:
     def api_update_bot(bot_id: UUID, payload: BotUpdateRequest, session: Session = Depends(get_session)) -> dict:
         patch = {}
         for k, v in payload.model_dump(exclude_unset=True).items():
-            if k in ("openai_tts_model", "openai_tts_voice", "web_search_model", "codex_model", "summary_model", "openai_asr_model"):
+            if k in (
+                "openai_tts_model",
+                "openai_tts_voice",
+                "web_search_model",
+                "codex_model",
+                "summary_model",
+                "openai_asr_model",
+            ):
                 patch[k] = (v or "").strip()
             elif k == "openai_tts_speed":
                 patch[k] = float(v) if v is not None else 1.0

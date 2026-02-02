@@ -35,6 +35,8 @@ class Bot(SQLModel, table=True):
     data_agent_return_result_directly: bool = Field(default=False)
     data_agent_prewarm_on_start: bool = Field(default=False)
     data_agent_prewarm_prompt: str = Field(default="")
+    enable_host_actions: bool = Field(default=False)
+    enable_host_shell: bool = Field(default=False)
     # List of tool names disabled for this bot (JSON list stored as text).
     # Applies to system tools (e.g. web_search) and integration tools by name.
     disabled_tools_json: str = "[]"
@@ -101,6 +103,23 @@ class ConversationMessage(SQLModel, table=True):
     tts_first_audio_ms: Optional[int] = Field(default=None)
     total_ms: Optional[int] = Field(default=None)
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+
+class HostAction(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    conversation_id: UUID = Field(foreign_key="conversation.id", index=True)
+    requested_by_bot_id: Optional[UUID] = Field(default=None, index=True)
+    requested_by_name: Optional[str] = Field(default=None)
+    action_type: str = Field(default="")
+    payload_json: str = Field(default="{}")
+    status: str = Field(default="pending")
+    stdout: str = Field(default="")
+    stderr: str = Field(default="")
+    exit_code: Optional[int] = Field(default=None)
+    error: str = Field(default="")
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+    executed_at: Optional[dt.datetime] = Field(default=None, index=True)
 
 
 class IntegrationTool(SQLModel, table=True):

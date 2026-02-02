@@ -197,3 +197,18 @@ class OpenAILLM:
             input=_to_responses_input(messages),
         )
         return (getattr(resp, "output_text", "") or "").strip()
+
+    def complete_vision(self, *, prompt: str, image_url: str) -> str:
+        resp = self._client.responses.create(
+            model=self._model,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": image_url},
+                    ],
+                }
+            ],
+        )
+        return (getattr(resp, "output_text", "") or "").strip()

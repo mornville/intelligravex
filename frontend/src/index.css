@@ -2297,6 +2297,7 @@ label {
   min-width: 0;
   width: 280px;
   transition: width 180ms ease;
+  min-height: 0;
 }
 .chatWorkspace.collapsed {
   width: 64px;
@@ -2312,6 +2313,9 @@ label {
   padding: 0 16px 16px;
   display: grid;
   gap: 12px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 .chatWorkspace.collapsed .workspaceBody {
   display: none;

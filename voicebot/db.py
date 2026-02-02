@@ -11,7 +11,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from voicebot.models import Bot, Conversation, ConversationMessage
+from voicebot.models import Bot, Conversation, ConversationMessage, HostAction
 
 
 def get_db_url(db_url: Optional[str] = None) -> str:
@@ -114,6 +114,8 @@ def _apply_light_migrations(engine) -> None:
         add_bot_col("data_agent_return_result_directly", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("data_agent_prewarm_on_start", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("data_agent_prewarm_prompt", "TEXT NOT NULL DEFAULT ''")
+        add_bot_col("enable_host_actions", "INTEGER NOT NULL DEFAULT 0")
+        add_bot_col("enable_host_shell", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("disabled_tools_json", "TEXT NOT NULL DEFAULT '[]'")
         try:
             conn.execute(

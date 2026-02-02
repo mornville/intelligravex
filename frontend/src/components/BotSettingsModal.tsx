@@ -714,6 +714,47 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               </>
             ) : null}
 
+            {activeTab === 'agent' && bot ? (
+              <details className="accordion" open>
+                <summary>Host actions (one‑click)</summary>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Allow this employee to request actions on your Mac. Every action must be approved in the Action Queue.
+                </div>
+                <div className="row gap" style={{ marginTop: 10, flexWrap: 'wrap' }}>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bot.enable_host_actions)}
+                      onChange={(e) => setBot((p) => (p ? { ...p, enable_host_actions: e.target.checked } : p))}
+                    />
+                    Enable host actions
+                  </label>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bot.enable_host_shell)}
+                      disabled={!bot.enable_host_actions}
+                      onChange={(e) => setBot((p) => (p ? { ...p, enable_host_shell: e.target.checked } : p))}
+                    />
+                    Allow shell commands
+                  </label>
+                </div>
+                <div className="row" style={{ marginTop: 10 }}>
+                  <button
+                    className="btn"
+                    onClick={() =>
+                      void save({
+                        enable_host_actions: Boolean(bot.enable_host_actions),
+                        enable_host_shell: Boolean(bot.enable_host_shell),
+                      })
+                    }
+                  >
+                    Save host settings
+                  </button>
+                </div>
+              </details>
+            ) : null}
+
             {activeTab === 'tools' && systemTools.length ? (
               <details className="accordion" style={{ marginBottom: 12 }} open>
                 <summary>System tools</summary>
