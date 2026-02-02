@@ -96,7 +96,6 @@ export default function DashboardPage() {
   const [groupTitle, setGroupTitle] = useState('')
   const [groupFilter, setGroupFilter] = useState('')
   const [groupSelected, setGroupSelected] = useState<string[]>([])
-  const [groupDefaultInput, setGroupDefaultInput] = useState('')
   const [groupDefaultId, setGroupDefaultId] = useState('')
   const [groupSaving, setGroupSaving] = useState(false)
   const [groupSaveErr, setGroupSaveErr] = useState<string | null>(null)
@@ -160,6 +159,15 @@ export default function DashboardPage() {
   }, [bots, groupFilter])
   const selectedBots = useMemo(() => bots.filter((b) => groupSelected.includes(b.id)), [bots, groupSelected])
   const selectedSlugMap = useMemo(() => buildSlugMap(selectedBots), [selectedBots])
+  useEffect(() => {
+    if (!groupSelected.length) {
+      if (groupDefaultId) setGroupDefaultId('')
+      return
+    }
+    if (!groupDefaultId || !groupSelected.includes(groupDefaultId)) {
+      setGroupDefaultId(groupSelected[0])
+    }
+  }, [groupSelected, groupDefaultId])
 
   const latestConversationByBot = useMemo(() => {
     const map = new Map<string, ConversationSummary>()
@@ -495,7 +503,6 @@ export default function DashboardPage() {
       setGroupTitle('')
       setGroupFilter('')
       setGroupSelected([])
-      setGroupDefaultInput('')
       setGroupDefaultId('')
       await reloadLists()
       setSelectedType('group')
@@ -526,15 +533,21 @@ export default function DashboardPage() {
     }
   }
 
-  function toggleSelected(botId: string) {
-    setGroupSelected((prev) => (prev.includes(botId) ? prev.filter((id) => id !== botId) : [...prev, botId]))
+  async function resetGroupConversation() {
+    if (!selectedGroupId) return
+    const ok = window.confirm('Reset this group chat? This clears the group thread and individual logs.')
+    if (!ok) return
+    try {
+      const res = await apiPost<GroupConversationDetail>(`/api/group-conversations/${selectedGroupId}/reset`, {})
+      setGroupDetail(res)
+      setWorkingBots({})
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
   }
 
-  function updateDefaultInput(next: string) {
-    setGroupDefaultInput(next)
-    const value = next.trim().replace(/^@/, '').toLowerCase()
-    const match = selectedBots.find((b) => selectedSlugMap[b.id] === value)
-    setGroupDefaultId(match ? match.id : '')
+  function toggleSelected(botId: string) {
+    setGroupSelected((prev) => (prev.includes(botId) ? prev.filter((id) => id !== botId) : [...prev, botId]))
   }
 
   return (
@@ -687,14 +700,21 @@ export default function DashboardPage() {
                 ))}
               </select>
             )}
-            <button
-              className="btn navPill"
-              onClick={() => {
-                if (selectedType === 'assistant') setStartToken((t) => t + 1)
-              }}
-            >
-              New conversation
-            </button>
+            {selectedType === 'assistant' ? (
+              <button
+                className="btn navPill"
+                onClick={() => {
+                  setStartToken((t) => t + 1)
+                }}
+              >
+                New conversation
+              </button>
+            ) : null}
+            {selectedType === 'group' ? (
+              <button className="btn" onClick={() => void resetGroupConversation()}>
+                Reset chat
+              </button>
+            ) : null}
             {selectedType === 'assistant' ? (
               <button className="iconBtn danger" title="Delete assistant" onClick={() => void deleteAssistant()}>
                 <TrashIcon />
@@ -1118,12 +1138,14 @@ export default function DashboardPage() {
             </div>
             <div className="formRow">
               <label>Default assistant</label>
-              <input
-                placeholder="@slug"
-                value={groupDefaultInput}
-                onChange={(e) => updateDefaultInput(e.target.value)}
-              />
-              <div className="muted">Choose one of: {selectedBots.map((b) => `@${selectedSlugMap[b.id]}`).join(', ') || '—'}</div>
+              <SelectField value={groupDefaultId} onChange={(e) => setGroupDefaultId(e.target.value)}>
+                {selectedBots.length === 0 ? <option value="">Select assistants first</option> : null}
+                {selectedBots.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name} (@{selectedSlugMap[b.id]})
+                  </option>
+                ))}
+              </SelectField>
             </div>
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button className="btn primary" onClick={() => void createGroup()} disabled={groupSaving || !groupTitle.trim()}>

@@ -1188,17 +1188,23 @@ def create_app() -> FastAPI:
                 Message(role="system", content=f"Conversation metadata (JSON): {json.dumps(meta, ensure_ascii=False)}")
             )
         if bool(conv.is_group):
-            slugs = ", ".join(f"@{b['slug']}" for b in _group_bots_from_conv(conv))
-            messages.append(
-                Message(
-                    role="system",
-                    content=(
-                        "Group routing: assistants should only respond when explicitly mentioned with @slug in the latest message. "
-                        "If you have nothing to add, respond with <no_reply> (this will be hidden). "
-                        f"Available: {slugs}"
-                    ),
+            bots = _group_bots_from_conv(conv)
+            slugs = ", ".join(f"@{b['slug']}" for b in bots)
+            is_default = str(conv.bot_id or "") == str(bot.id)
+            if is_default:
+                routing = (
+                    "Group routing: If the latest message includes @mentions, only respond when you are mentioned. "
+                    "If there are no @mentions, you are the default responder and should reply. "
+                    "If you have nothing to add, respond with <no_reply> (this will be hidden). "
+                    f"Available: {slugs}"
                 )
-            )
+            else:
+                routing = (
+                    "Group routing: assistants should only respond when explicitly mentioned with @slug in the latest message. "
+                    "If you are not mentioned, respond with <no_reply> (this will be hidden). "
+                    f"Available: {slugs}"
+                )
+            messages.append(Message(role="system", content=routing))
         for m in list_messages(session, conversation_id=conversation_id):
             prefix = _format_group_message_prefix(
                 conv=conv,
@@ -1384,15 +1390,26 @@ def create_app() -> FastAPI:
         # Build prompt messages: system prompt + summary + recent window.
         messages: list[Message] = [Message(role="system", content=system_prompt)]
         if bool(conv.is_group):
-            slugs = ", ".join(f"@{b['slug']}" for b in _group_bots_from_conv(conv))
+            bots = _group_bots_from_conv(conv)
+            slugs = ", ".join(f"@{b['slug']}" for b in bots)
+            is_default = str(conv.bot_id or "") == str(bot.id)
+            if is_default:
+                routing = (
+                    "Group routing: If the latest message includes @mentions, only respond when you are mentioned. "
+                    "If there are no @mentions, you are the default responder and should reply. "
+                    "If you have nothing to add, respond with <no_reply> (this will be hidden). "
+                    f"Available: {slugs}"
+                )
+            else:
+                routing = (
+                    "Group routing: assistants should only respond when explicitly mentioned with @slug in the latest message. "
+                    "If you are not mentioned, respond with <no_reply> (this will be hidden). "
+                    f"Available: {slugs}"
+                )
             messages.append(
                 Message(
                     role="system",
-                    content=(
-                        "Group routing: assistants should only respond when explicitly mentioned with @slug in the latest message. "
-                        "If you have nothing to add, respond with <no_reply> (this will be hidden). "
-                        f"Available: {slugs}"
-                    ),
+                    content=routing,
                 )
             )
         if memory_summary:
