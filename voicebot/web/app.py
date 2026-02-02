@@ -3532,7 +3532,11 @@ def create_app() -> FastAPI:
         return base_resp
 
     async def _ws_send_json(ws: WebSocket, obj: dict) -> None:
-        await ws.send_text(json.dumps(obj, ensure_ascii=False))
+        try:
+            await ws.send_text(json.dumps(obj, ensure_ascii=False))
+        except Exception:
+            # Best-effort: if the client disconnects mid-generation, keep processing in the background.
+            return
 
     _ASYNC_STREAM_DONE = object()
 
