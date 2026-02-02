@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { apiDelete, apiGet, apiPost } from '../api/client'
+import { apiDelete, apiGet, apiPost, BACKEND_URL } from '../api/client'
+import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
 import MicTest from '../components/MicTest'
 import KeysPage from './KeysPage'
@@ -18,7 +19,15 @@ import type {
   Options,
 } from '../types'
 import { fmtIso } from '../utils/format'
-import { Cog6ToothIcon, CpuChipIcon, PlusIcon, TrashIcon, UserIcon, WrenchScrewdriverIcon } from '@heroicons/react/24/solid'
+import {
+  Cog6ToothIcon,
+  CpuChipIcon,
+  PaperClipIcon,
+  PlusIcon,
+  TrashIcon,
+  UserIcon,
+  WrenchScrewdriverIcon,
+} from '@heroicons/react/24/solid'
 
 type FilterTab = 'all' | 'assistants' | 'groups'
 
@@ -56,6 +65,9 @@ export default function DashboardPage() {
   const [groupSendErr, setGroupSendErr] = useState<string | null>(null)
   const [mention, setMention] = useState<MentionState | null>(null)
   const groupInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const groupUploadRef = useRef<HTMLInputElement | null>(null)
+  const groupUploadFolderRef = useRef<HTMLInputElement | null>(null)
+  const [groupUploadMenuOpen, setGroupUploadMenuOpen] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const [workingBots, setWorkingBots] = useState<Record<string, string>>({})
 
@@ -90,6 +102,8 @@ export default function DashboardPage() {
   const [groupSaveErr, setGroupSaveErr] = useState<string | null>(null)
   const [startToken, setStartToken] = useState(0)
   const [assistantConversationId, setAssistantConversationId] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadErr, setUploadErr] = useState<string | null>(null)
 
   const [workspaceStatus, setWorkspaceStatus] = useState<DataAgentStatus | null>(null)
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
@@ -355,6 +369,18 @@ export default function DashboardPage() {
   const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
   const groupMessages = (groupDetail?.messages || []).filter((m) => m.role !== 'tool' && m.role !== 'system')
+  const activeConversationId = selectedType === 'group' ? selectedGroupId : assistantConversationId
+  const activeBotId =
+    selectedType === 'group'
+      ? groupDetail?.conversation.default_bot_id || groups.find((g) => g.id === selectedGroupId)?.default_bot_id || null
+      : selectedBotId
+  const activeBot = bots.find((b) => b.id === activeBotId) || null
+  const canUpload = Boolean(activeConversationId && activeBot?.enable_data_agent)
+  const uploadDisabledReason = !activeBot?.enable_data_agent
+    ? 'Enable Data Agent to upload files.'
+    : !activeConversationId
+      ? 'Start a conversation to upload files.'
+      : ''
 
   async function reloadLists() {
     try {
@@ -368,6 +394,59 @@ export default function DashboardPage() {
       setConversations(c.items)
     } catch {
       // ignore
+    }
+  }
+
+  async function refreshFiles(convId?: string) {
+    const id = convId || activeConversationId
+    if (!id) return
+    setFilesLoading(true)
+    setFilesErr(null)
+    try {
+      const f = await apiGet<ConversationFiles>(`/api/conversations/${id}/files?path=`)
+      setFiles(f)
+    } catch (e: any) {
+      setFilesErr(String(e?.message || e))
+    } finally {
+      setFilesLoading(false)
+    }
+  }
+
+  function appendFiles(form: FormData, list: FileList) {
+    Array.from(list).forEach((f) => {
+      const rel = (f as any).webkitRelativePath || ''
+      if (rel) form.append('files', f, rel)
+      else form.append('files', f)
+    })
+  }
+
+  async function uploadConversationFiles(list: FileList) {
+    if (!activeConversationId || !list || list.length === 0) return
+    const form = new FormData()
+    appendFiles(form, list)
+    setUploading(true)
+    setUploadErr(null)
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/conversations/${activeConversationId}/files/upload`, {
+        method: 'POST',
+        headers: { ...authHeader() },
+        body: form,
+      })
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`
+        try {
+          const j = await res.json()
+          if (j && typeof j === 'object' && 'detail' in j) msg = String((j as any).detail)
+        } catch {
+          // ignore
+        }
+        throw new Error(msg)
+      }
+      await refreshFiles(activeConversationId)
+    } catch (e: any) {
+      setUploadErr(String(e?.message || e))
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -683,7 +762,71 @@ export default function DashboardPage() {
                   ))}
                 </div>
               )}
+              {uploadErr ? <div className="alert">{uploadErr}</div> : null}
               <div className="chatComposerBar">
+                <div className="iconBtnWrap" title={canUpload ? 'Upload files' : uploadDisabledReason || 'Upload files'}>
+                  <button
+                    className="iconBtn"
+                    onClick={() => {
+                      if (!canUpload) return
+                      setGroupUploadMenuOpen((v) => !v)
+                    }}
+                    disabled={!canUpload || uploading}
+                  >
+                    {uploading ? <LoadingSpinner /> : <PaperClipIcon />}
+                  </button>
+                  {groupUploadMenuOpen && canUpload ? (
+                    <div className="uploadMenu">
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          setGroupUploadMenuOpen(false)
+                          groupUploadRef.current?.click()
+                        }}
+                      >
+                        Upload files
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          setGroupUploadMenuOpen(false)
+                          groupUploadFolderRef.current?.click()
+                        }}
+                      >
+                        Upload folder
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                <input
+                  ref={groupUploadRef}
+                  type="file"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const files = e.target.files
+                    if (files && files.length > 0) {
+                      void uploadConversationFiles(files)
+                    }
+                    e.currentTarget.value = ''
+                  }}
+                />
+                <input
+                  ref={groupUploadFolderRef}
+                  type="file"
+                  multiple
+                  style={{ display: 'none' }}
+                  {...({ webkitdirectory: 'true', directory: 'true' } as any)}
+                  onChange={(e) => {
+                    const files = e.target.files
+                    if (files && files.length > 0) {
+                      void uploadConversationFiles(files)
+                    }
+                    e.currentTarget.value = ''
+                  }}
+                />
                 <div className="composerInput">
                   {mention?.active && mentionOptions.length > 0 ? (
                     <div className="mentionMenu">
@@ -760,6 +903,10 @@ export default function DashboardPage() {
                 startToken={startToken}
                 onConversationIdChange={setAssistantConversationId}
                 hideWorkspace
+                allowUploads={canUpload}
+                uploadDisabledReason={uploadDisabledReason}
+                uploading={uploading}
+                onUploadFiles={uploadConversationFiles}
               />
             ) : (
               <div className="muted" style={{ padding: '16px 20px' }}>
@@ -767,6 +914,7 @@ export default function DashboardPage() {
               </div>
             )
           )}
+          {selectedType === 'assistant' && uploadErr ? <div className="alert">{uploadErr}</div> : null}
           {selectedType === 'assistant' && botConvErr ? <div className="alert">{botConvErr}</div> : null}
         </div>
       </main>
@@ -804,8 +952,9 @@ export default function DashboardPage() {
             <div className="workspaceCard">
               <div className="workspaceTitle">Files</div>
               {filesLoading ? (
-                <div className="muted">
-                  <LoadingSpinner />
+                <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <LoadingSpinner label="Loading files" />
+                  <span>Loading files…</span>
                 </div>
               ) : filesErr ? (
                 <div className="alert">{filesErr}</div>

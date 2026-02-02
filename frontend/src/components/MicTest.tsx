@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateActio
 import {
   CpuChipIcon,
   MicrophoneIcon,
+  PaperClipIcon,
   SpeakerWaveIcon,
   SpeakerXMarkIcon,
   UserIcon,
@@ -61,6 +62,10 @@ export default function MicTest({
   startToken,
   onConversationIdChange,
   hideWorkspace = false,
+  allowUploads = false,
+  uploadDisabledReason = '',
+  uploading = false,
+  onUploadFiles,
 }: {
   botId: string
   initialConversationId?: string
@@ -68,6 +73,10 @@ export default function MicTest({
   startToken?: number
   onConversationIdChange?: (id: string | null) => void
   hideWorkspace?: boolean
+  allowUploads?: boolean
+  uploadDisabledReason?: string
+  uploading?: boolean
+  onUploadFiles?: (files: FileList) => void
 }) {
   const [stage, setStage] = useState<Stage>('disconnected')
   const [conversationId, setConversationId] = useState<string | null>(null)
@@ -89,10 +98,13 @@ export default function MicTest({
   const [recording, setRecording] = useState(false)
   const [lastTimings, setLastTimings] = useState<Timings>({})
   const [chatText, setChatText] = useState('')
+  const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
   const playerRef = useRef<WavQueuePlayer | null>(null)
+  const uploadRef = useRef<HTMLInputElement | null>(null)
+  const uploadFolderRef = useRef<HTMLInputElement | null>(null)
   const activeReqIdRef = useRef<string | null>(null)
   const recordingRef = useRef(false)
   const draftAssistantIdRef = useRef<string | null>(null)
@@ -102,6 +114,18 @@ export default function MicTest({
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const hydratedConvIdRef = useRef<string | null>(null)
   const ignoreInitialConversationRef = useRef(false)
+
+  function finalizeTurn() {
+    setStage('idle')
+    activeReqIdRef.current = null
+    draftAssistantIdRef.current = null
+    toolProgressIdRef.current = {}
+    if (pendingUserIdRef.current) {
+      const pendingId = pendingUserIdRef.current
+      setItems((prev) => prev.filter((it) => it.id !== pendingId || it.text.trim()))
+      pendingUserIdRef.current = null
+    }
+  }
 
   async function hydrateConversation(cid: string) {
     if (!cid) return
@@ -240,14 +264,7 @@ export default function MicTest({
       if (msg.type === 'status') {
         setStage(msg.stage || 'idle')
         if (msg.stage === 'idle') {
-          activeReqIdRef.current = null
-          draftAssistantIdRef.current = null
-          toolProgressIdRef.current = {}
-          if (pendingUserIdRef.current) {
-            const pendingId = pendingUserIdRef.current
-            setItems((prev) => prev.filter((it) => it.id !== pendingId || it.text.trim()))
-            pendingUserIdRef.current = null
-          }
+          finalizeTurn()
         }
         return
       }
@@ -405,6 +422,7 @@ export default function MicTest({
           }
           return prev
         })
+        finalizeTurn()
         return
       }
     }
@@ -627,7 +645,7 @@ export default function MicTest({
             </div>
             <div className={role === 'user' ? 'bubble user' : role === 'assistant' ? 'bubble assistant' : 'bubble tool'}>
               <div className="bubbleText">{it.text || '…'}</div>
-              {it.timings ? (
+              {role === 'assistant' && it.timings ? (
                 <details className="details">
                   <summary>metrics</summary>
                   <div className="bubbleMeta">
@@ -726,6 +744,44 @@ export default function MicTest({
       {speak ? <SpeakerWaveIcon /> : <SpeakerXMarkIcon />}
     </button>
   )
+  const uploadButton = (
+    <div className="iconBtnWrap" title={allowUploads ? 'Upload files' : uploadDisabledReason || 'Upload files'}>
+      <button
+        className="iconBtn"
+        disabled={!allowUploads || uploading}
+        onClick={() => {
+          if (!allowUploads) return
+          setUploadMenuOpen((v) => !v)
+        }}
+      >
+        {uploading ? <LoadingSpinner /> : <PaperClipIcon />}
+      </button>
+      {uploadMenuOpen && allowUploads ? (
+        <div className="uploadMenu">
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setUploadMenuOpen(false)
+              uploadRef.current?.click()
+            }}
+          >
+            Upload files
+          </button>
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setUploadMenuOpen(false)
+              uploadFolderRef.current?.click()
+            }}
+          >
+            Upload folder
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
 
   if (layout === 'whatsapp') {
     return (
@@ -737,6 +793,34 @@ export default function MicTest({
               {messages}
             </div>
             <div className="chatComposerBar">
+              {uploadButton}
+              <input
+                ref={uploadRef}
+                type="file"
+                multiple
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const files = e.target.files
+                  if (files && files.length > 0 && onUploadFiles) {
+                    onUploadFiles(files)
+                  }
+                  e.currentTarget.value = ''
+                }}
+              />
+              <input
+                ref={uploadFolderRef}
+                type="file"
+                multiple
+                style={{ display: 'none' }}
+                {...({ webkitdirectory: 'true', directory: 'true' } as any)}
+                onChange={(e) => {
+                  const files = e.target.files
+                  if (files && files.length > 0 && onUploadFiles) {
+                    onUploadFiles(files)
+                  }
+                  e.currentTarget.value = ''
+                }}
+              />
               {voiceToggle}
               {micButton}
               <div className="assistantComposerInput">

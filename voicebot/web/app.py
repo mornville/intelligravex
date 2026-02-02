@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import threading
 import time
 from functools import lru_cache
@@ -1370,6 +1371,15 @@ def create_app() -> FastAPI:
                     if isinstance(memory, dict):
                         memory_summary = str(memory.get("summary") or "").strip()
                         pinned_facts = str(memory.get("pinned_facts") or "").strip()
+                # Drop summarized messages from storage so they don't get re-summarized.
+                if new_old_msgs:
+                    try:
+                        ids = [m.id for m in new_old_msgs if getattr(m, "id", None)]
+                        if ids:
+                            session.exec(delete(ConversationMessage).where(ConversationMessage.id.in_(ids)))
+                            session.commit()
+                    except Exception:
+                        session.rollback()
 
         # Build prompt messages: system prompt + summary + recent window.
         messages: list[Message] = [Message(role="system", content=system_prompt)]
@@ -2296,6 +2306,25 @@ def create_app() -> FastAPI:
         tail = msgs[-max_msgs:] if len(msgs) > max_msgs else msgs
         history = [{"role": m.role, "content": m.content} for m in tail]
         return {"summary": summary, "messages": history}
+
+    def _initialize_data_agent_workspace(session: Session, *, bot: Bot, conversation_id: UUID, meta: dict) -> str:
+        workspace_dir = _data_agent_workspace_dir_for_conversation(session, conversation_id=conversation_id)
+        ws = Path(workspace_dir)
+        ws.mkdir(parents=True, exist_ok=True)
+
+        api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
+        auth_json = (getattr(bot, "data_agent_auth_json", "") or "{}").strip() or "{}"
+        sys_prompt = (getattr(bot, "data_agent_system_prompt", "") or "").strip() or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
+        ctx = _build_data_agent_conversation_context(session, bot=bot, conversation_id=conversation_id, meta=meta)
+
+        try:
+            (ws / "api_spec.json").write_text(api_spec_text, encoding="utf-8")
+            (ws / "auth.json").write_text(auth_json, encoding="utf-8")
+            (ws / "AGENTS.md").write_text(sys_prompt + "\n", encoding="utf-8")
+            (ws / "conversation_context.json").write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return workspace_dir
 
     async def _kickoff_data_agent_container_if_enabled(*, bot_id: UUID, conversation_id: UUID) -> None:
         """
@@ -6149,6 +6178,23 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="Path not allowed")
         return root, req_rel, target
 
+    def _sanitize_upload_path(raw_name: str) -> str:
+        name = (raw_name or "").replace("\\", "/").strip()
+        # Drop any drive letters (Windows paths).
+        if re.match(r"^[A-Za-z]:/", name):
+            name = name[2:]
+        name = name.lstrip("/").strip()
+        if not name:
+            return ""
+        parts = []
+        for part in name.split("/"):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                return ""
+            parts.append(part)
+        return "/".join(parts)
+
     def _conversation_files_payload(
         *,
         session: Session,
@@ -6474,6 +6520,43 @@ def create_app() -> FastAPI:
             media_type=mt or "application/octet-stream",
             filename=target.name,
         )
+
+    @app.post("/api/conversations/{conversation_id}/files/upload")
+    async def api_conversation_files_upload(
+        conversation_id: UUID,
+        files: list[UploadFile] = File(...),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        conv = get_conversation(session, conversation_id)
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        bot = get_bot(session, conv.bot_id)
+        if not bot or not bool(getattr(bot, "enable_data_agent", False)):
+            raise HTTPException(status_code=400, detail="Enable Data Agent to upload files.")
+
+        meta = _get_conversation_meta(session, conversation_id=conversation_id)
+        try:
+            _ensure_data_agent_container(session, bot=bot, conversation_id=conversation_id, meta_current=meta)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        workspace_dir = _initialize_data_agent_workspace(session, bot=bot, conversation_id=conversation_id, meta=meta)
+        root = Path(workspace_dir).resolve()
+
+        saved: list[str] = []
+        for f in files:
+            rel = _sanitize_upload_path(f.filename or "")
+            if not rel:
+                continue
+            target = (root / rel).resolve()
+            if not _is_path_within_root(root, target):
+                raise HTTPException(status_code=400, detail="Invalid filename")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("wb") as out:
+                shutil.copyfileobj(f.file, out)
+            saved.append(rel)
+
+        return {"ok": True, "files": saved, "workspace_dir": str(root)}
 
     async def _public_send_done(ws: WebSocket, *, req_id: str, text: str, metrics: dict) -> None:
         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": text, "metrics": metrics})
