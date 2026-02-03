@@ -103,6 +103,9 @@ export default function DashboardPage() {
   const [groupSaving, setGroupSaving] = useState(false)
   const [groupSaveErr, setGroupSaveErr] = useState<string | null>(null)
   const [startToken, setStartToken] = useState(0)
+  const [isVisible, setIsVisible] = useState(
+    typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
+  )
   const [assistantConversationId, setAssistantConversationId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadErr, setUploadErr] = useState<string | null>(null)
@@ -224,6 +227,12 @@ export default function DashboardPage() {
         // ignore
       }
     }
+  }, [])
+
+  useEffect(() => {
+    const onVis = () => setIsVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
   const q = query.trim().toLowerCase()
@@ -592,12 +601,13 @@ export default function DashboardPage() {
       setHostActions([])
       return
     }
+    if (!isVisible) return
     void loadHostActions(activeConversationId)
     const id = window.setInterval(() => {
       void loadHostActions(activeConversationId)
     }, 5000)
     return () => window.clearInterval(id)
-  }, [activeConversationId])
+  }, [activeConversationId, isVisible])
 
   const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
@@ -673,11 +683,12 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (loading) return
+    if (!isVisible) return
     const id = window.setInterval(() => {
       void reloadLists()
     }, 10000)
     return () => window.clearInterval(id)
-  }, [loading])
+  }, [loading, isVisible])
 
   async function refreshFiles(convId?: string) {
     const id = convId || activeConversationId

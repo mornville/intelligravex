@@ -114,6 +114,9 @@ export default function MicTest({
   const [lastTimings, setLastTimings] = useState<Timings>({})
   const [chatText, setChatText] = useState('')
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
+  const [isVisible, setIsVisible] = useState(
+    typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
+  )
 
   const wsRef = useRef<WebSocket | null>(null)
   const wsOpenPromiseRef = useRef<Promise<boolean> | null>(null)
@@ -223,6 +226,12 @@ export default function MicTest({
   useEffect(() => {
     cacheRef.current = cache
   }, [cache])
+
+  useEffect(() => {
+    const onVis = () => setIsVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
 
   useEffect(() => {
     conversationIdRef.current = conversationId
@@ -653,6 +662,9 @@ export default function MicTest({
 
   useEffect(() => {
     if (!conversationId) return
+    const wsConnected = connectionStage !== 'disconnected' && connectionStage !== 'error'
+    const shouldPoll = !wsConnected || !isVisible
+    if (!shouldPoll) return
     let canceled = false
     const fetchDelta = async () => {
       const entry = cacheRef.current?.[conversationId]
@@ -673,12 +685,12 @@ export default function MicTest({
     void fetchDelta()
     const t = window.setInterval(() => {
       void fetchDelta()
-    }, 5000)
+    }, 30000)
     return () => {
       canceled = true
       window.clearInterval(t)
     }
-  }, [conversationId])
+  }, [conversationId, connectionStage, isVisible])
 
   useEffect(() => {
     if (layout !== 'whatsapp') return
@@ -698,16 +710,17 @@ export default function MicTest({
 
   useEffect(() => {
     if (!conversationId) return
-    void loadContainerStatus(conversationId)
     if (cache && cache[conversationId]?.items?.length) {
       setItems(cache[conversationId].items)
     }
+    if (hideWorkspace || !isVisible) return
+    void loadContainerStatus(conversationId)
     const id = conversationId
     const t = setInterval(() => {
       void loadContainerStatus(id)
     }, 5000)
     return () => clearInterval(t)
-  }, [conversationId])
+  }, [conversationId, hideWorkspace, isVisible, cache])
 
   useEffect(() => {
     if (!showFilesPane || !conversationId) return
