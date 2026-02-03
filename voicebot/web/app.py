@@ -8702,7 +8702,10 @@ def create_app() -> FastAPI:
     def api_conversation_messages(
         conversation_id: UUID,
         since: Optional[str] = None,
+        before: Optional[str] = None,
         limit: int = 200,
+        order: str = "asc",
+        include_tools: bool = False,
         session: Session = Depends(get_session),
     ) -> dict:
         _ = get_conversation(session, conversation_id)
@@ -8712,17 +8715,28 @@ def create_app() -> FastAPI:
                 since_dt = dt.datetime.fromisoformat(str(since))
             except Exception:
                 since_dt = None
-        stmt = select(ConversationMessage).where(
-            ConversationMessage.conversation_id == conversation_id,
-            ConversationMessage.role != "tool",
-        )
+        before_dt: dt.datetime | None = None
+        if before:
+            try:
+                before_dt = dt.datetime.fromisoformat(str(before))
+            except Exception:
+                before_dt = None
+        stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
+        if not include_tools:
+            stmt = stmt.where(ConversationMessage.role != "tool")
         if since_dt is not None:
             stmt = stmt.where(ConversationMessage.created_at > since_dt)
-        stmt = stmt.order_by(ConversationMessage.created_at.asc()).limit(min(500, max(1, int(limit))))
+        if before_dt is not None:
+            stmt = stmt.where(ConversationMessage.created_at < before_dt)
+        if str(order).lower() == "desc":
+            stmt = stmt.order_by(ConversationMessage.created_at.desc())
+        else:
+            stmt = stmt.order_by(ConversationMessage.created_at.asc())
+        stmt = stmt.limit(min(500, max(1, int(limit))))
         msgs_raw = list(session.exec(stmt))
         messages = []
         for m in msgs_raw:
-            if m.role == "tool":
+            if m.role == "tool" and not include_tools:
                 continue
             tool_obj = None
             tool_name = None
@@ -8793,15 +8807,16 @@ def create_app() -> FastAPI:
             },
         }
 
-    def _group_conversation_payload(session: Session, conv: Conversation) -> dict:
+    def _group_conversation_payload(session: Session, conv: Conversation, *, include_messages: bool = True) -> dict:
         bots = _group_bots_from_conv(conv)
         bot_lookup = {b["id"]: b for b in bots}
-        msgs_raw = list_messages(session, conversation_id=conv.id)
         messages: list[dict] = []
-        for m in msgs_raw:
-            payload = _group_message_payload(m)
-            if payload is not None:
-                messages.append(payload)
+        if include_messages:
+            msgs_raw = list_messages(session, conversation_id=conv.id)
+            for m in msgs_raw:
+                payload = _group_message_payload(m)
+                if payload is not None:
+                    messages.append(payload)
 
         default_bot = bot_lookup.get(str(conv.bot_id))
         individual_map = _ensure_group_individual_conversations(session, conv)
@@ -8893,11 +8908,60 @@ def create_app() -> FastAPI:
         return _group_conversation_payload(session, conv)
 
     @app.get("/api/group-conversations/{conversation_id}")
-    def api_group_conversation_detail(conversation_id: UUID, session: Session = Depends(get_session)) -> dict:
+    def api_group_conversation_detail(
+        conversation_id: UUID,
+        include_messages: bool = True,
+        session: Session = Depends(get_session),
+    ) -> dict:
         conv = get_conversation(session, conversation_id)
         if not bool(conv.is_group):
             raise HTTPException(status_code=404, detail="Group conversation not found")
-        return _group_conversation_payload(session, conv)
+        return _group_conversation_payload(session, conv, include_messages=include_messages)
+
+    @app.get("/api/group-conversations/{conversation_id}/messages")
+    def api_group_conversation_messages(
+        conversation_id: UUID,
+        since: Optional[str] = None,
+        before: Optional[str] = None,
+        limit: int = 200,
+        order: str = "asc",
+        include_tools: bool = False,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        conv = get_conversation(session, conversation_id)
+        if not bool(conv.is_group):
+            raise HTTPException(status_code=404, detail="Group conversation not found")
+        since_dt: dt.datetime | None = None
+        if since:
+            try:
+                since_dt = dt.datetime.fromisoformat(str(since))
+            except Exception:
+                since_dt = None
+        before_dt: dt.datetime | None = None
+        if before:
+            try:
+                before_dt = dt.datetime.fromisoformat(str(before))
+            except Exception:
+                before_dt = None
+        stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
+        if not include_tools:
+            stmt = stmt.where(ConversationMessage.role != "tool")
+        if since_dt is not None:
+            stmt = stmt.where(ConversationMessage.created_at > since_dt)
+        if before_dt is not None:
+            stmt = stmt.where(ConversationMessage.created_at < before_dt)
+        if str(order).lower() == "desc":
+            stmt = stmt.order_by(ConversationMessage.created_at.desc())
+        else:
+            stmt = stmt.order_by(ConversationMessage.created_at.asc())
+        stmt = stmt.limit(min(500, max(1, int(limit))))
+        msgs_raw = list(session.exec(stmt))
+        messages: list[dict] = []
+        for m in msgs_raw:
+            payload = _group_message_payload(m)
+            if payload is not None:
+                messages.append(payload)
+        return {"conversation_id": str(conversation_id), "messages": messages}
 
     @app.post("/api/group-conversations/{conversation_id}/messages")
     async def api_group_conversation_message(

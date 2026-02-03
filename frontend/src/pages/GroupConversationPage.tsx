@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Cog6ToothIcon,
@@ -28,12 +28,18 @@ type MentionState = {
   end: number
 }
 
+const PAGE_SIZE = 10
+
 export default function GroupConversationPage() {
   const { groupId } = useParams()
   const nav = useNavigate()
   const [data, setData] = useState<GroupConversationDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  const [messages, setMessages] = useState<ConversationMessage[]>([])
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const [oldestCursor, setOldestCursor] = useState<string | null>(null)
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [sendErr, setSendErr] = useState<string | null>(null)
@@ -44,6 +50,9 @@ export default function GroupConversationPage() {
   const [workingBots, setWorkingBots] = useState<Record<string, string>>({})
   const [mention, setMention] = useState<MentionState | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const nearBottomRef = useRef(true)
+  const pendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const [groupList, setGroupList] = useState<GroupConversationSummary[]>([])
   const [groupListErr, setGroupListErr] = useState<string | null>(null)
@@ -65,14 +74,80 @@ export default function GroupConversationPage() {
     }
   }
 
+  function mergeMessages(prev: ConversationMessage[], next: ConversationMessage[]) {
+    const seen = new Set(prev.map((m) => m.id))
+    const merged = [...prev]
+    next.forEach((m) => {
+      if (!seen.has(m.id)) {
+        merged.push(m)
+        seen.add(m.id)
+      }
+    })
+    merged.sort((a, b) => {
+      const at = new Date(a.created_at || '').getTime()
+      const bt = new Date(b.created_at || '').getTime()
+      if (at !== bt) return at - bt
+      return String(a.id).localeCompare(String(b.id))
+    })
+    return merged
+  }
+
+  async function loadMessagesLatest(id: string) {
+    try {
+      const d = await apiGet<{ messages: ConversationMessage[] }>(
+        `/api/group-conversations/${id}/messages?limit=${PAGE_SIZE}&order=desc`,
+      )
+      const raw = Array.isArray(d.messages) ? d.messages : []
+      const mapped = raw.reverse()
+      setMessages(mapped)
+      setHasMore(raw.length === PAGE_SIZE)
+      setOldestCursor(mapped[0]?.created_at || null)
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
+
+  async function loadOlderMessages() {
+    if (!groupId || loadingOlder || !oldestCursor) return
+    const el = scrollRef.current
+    if (el) {
+      pendingScrollAdjustRef.current = { prevHeight: el.scrollHeight, prevTop: el.scrollTop }
+    }
+    setLoadingOlder(true)
+    let didAdd = false
+    try {
+      const before = encodeURIComponent(oldestCursor)
+      const d = await apiGet<{ messages: ConversationMessage[] }>(
+        `/api/group-conversations/${groupId}/messages?before=${before}&limit=${PAGE_SIZE}&order=desc`,
+      )
+      const raw = Array.isArray(d.messages) ? d.messages : []
+      const mapped = raw.reverse()
+      if (mapped.length) {
+        setMessages((prev) => mergeMessages(prev, mapped))
+        setOldestCursor(mapped[0]?.created_at || oldestCursor)
+        didAdd = true
+      }
+      if (raw.length < PAGE_SIZE) setHasMore(false)
+    } catch {
+      // ignore
+    } finally {
+      setLoadingOlder(false)
+      if (!didAdd) pendingScrollAdjustRef.current = null
+    }
+  }
+
   useEffect(() => {
     if (!groupId) return
+    setMessages([])
+    setHasMore(true)
+    setOldestCursor(null)
     void (async () => {
       setLoading(true)
       setErr(null)
       try {
-        const d = await apiGet<GroupConversationDetail>(`/api/group-conversations/${groupId}`)
+        const d = await apiGet<GroupConversationDetail>(`/api/group-conversations/${groupId}?include_messages=false`)
         setData(d)
+        await loadMessagesLatest(groupId)
       } catch (e: any) {
         setErr(String(e?.message || e))
       } finally {
@@ -138,14 +213,7 @@ export default function GroupConversationPage() {
         return
       }
       if (payload.type === 'message' && payload.message) {
-        setData((prev) => {
-          if (!prev) return prev
-          const exists = prev.messages.some((m) => m.id === payload.message.id)
-          if (exists) return prev
-          const next = [...prev.messages, payload.message]
-          next.sort((a, b) => a.created_at.localeCompare(b.created_at))
-          return { ...prev, messages: next }
-        })
+        setMessages((prev) => mergeMessages(prev, [payload.message]))
       }
       if (payload.type === 'status') {
         setWorkingBots((prev) => {
@@ -160,7 +228,9 @@ export default function GroupConversationPage() {
       }
       if (payload.type === 'reset') {
         setWorkingBots({})
-        setData((prev) => (prev ? { ...prev, messages: [] } : prev))
+        setMessages([])
+        setHasMore(true)
+        setOldestCursor(null)
       }
     }
     ws.onclose = () => {
@@ -175,6 +245,36 @@ export default function GroupConversationPage() {
     }
   }, [groupId])
 
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const pending = pendingScrollAdjustRef.current
+    if (pending) {
+      const nextHeight = el.scrollHeight
+      el.scrollTop = pending.prevTop + (nextHeight - pending.prevHeight)
+      pendingScrollAdjustRef.current = null
+      return
+    }
+    if (nearBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [messages.length, groupId])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 80
+      nearBottomRef.current = nearBottom
+      const nearTop = el.scrollTop <= 40
+      if (nearTop && hasMore && !loadingOlder) {
+        void loadOlderMessages()
+      }
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [hasMore, loadingOlder, groupId])
+
   const bots = data?.conversation.group_bots || []
   const defaultBot = useMemo(() => {
     if (!data?.conversation) return null
@@ -183,11 +283,11 @@ export default function GroupConversationPage() {
   const lastByBot = useMemo(() => {
     const out: Record<string, ConversationMessage | undefined> = {}
     for (const b of bots) {
-      const msg = [...(data?.messages || [])].reverse().find((m) => m.sender_bot_id === b.id)
+      const msg = [...messages].reverse().find((m) => m.sender_bot_id === b.id)
       out[b.id] = msg
     }
     return out
-  }, [bots, data?.messages])
+  }, [bots, messages])
   const workspaceEnabled = Boolean(agentStatus?.exists || agentStatus?.running)
   const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
@@ -273,8 +373,12 @@ export default function GroupConversationPage() {
     setResetErr(null)
     try {
       await apiPost(`/api/group-conversations/${groupId}/reset`, {})
-      const d = await apiGet<GroupConversationDetail>(`/api/group-conversations/${groupId}`)
+      const d = await apiGet<GroupConversationDetail>(`/api/group-conversations/${groupId}?include_messages=false`)
       setData(d)
+      setMessages([])
+      setHasMore(true)
+      setOldestCursor(null)
+      await loadMessagesLatest(groupId)
     } catch (e: any) {
       setResetErr(String(e?.message || e))
     } finally {
@@ -431,14 +535,15 @@ export default function GroupConversationPage() {
         {deleteErr ? <div className="alert">{deleteErr}</div> : null}
 
         <div className="chatShell">
-          <div className="chatArea">
-            {loading ? (
-              <div className="muted">
-                <LoadingSpinner />
+          <div className="chatArea" ref={scrollRef}>
+            {loading || loadingOlder ? (
+              <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
+                <LoadingSpinner label="Loading older messages" />
               </div>
-            ) : (
-              (data?.messages || []).map((m) => <GroupMessageRow key={m.id} m={m} />)
-            )}
+            ) : null}
+            {messages.map((m) => (
+              <GroupMessageRow key={m.id} m={m} />
+            ))}
           </div>
           <div className="chatComposerBar">
             <button className="iconBtn" title="Record">

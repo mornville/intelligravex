@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
   CpuChipIcon,
   MicrophoneIcon,
@@ -13,7 +13,7 @@ import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
-import type { ConversationDetail, DataAgentStatus, ConversationFiles, ConversationMessage } from '../types'
+import type { DataAgentStatus, ConversationFiles, ConversationMessage } from '../types'
 import LoadingSpinner from './LoadingSpinner'
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
@@ -35,6 +35,8 @@ type ChatItem = {
   timings?: Timings
   local?: boolean
 }
+
+const PAGE_SIZE = 10
 
 function makeId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -117,6 +119,9 @@ export default function MicTest({
   const [isVisible, setIsVisible] = useState(
     typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
   )
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const [oldestCursor, setOldestCursor] = useState<string | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const wsOpenPromiseRef = useRef<Promise<boolean> | null>(null)
@@ -139,6 +144,8 @@ export default function MicTest({
   const conversationIdRef = useRef<string | null>(null)
   const reqToConversationRef = useRef<Record<string, string>>({})
   const pendingInitReqIdRef = useRef<string | null>(null)
+  const isNearBottomRef = useRef(true)
+  const pendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
 
   const activeStage = useMemo(() => {
     if (connectionStage === 'disconnected' || connectionStage === 'error') return connectionStage
@@ -234,6 +241,11 @@ export default function MicTest({
   }, [])
 
   useEffect(() => {
+    setHasMore(true)
+    setOldestCursor(null)
+  }, [conversationId])
+
+  useEffect(() => {
     conversationIdRef.current = conversationId
     if (conversationId && !stageByConversationId[conversationId]) {
       setConversationStage(conversationId, 'idle')
@@ -262,58 +274,19 @@ export default function MicTest({
     const isCurrent = () => hydrateSeqRef.current === seq
     if (cache && cache[cid]?.items?.length && isCurrent()) {
       setItems(cache[cid].items)
+      setOldestCursor(cache[cid].items[0]?.created_at || null)
     }
     try {
-      if (cache && cache[cid]?.lastAt) {
-        try {
-          const since = encodeURIComponent(cache[cid].lastAt || '')
-          const d = await apiGet<{ messages: ConversationMessage[] }>(
-            `/api/conversations/${cid}/messages?since=${since}`,
-          )
-          if (d?.messages?.length) {
-            const delta = d.messages.map(mapConversationMessage)
-            if (!isCurrent()) return
-            setItems((prev) => mergeItems(prev, delta))
-            const lastAt = delta[delta.length - 1]?.created_at
-            if (onCacheUpdate && lastAt && isCurrent()) {
-              onCacheUpdate(cid, { items: mergeItems(cache[cid].items, delta), lastAt })
-            }
-            return
-          }
-        } catch {
-          // fall back to full fetch
-        }
-      }
-      const d = await apiGet<ConversationDetail>(`/api/conversations/${cid}`)
+      const d = await apiGet<{ messages: ConversationMessage[] }>(
+        `/api/conversations/${cid}/messages?limit=${PAGE_SIZE}&order=desc&include_tools=1`,
+      )
       if (!isCurrent()) return
-      draftAssistantIdRef.current = null
-      const sorted = [...d.messages].sort((a, b) => {
-        const at = new Date(a.created_at).getTime()
-        const bt = new Date(b.created_at).getTime()
-        if (at !== bt) return at - bt
-        const aRole = a.role
-        const bRole = b.role
-        if (aRole !== bRole) {
-          const roleOrder = (r: string) => (r === 'user' ? 0 : r === 'assistant' ? 1 : r === 'tool' ? 2 : 3)
-          return roleOrder(aRole) - roleOrder(bRole)
-        }
-        if (aRole === 'tool' && bRole === 'tool') {
-          const aReq = (a.tool as any)?.req_id ?? ''
-          const bReq = (b.tool as any)?.req_id ?? ''
-          const aName = a.tool_name ?? ''
-          const bName = b.tool_name ?? ''
-          if (aReq && bReq && aReq === bReq) {
-            const kindOrder = (k: string | null) => (k === 'call' ? 0 : k === 'result' ? 1 : 2)
-            if (a.tool_kind !== b.tool_kind) return kindOrder(a.tool_kind) - kindOrder(b.tool_kind)
-          } else if (aName && bName && aName === bName && a.tool_kind !== b.tool_kind) {
-            const kindOrder = (k: string | null) => (k === 'call' ? 0 : k === 'result' ? 1 : 2)
-            return kindOrder(a.tool_kind) - kindOrder(b.tool_kind)
-          }
-        }
-        return String(a.id).localeCompare(String(b.id))
-      })
-      const mapped: ChatItem[] = sorted.map(mapConversationMessage)
+      const raw = Array.isArray(d.messages) ? d.messages : []
+      const mapped: ChatItem[] = raw.map(mapConversationMessage).reverse()
       setItems(mapped)
+      setHasMore(raw.length === PAGE_SIZE)
+      setOldestCursor(mapped[0]?.created_at || null)
+      draftAssistantIdRef.current = null
       if (onCacheUpdate) {
         const lastAt = mapped.length ? mapped[mapped.length - 1].created_at : undefined
         onCacheUpdate(cid, { items: mapped, lastAt })
@@ -637,8 +610,10 @@ export default function MicTest({
     setConversationId(initialConversationId)
     if (cache && cache[initialConversationId]?.items?.length) {
       setItems(cache[initialConversationId].items)
+      setOldestCursor(cache[initialConversationId].items[0]?.created_at || null)
     } else {
       setItems([])
+      setOldestCursor(null)
     }
     draftAssistantIdRef.current = null
     void hydrateConversation(initialConversationId)
@@ -672,7 +647,7 @@ export default function MicTest({
       try {
         const since = encodeURIComponent(entry.lastAt)
         const d = await apiGet<{ messages: ConversationMessage[] }>(
-          `/api/conversations/${conversationId}/messages?since=${since}`,
+          `/api/conversations/${conversationId}/messages?since=${since}&include_tools=1`,
         )
         if (!d?.messages?.length) return
         const delta = d.messages.map(mapConversationMessage)
@@ -712,6 +687,7 @@ export default function MicTest({
     if (!conversationId) return
     if (cache && cache[conversationId]?.items?.length) {
       setItems(cache[conversationId].items)
+      setOldestCursor(cache[conversationId].items[0]?.created_at || null)
     }
     if (hideWorkspace || !isVisible) return
     void loadContainerStatus(conversationId)
@@ -727,11 +703,64 @@ export default function MicTest({
     void loadFiles()
   }, [showFilesPane, conversationId])
 
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const pending = pendingScrollAdjustRef.current
+    if (pending) {
+      const nextHeight = el.scrollHeight
+      el.scrollTop = pending.prevTop + (nextHeight - pending.prevHeight)
+      pendingScrollAdjustRef.current = null
+      return
+    }
+    if (isNearBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [items.length])
+
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [items.length])
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 80
+      isNearBottomRef.current = nearBottom
+      const nearTop = el.scrollTop <= 40
+      if (nearTop && hasMore && !loadingOlder) {
+        void loadOlder()
+      }
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [hasMore, loadingOlder, conversationId])
+
+  async function loadOlder() {
+    if (!conversationId || loadingOlder || !oldestCursor) return
+    const el = scrollerRef.current
+    if (el) {
+      pendingScrollAdjustRef.current = { prevHeight: el.scrollHeight, prevTop: el.scrollTop }
+    }
+    setLoadingOlder(true)
+    let didAdd = false
+    try {
+      const before = encodeURIComponent(oldestCursor)
+      const d = await apiGet<{ messages: ConversationMessage[] }>(
+        `/api/conversations/${conversationId}/messages?before=${before}&limit=${PAGE_SIZE}&order=desc&include_tools=1`,
+      )
+      const raw = Array.isArray(d.messages) ? d.messages : []
+      const mapped = raw.map(mapConversationMessage).reverse()
+      if (mapped.length) {
+        setItems((prev) => mergeItems(prev, mapped))
+        setOldestCursor(mapped[0]?.created_at || oldestCursor)
+        didAdd = true
+      }
+      if (raw.length < PAGE_SIZE) setHasMore(false)
+    } catch {
+      // ignore
+    } finally {
+      setLoadingOlder(false)
+      if (!didAdd) pendingScrollAdjustRef.current = null
+    }
+  }
 
   async function initConversation() {
     ignoreInitialConversationRef.current = true
@@ -1034,6 +1063,11 @@ export default function MicTest({
         <div className={`assistantSplit ${hideWorkspace || !conversationId || !showFilesPane ? 'full' : ''}`}>
           <div className="assistantChatPane">
             <div className="chatArea" ref={scrollerRef}>
+              {loadingOlder ? (
+                <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
+                  <LoadingSpinner label="Loading older messages" />
+                </div>
+              ) : null}
               {messages}
             </div>
             <div className="chatComposerBar">
@@ -1166,6 +1200,11 @@ export default function MicTest({
 
         <div className="chatPane">
           <div className="chat" ref={scrollerRef}>
+            {loadingOlder ? (
+              <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
+                <LoadingSpinner label="Loading older messages" />
+              </div>
+            ) : null}
             {messages}
           </div>
         </div>

@@ -1780,6 +1780,25 @@ label {
 .chatLayout.withWorkspace {
   grid-template-columns: 320px minmax(0, 1fr) auto;
 }
+.singleTabBlock {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, rgba(8, 10, 15, 0.95), rgba(10, 12, 18, 0.92));
+  padding: 24px;
+}
+.singleTabCard {
+  max-width: 420px;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 20px 22px;
+  display: grid;
+  gap: 12px;
+  background: rgba(20, 22, 30, 0.85);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+}
 .chatSidebar {
   display: flex;
   flex-direction: column;

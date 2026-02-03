@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { apiDelete, apiGet, apiPost, BACKEND_URL } from '../api/client'
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -40,6 +40,8 @@ type MentionState = {
   end: number
 }
 
+const PAGE_SIZE = 10
+
 export default function DashboardPage() {
   const [bots, setBots] = useState<Bot[]>([])
   const [groups, setGroups] = useState<GroupConversationSummary[]>([])
@@ -64,10 +66,17 @@ export default function DashboardPage() {
   const [groupDetail, setGroupDetail] = useState<GroupConversationDetail | null>(null)
   const [groupLoading, setGroupLoading] = useState(false)
   const [groupErr, setGroupErr] = useState<string | null>(null)
+  const [groupMessages, setGroupMessages] = useState<ConversationMessage[]>([])
+  const [groupLoadingOlder, setGroupLoadingOlder] = useState(false)
+  const [groupHasMore, setGroupHasMore] = useState(true)
+  const [groupOldestCursor, setGroupOldestCursor] = useState<string | null>(null)
   const [groupText, setGroupText] = useState('')
   const [groupSendErr, setGroupSendErr] = useState<string | null>(null)
   const [mention, setMention] = useState<MentionState | null>(null)
   const groupInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const groupScrollRef = useRef<HTMLDivElement | null>(null)
+  const groupNearBottomRef = useRef(true)
+  const groupPendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
   const groupUploadRef = useRef<HTMLInputElement | null>(null)
   const groupUploadFolderRef = useRef<HTMLInputElement | null>(null)
   const [groupUploadMenuOpen, setGroupUploadMenuOpen] = useState(false)
@@ -331,6 +340,24 @@ export default function DashboardPage() {
     return `${cleaned.slice(0, max - 3)}...`
   }
 
+  function mergeGroupMessages(prev: ConversationMessage[], next: ConversationMessage[]) {
+    const seen = new Set(prev.map((m) => m.id))
+    const merged = [...prev]
+    next.forEach((m) => {
+      if (!seen.has(m.id)) {
+        merged.push(m)
+        seen.add(m.id)
+      }
+    })
+    merged.sort((a, b) => {
+      const at = new Date(a.created_at || '').getTime()
+      const bt = new Date(b.created_at || '').getTime()
+      if (at !== bt) return at - bt
+      return String(a.id).localeCompare(String(b.id))
+    })
+    return merged
+  }
+
   useEffect(() => {
     if (loading) return
     const ids = new Set<string>()
@@ -353,16 +380,11 @@ export default function DashboardPage() {
       await Promise.all(
         missing.map(async (id) => {
           try {
-            const d = await apiGet<{ messages: ConversationMessage[] }>(`/api/conversations/${id}`)
-            const msgs = Array.isArray(d.messages) ? d.messages : []
-            for (let i = msgs.length - 1; i >= 0; i -= 1) {
-              const m = msgs[i]
-              if (m.role !== 'tool' && m.role !== 'system') {
-                results[id] = clipPreview(m.content || '')
-                break
-              }
-            }
-            if (!(id in results)) results[id] = ''
+            const d = await apiGet<{ messages: ConversationMessage[] }>(
+              `/api/conversations/${id}/messages?limit=1&order=desc`,
+            )
+            const m = Array.isArray(d.messages) ? d.messages[0] : null
+            results[id] = m && m.role !== 'tool' && m.role !== 'system' ? clipPreview(m.content || '') : ''
           } catch {
             results[id] = ''
           }
@@ -378,12 +400,18 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (selectedType !== 'group' || !selectedGroupId) return
+    setGroupMessages([])
+    setGroupHasMore(true)
+    setGroupOldestCursor(null)
     void (async () => {
       setGroupLoading(true)
       setGroupErr(null)
       try {
-        const d = await apiGet<GroupConversationDetail>(`/api/group-conversations/${selectedGroupId}`)
+        const d = await apiGet<GroupConversationDetail>(
+          `/api/group-conversations/${selectedGroupId}?include_messages=false`,
+        )
         setGroupDetail(d)
+        await loadGroupMessagesLatest(selectedGroupId)
       } catch (e: any) {
         setGroupErr(String(e?.message || e))
       } finally {
@@ -391,6 +419,36 @@ export default function DashboardPage() {
       }
     })()
   }, [selectedGroupId, selectedType])
+
+  useLayoutEffect(() => {
+    const el = groupScrollRef.current
+    if (!el) return
+    const pending = groupPendingScrollAdjustRef.current
+    if (pending) {
+      const nextHeight = el.scrollHeight
+      el.scrollTop = pending.prevTop + (nextHeight - pending.prevHeight)
+      groupPendingScrollAdjustRef.current = null
+      return
+    }
+    if (groupNearBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [groupMessages.length, selectedGroupId])
+
+  useEffect(() => {
+    const el = groupScrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 80
+      groupNearBottomRef.current = nearBottom
+      const nearTop = el.scrollTop <= 40
+      if (nearTop && groupHasMore && !groupLoadingOlder) {
+        void loadGroupMessagesOlder()
+      }
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [groupHasMore, groupLoadingOlder, selectedGroupId])
 
   useEffect(() => {
     const active = selectedType === 'group' ? selectedGroupId : selectedConversationId
@@ -429,14 +487,7 @@ export default function DashboardPage() {
         return
       }
       if (payload.type === 'message' && payload.message) {
-        setGroupDetail((prev) => {
-          if (!prev) return prev
-          const exists = prev.messages.some((m) => m.id === payload.message.id)
-          if (exists) return prev
-          const next = [...prev.messages, payload.message]
-          next.sort((a, b) => a.created_at.localeCompare(b.created_at))
-          return { ...prev, messages: next }
-        })
+        setGroupMessages((prev) => mergeGroupMessages(prev, [payload.message]))
         if (selectedGroupId) {
           const ts = payload.message.created_at || new Date().toISOString()
           setLastUpdatedByConversationId((prev) => ({ ...prev, [selectedGroupId]: ts }))
@@ -457,6 +508,12 @@ export default function DashboardPage() {
           }
           return next
         })
+      }
+      if (payload.type === 'reset') {
+        setWorkingBots({})
+        setGroupMessages([])
+        setGroupHasMore(true)
+        setGroupOldestCursor(null)
       }
     }
     ws.onclose = () => {
@@ -522,6 +579,50 @@ export default function DashboardPage() {
     })
   }
 
+  async function loadGroupMessagesLatest(groupId: string) {
+    try {
+      const d = await apiGet<{ messages: ConversationMessage[] }>(
+        `/api/group-conversations/${groupId}/messages?limit=${PAGE_SIZE}&order=desc`,
+      )
+      const raw = Array.isArray(d.messages) ? d.messages : []
+      const mapped = raw.reverse()
+      setGroupMessages(mapped)
+      setGroupHasMore(raw.length === PAGE_SIZE)
+      setGroupOldestCursor(mapped[0]?.created_at || null)
+    } catch (e: any) {
+      setGroupErr(String(e?.message || e))
+    }
+  }
+
+  async function loadGroupMessagesOlder() {
+    if (!selectedGroupId || groupLoadingOlder || !groupOldestCursor) return
+    const el = groupScrollRef.current
+    if (el) {
+      groupPendingScrollAdjustRef.current = { prevHeight: el.scrollHeight, prevTop: el.scrollTop }
+    }
+    setGroupLoadingOlder(true)
+    let didAdd = false
+    try {
+      const before = encodeURIComponent(groupOldestCursor)
+      const d = await apiGet<{ messages: ConversationMessage[] }>(
+        `/api/group-conversations/${selectedGroupId}/messages?before=${before}&limit=${PAGE_SIZE}&order=desc`,
+      )
+      const raw = Array.isArray(d.messages) ? d.messages : []
+      const mapped = raw.reverse()
+      if (mapped.length) {
+        setGroupMessages((prev) => mergeGroupMessages(prev, mapped))
+        setGroupOldestCursor(mapped[0]?.created_at || groupOldestCursor)
+        didAdd = true
+      }
+      if (raw.length < PAGE_SIZE) setGroupHasMore(false)
+    } catch {
+      // ignore
+    } finally {
+      setGroupLoadingOlder(false)
+      if (!didAdd) groupPendingScrollAdjustRef.current = null
+    }
+  }
+
   async function sendGroupMessage() {
     if (!selectedGroupId || !groupText.trim()) return
     if (!groupDetail?.conversation.default_bot_id) {
@@ -578,7 +679,7 @@ export default function DashboardPage() {
     })()
   }, [selectedType, selectedGroupId, assistantConversationId])
 
-  const groupMessages = (groupDetail?.messages || []).filter((m) => m.role !== 'tool' && m.role !== 'system')
+  const visibleGroupMessages = groupMessages.filter((m) => m.role !== 'tool' && m.role !== 'system')
   const activeConversationId = selectedType === 'group' ? selectedGroupId : assistantConversationId
   const activeBotId =
     selectedType === 'group'
@@ -849,6 +950,10 @@ export default function DashboardPage() {
     try {
       const res = await apiPost<GroupConversationDetail>(`/api/group-conversations/${selectedGroupId}/reset`, {})
       setGroupDetail(res)
+      setGroupMessages([])
+      setGroupHasMore(true)
+      setGroupOldestCursor(null)
+      void loadGroupMessagesLatest(selectedGroupId)
       setWorkingBots({})
     } catch (e: any) {
       setErr(String(e?.message || e))
@@ -1115,8 +1220,13 @@ export default function DashboardPage() {
                   <LoadingSpinner />
                 </div>
               ) : (
-                <div className="chatArea">
-                  {groupMessages.map((m) => (
+                <div className="chatArea" ref={groupScrollRef}>
+                  {groupLoadingOlder ? (
+                    <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
+                      <LoadingSpinner label="Loading older messages" />
+                    </div>
+                  ) : null}
+                  {visibleGroupMessages.map((m) => (
                     <GroupMessageRow key={m.id} m={m} />
                   ))}
                 </div>
