@@ -43,6 +43,15 @@ def init_db(engine) -> None:
     logger = logging.getLogger("voicebot.db")
     start = time.monotonic()
     logger.info("init_db: start")
+    try:
+        url = str(getattr(engine, "url", ""))
+        if url.startswith("sqlite:"):
+            with engine.begin() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+    except Exception:
+        # Best-effort; do not block app startup.
+        pass
     SQLModel.metadata.create_all(engine)
     logger.info("init_db: create_all done (%.2fs)", time.monotonic() - start)
     mig_start = time.monotonic()
