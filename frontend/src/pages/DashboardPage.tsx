@@ -228,7 +228,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!selectedBotId) return
-    setSelectedConversationId('')
+    const fallbackLatest = latestConversationByBot.get(selectedBotId)
+    setSelectedConversationId(fallbackLatest?.id || '')
     setAssistantConversationId(null)
     setBotConversations([])
     void (async () => {
@@ -239,8 +240,13 @@ export default function DashboardPage() {
           `/api/conversations?page=1&page_size=50&bot_id=${selectedBotId}`,
         )
         const sorted = [...(c.items || [])].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-        setBotConversations(sorted)
-        const nextId = sorted[0]?.id || ''
+        const fallback = conversations
+          .filter((conv) => conv.bot_id === selectedBotId)
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+          .slice(0, 50)
+        const finalList = sorted.length ? sorted : fallback
+        setBotConversations(finalList)
+        const nextId = finalList[0]?.id || fallbackLatest?.id || ''
         setSelectedConversationId(nextId)
         if (nextId) {
           setUnseenByConversationId((prev) => ({ ...prev, [nextId]: 0 }))
@@ -338,6 +344,15 @@ export default function DashboardPage() {
     if (!active) return
     setUnseenByConversationId((prev) => ({ ...prev, [active]: 0 }))
   }, [selectedType, selectedGroupId, selectedConversationId])
+
+  useEffect(() => {
+    if (!selectedBotId) return
+    if (selectedConversationId) return
+    const latest = latestConversationByBot.get(selectedBotId)
+    if (latest?.id) {
+      setSelectedConversationId(latest.id)
+    }
+  }, [selectedBotId, selectedConversationId, latestConversationByBot])
 
   function wsBase() {
     try {
