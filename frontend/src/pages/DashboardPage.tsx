@@ -107,6 +107,7 @@ export default function DashboardPage() {
   const [previewByConversationId, setPreviewByConversationId] = useState<Record<string, string>>({})
   const [unseenByConversationId, setUnseenByConversationId] = useState<Record<string, number>>({})
   const [lastUpdatedByConversationId, setLastUpdatedByConversationId] = useState<Record<string, string>>({})
+  const [assistantStage, setAssistantStage] = useState<'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'>('idle')
   const lastUpdatedRef = useRef<Record<string, string>>({})
   const unseenRef = useRef<Record<string, number>>({})
   const selectionRef = useRef<{ type: 'assistant' | 'group'; groupId: string | null; convId: string } | null>(null)
@@ -819,6 +820,8 @@ export default function DashboardPage() {
                     const latest = latestConversationByBot.get(b.id)
                     const preview = latest?.id ? previewByConversationId[latest.id] : ''
                     const unseen = latest?.id ? unseenByConversationId[latest.id] || 0 : 0
+                    const isActive = selectedType === 'assistant' && selectedBotId === b.id
+                    const showTyping = isActive && ['init', 'recording', 'asr', 'llm', 'tts'].includes(assistantStage)
                     return (
                       <button
                         key={b.id}
@@ -840,7 +843,7 @@ export default function DashboardPage() {
                                   : 'No conversations yet'}
                             </div>
                           </div>
-                          {unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
+                          {showTyping ? <span className="waTyping">typing…</span> : unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
                         </div>
                       </button>
                     )
@@ -859,6 +862,8 @@ export default function DashboardPage() {
                   {filteredGroups.map((g) => {
                     const preview = previewByConversationId[g.id] || ''
                     const unseen = unseenByConversationId[g.id] || 0
+                    const showTyping =
+                      selectedType === 'group' && selectedGroupId === g.id && Object.keys(workingBots).length > 0
                     return (
                       <button
                         key={g.id}
@@ -874,7 +879,7 @@ export default function DashboardPage() {
                             <div className="waAssistantName">{g.title || 'Group chat'}</div>
                             <div className="waConversationRow">{preview || 'No messages yet'}</div>
                           </div>
-                          {unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
+                          {showTyping ? <span className="waTyping">typing…</span> : unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
                         </div>
                       </button>
                     )
@@ -1151,6 +1156,7 @@ export default function DashboardPage() {
                 layout="whatsapp"
                 startToken={startToken}
                 onConversationIdChange={setAssistantConversationId}
+                onStageChange={setAssistantStage}
                 hideWorkspace
                 allowUploads={canUpload}
                 uploadDisabledReason={uploadDisabledReason}

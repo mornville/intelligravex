@@ -61,6 +61,7 @@ export default function MicTest({
   layout = 'default',
   startToken,
   onConversationIdChange,
+  onStageChange,
   hideWorkspace = false,
   allowUploads = false,
   uploadDisabledReason = '',
@@ -72,6 +73,7 @@ export default function MicTest({
   layout?: 'default' | 'whatsapp'
   startToken?: number
   onConversationIdChange?: (id: string | null) => void
+  onStageChange?: (stage: Stage) => void
   hideWorkspace?: boolean
   allowUploads?: boolean
   uploadDisabledReason?: string
@@ -478,6 +480,11 @@ export default function MicTest({
     if (!onConversationIdChange) return
     onConversationIdChange(conversationId)
   }, [conversationId, onConversationIdChange])
+
+  useEffect(() => {
+    if (!onStageChange) return
+    onStageChange(stage)
+  }, [stage, onStageChange])
 
   useEffect(() => {
     if (layout !== 'whatsapp') return

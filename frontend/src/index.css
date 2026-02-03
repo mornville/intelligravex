@@ -1984,6 +1984,12 @@ label {
   justify-content: center;
   box-shadow: 0 6px 18px rgba(59, 130, 246, 0.35);
 }
+.waTyping {
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.9);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
 .waAvatar {
   width: 46px;
   height: 46px;
