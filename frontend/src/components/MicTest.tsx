@@ -118,6 +118,7 @@ export default function MicTest({
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const hydratedConvIdRef = useRef<string | null>(null)
   const ignoreInitialConversationRef = useRef(false)
+  const startTokenRef = useRef<number | undefined>(startToken)
 
   async function ensureWsOpen(timeoutMs = 1500): Promise<boolean> {
     const ws = wsRef.current
@@ -489,8 +490,13 @@ export default function MicTest({
   useEffect(() => {
     if (layout !== 'whatsapp') return
     if (startToken === undefined) return
+    if (startTokenRef.current === undefined) {
+      startTokenRef.current = startToken
+      return
+    }
+    if (startToken === startTokenRef.current) return
+    startTokenRef.current = startToken
     void initConversation()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startToken])
 
   useEffect(() => {
