@@ -105,6 +105,11 @@ export default function DashboardPage() {
   const [uploading, setUploading] = useState(false)
   const [uploadErr, setUploadErr] = useState<string | null>(null)
   const [previewByConversationId, setPreviewByConversationId] = useState<Record<string, string>>({})
+  const [unseenByConversationId, setUnseenByConversationId] = useState<Record<string, number>>({})
+  const [lastUpdatedByConversationId, setLastUpdatedByConversationId] = useState<Record<string, string>>({})
+  const lastUpdatedRef = useRef<Record<string, string>>({})
+  const unseenRef = useRef<Record<string, number>>({})
+  const selectionRef = useRef<{ type: 'assistant' | 'group'; groupId: string | null; convId: string } | null>(null)
 
   const [workspaceStatus, setWorkspaceStatus] = useState<DataAgentStatus | null>(null)
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
@@ -130,7 +135,42 @@ export default function DashboardPage() {
         setGroups(g.items)
         setConversations(c.items)
         setOptions(o)
-        if (b.items.length) {
+        const initialUpdated: Record<string, string> = {}
+        c.items.forEach((item) => {
+          initialUpdated[item.id] = item.updated_at
+        })
+        g.items.forEach((item) => {
+          initialUpdated[item.id] = item.updated_at
+        })
+        setLastUpdatedByConversationId(initialUpdated)
+        lastUpdatedRef.current = initialUpdated
+        let latestType: 'assistant' | 'group' | null = null
+        let latestBotId: string | null = null
+        let latestGroupId: string | null = null
+        let latestTs = ''
+        c.items.forEach((item) => {
+          if (!latestTs || item.updated_at > latestTs) {
+            latestTs = item.updated_at
+            latestType = 'assistant'
+            latestBotId = item.bot_id
+            latestGroupId = null
+          }
+        })
+        g.items.forEach((item) => {
+          if (!latestTs || item.updated_at > latestTs) {
+            latestTs = item.updated_at
+            latestType = 'group'
+            latestGroupId = item.id
+            latestBotId = null
+          }
+        })
+        if (latestType === 'group' && latestGroupId) {
+          setSelectedType('group')
+          setSelectedGroupId(latestGroupId)
+        } else if (latestType === 'assistant' && latestBotId) {
+          setSelectedType('assistant')
+          setSelectedBotId(latestBotId)
+        } else if (b.items.length) {
           setSelectedType('assistant')
           setSelectedBotId(b.items[0].id)
         } else if (g.items.length) {
@@ -199,7 +239,11 @@ export default function DashboardPage() {
         )
         const sorted = [...(c.items || [])].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
         setBotConversations(sorted)
-        setSelectedConversationId(sorted[0]?.id || '')
+        const nextId = sorted[0]?.id || ''
+        setSelectedConversationId(nextId)
+        if (nextId) {
+          setUnseenByConversationId((prev) => ({ ...prev, [nextId]: 0 }))
+        }
       } catch (e: any) {
         setBotConvErr(String(e?.message || e))
       } finally {
@@ -207,6 +251,18 @@ export default function DashboardPage() {
       }
     })()
   }, [selectedBotId])
+
+  useEffect(() => {
+    lastUpdatedRef.current = lastUpdatedByConversationId
+  }, [lastUpdatedByConversationId])
+
+  useEffect(() => {
+    unseenRef.current = unseenByConversationId
+  }, [unseenByConversationId])
+
+  useEffect(() => {
+    selectionRef.current = { type: selectedType, groupId: selectedGroupId, convId: selectedConversationId }
+  }, [selectedType, selectedGroupId, selectedConversationId])
 
   function clipPreview(text: string, max = 90) {
     const cleaned = (text || '').replace(/\s+/g, ' ').trim()
@@ -276,6 +332,12 @@ export default function DashboardPage() {
     })()
   }, [selectedGroupId, selectedType])
 
+  useEffect(() => {
+    const active = selectedType === 'group' ? selectedGroupId : selectedConversationId
+    if (!active) return
+    setUnseenByConversationId((prev) => ({ ...prev, [active]: 0 }))
+  }, [selectedType, selectedGroupId, selectedConversationId])
+
   function wsBase() {
     try {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -306,6 +368,15 @@ export default function DashboardPage() {
           next.sort((a, b) => a.created_at.localeCompare(b.created_at))
           return { ...prev, messages: next }
         })
+        if (selectedGroupId) {
+          const ts = payload.message.created_at || new Date().toISOString()
+          setLastUpdatedByConversationId((prev) => ({ ...prev, [selectedGroupId]: ts }))
+          setUnseenByConversationId((prev) => ({ ...prev, [selectedGroupId]: 0 }))
+          const preview = clipPreview(payload.message.content || '')
+          if (preview) {
+            setPreviewByConversationId((prev) => ({ ...prev, [selectedGroupId]: preview }))
+          }
+        }
       }
       if (payload.type === 'status') {
         setWorkingBots((prev) => {
@@ -480,10 +551,58 @@ export default function DashboardPage() {
       setBots(b.items)
       setGroups(g.items)
       setConversations(c.items)
+      const sel = selectionRef.current
+      const active = sel?.type === 'group' ? sel?.groupId : sel?.convId
+      const nextUpdated: Record<string, string> = { ...lastUpdatedRef.current }
+      const nextUnseen: Record<string, number> = { ...unseenRef.current }
+      const updatedPreviewIds: string[] = []
+      c.items.forEach((item) => {
+        const prev = nextUpdated[item.id]
+        if (prev && item.updated_at > prev) {
+          if (item.id !== active) {
+            nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
+          } else {
+            nextUnseen[item.id] = 0
+          }
+          updatedPreviewIds.push(item.id)
+        }
+        nextUpdated[item.id] = item.updated_at
+      })
+      g.items.forEach((item) => {
+        const prev = nextUpdated[item.id]
+        if (prev && item.updated_at > prev) {
+          if (item.id !== active) {
+            nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
+          } else {
+            nextUnseen[item.id] = 0
+          }
+          updatedPreviewIds.push(item.id)
+        }
+        nextUpdated[item.id] = item.updated_at
+      })
+      if (updatedPreviewIds.length) {
+        setPreviewByConversationId((prev) => {
+          const next = { ...prev }
+          updatedPreviewIds.forEach((id) => {
+            delete next[id]
+          })
+          return next
+        })
+      }
+      setLastUpdatedByConversationId(nextUpdated)
+      setUnseenByConversationId(nextUnseen)
     } catch {
       // ignore
     }
   }
+
+  useEffect(() => {
+    if (loading) return
+    const id = window.setInterval(() => {
+      void reloadLists()
+    }, 10000)
+    return () => window.clearInterval(id)
+  }, [loading])
 
   async function refreshFiles(convId?: string) {
     const id = convId || activeConversationId
@@ -699,6 +818,7 @@ export default function DashboardPage() {
                   {filteredBots.map((b) => {
                     const latest = latestConversationByBot.get(b.id)
                     const preview = latest?.id ? previewByConversationId[latest.id] : ''
+                    const unseen = latest?.id ? unseenByConversationId[latest.id] || 0 : 0
                     return (
                       <button
                         key={b.id}
@@ -710,16 +830,17 @@ export default function DashboardPage() {
                       >
                         <div className="waAssistantHeader">
                           <div className="waAvatar">{b.name.slice(0, 2).toUpperCase()}</div>
-                          <div>
+                          <div className="waAssistantTitle">
                             <div className="waAssistantName">{b.name}</div>
+                            <div className="waConversationRow">
+                              {preview
+                                ? preview
+                                : latest
+                                  ? 'No messages yet'
+                                  : 'No conversations yet'}
+                            </div>
                           </div>
-                        </div>
-                        <div className="waConversationRow">
-                          {preview
-                            ? preview
-                            : latest
-                              ? 'No messages yet'
-                              : 'No conversations yet'}
+                          {unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
                         </div>
                       </button>
                     )
@@ -737,6 +858,7 @@ export default function DashboardPage() {
                   </div>
                   {filteredGroups.map((g) => {
                     const preview = previewByConversationId[g.id] || ''
+                    const unseen = unseenByConversationId[g.id] || 0
                     return (
                       <button
                         key={g.id}
@@ -748,11 +870,12 @@ export default function DashboardPage() {
                       >
                         <div className="waAssistantHeader">
                           <div className="waAvatar">{g.title.slice(0, 2).toUpperCase()}</div>
-                          <div>
+                          <div className="waAssistantTitle">
                             <div className="waAssistantName">{g.title || 'Group chat'}</div>
+                            <div className="waConversationRow">{preview || 'No messages yet'}</div>
                           </div>
+                          {unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
                         </div>
-                        <div className="waConversationRow">{preview || 'No messages yet'}</div>
                       </button>
                     )
                   })}

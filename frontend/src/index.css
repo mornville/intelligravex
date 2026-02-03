@@ -1908,25 +1908,31 @@ label {
 }
 
 .waAssistantCard {
-  padding: 12px 12px 10px;
-  border-radius: 16px;
-  margin: 8px 6px;
-  border: 1px solid transparent;
-  background: rgba(20, 24, 32, 0.5);
+  padding: 12px 14px;
+  border-radius: 0;
+  margin: 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  background: transparent;
   text-align: left;
   display: grid;
-  gap: 10px;
-  transition: border-color 160ms ease, background 160ms ease;
+  gap: 6px;
+  transition: background 160ms ease;
+}
+.chatSectionLabelRow + .waAssistantCard {
+  border-top: none;
 }
 .waAssistantCard.active {
-  background: rgba(20, 28, 40, 0.9);
-  border-color: rgba(122, 168, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
 }
 .waAssistantHeader {
   display: grid;
-  grid-template-columns: 46px 1fr auto;
+  grid-template-columns: 44px 1fr auto;
   gap: 12px;
   align-items: center;
+}
+.waAssistantTitle {
+  min-width: 0;
 }
 .waAssistantName {
   font-weight: 600;
@@ -1946,18 +1952,37 @@ label {
 }
 .waConversationRow {
   margin-top: 2px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: none;
   font-size: 12px;
   color: var(--muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .waConversationRow strong {
   color: var(--text);
   font-weight: 600;
   display: block;
   margin-bottom: 4px;
+}
+.waUnreadBadge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.95);
+  color: #0b0f16;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 18px rgba(59, 130, 246, 0.35);
 }
 .waAvatar {
   width: 46px;
