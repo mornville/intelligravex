@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { apiDelete, apiGet, apiPost, BACKEND_URL } from '../api/client'
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
-import MicTest from '../components/MicTest'
+import MicTest, { type ChatCacheEntry } from '../components/MicTest'
 import KeysPage from './KeysPage'
 import DeveloperPage from './DeveloperPage'
 import BotSettingsModal from '../components/BotSettingsModal'
@@ -47,6 +47,8 @@ export default function DashboardPage() {
   const [options, setOptions] = useState<Options | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  const [singleTabBlocked, setSingleTabBlocked] = useState(false)
+  const [singleTabMessage, setSingleTabMessage] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState<FilterTab>('all')
 
@@ -111,6 +113,8 @@ export default function DashboardPage() {
   const lastUpdatedRef = useRef<Record<string, string>>({})
   const unseenRef = useRef<Record<string, number>>({})
   const selectionRef = useRef<{ type: 'assistant' | 'group'; groupId: string | null; convId: string } | null>(null)
+  const [chatCache, setChatCache] = useState<Record<string, ChatCacheEntry>>({})
+  const bcRef = useRef<BroadcastChannel | null>(null)
 
   const [workspaceStatus, setWorkspaceStatus] = useState<DataAgentStatus | null>(null)
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
@@ -137,6 +141,7 @@ export default function DashboardPage() {
         setConversations(c.items)
         setOptions(o)
         const initialUpdated: Record<string, string> = {}
+        const initialUnseen: Record<string, number> = {}
         c.items.forEach((item) => {
           initialUpdated[item.id] = item.updated_at
         })
@@ -144,6 +149,8 @@ export default function DashboardPage() {
           initialUpdated[item.id] = item.updated_at
         })
         setLastUpdatedByConversationId(initialUpdated)
+        setUnseenByConversationId(initialUnseen)
+        unseenRef.current = initialUnseen
         lastUpdatedRef.current = initialUpdated
         let latestType: 'assistant' | 'group' | null = null
         let latestBotId: string | null = null
@@ -184,6 +191,39 @@ export default function DashboardPage() {
         setLoading(false)
       }
     })()
+  }, [])
+
+  useEffect(() => {
+    const bc = new BroadcastChannel('gravex-single-tab')
+    bcRef.current = bc
+    const tabId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const startedAt = Date.now()
+    const announce = () => bc.postMessage({ type: 'hello', tabId, startedAt })
+    bc.onmessage = (ev) => {
+      const data = ev?.data
+      if (!data || data.tabId === tabId) return
+      if (data.type === 'hello') {
+        if (data.startedAt < startedAt || (data.startedAt === startedAt && data.tabId < tabId)) {
+          setSingleTabBlocked(true)
+          setSingleTabMessage('Another GravexStudio tab is active. Please close this tab.')
+        } else {
+          bc.postMessage({ type: 'deny', tabId, target: data.tabId, startedAt })
+        }
+      } else if (data.type === 'deny' && data.target === tabId) {
+        setSingleTabBlocked(true)
+        setSingleTabMessage('Another GravexStudio tab is active. Please close this tab.')
+      }
+    }
+    announce()
+    const t = window.setInterval(announce, 5000)
+    return () => {
+      try {
+        window.clearInterval(t)
+        bc.close()
+      } catch {
+        // ignore
+      }
+    }
   }, [])
 
   const q = query.trim().toLowerCase()
@@ -228,10 +268,15 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!selectedBotId) return
-    const fallbackLatest = latestConversationByBot.get(selectedBotId)
-    setSelectedConversationId(fallbackLatest?.id || '')
+    const immediate = conversations
+      .filter((conv) => conv.bot_id === selectedBotId)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, 50)
+    const fallbackLatest = immediate[0] || latestConversationByBot.get(selectedBotId)
+    const initialId = fallbackLatest?.id || ''
+    setBotConversations(immediate)
+    setSelectedConversationId(initialId)
     setAssistantConversationId(null)
-    setBotConversations([])
     void (async () => {
       setBotConvLoading(true)
       setBotConvErr(null)
@@ -240,17 +285,10 @@ export default function DashboardPage() {
           `/api/conversations?page=1&page_size=50&bot_id=${selectedBotId}`,
         )
         const sorted = [...(c.items || [])].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-        const fallback = conversations
-          .filter((conv) => conv.bot_id === selectedBotId)
-          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-          .slice(0, 50)
-        const finalList = sorted.length ? sorted : fallback
+        const finalList = sorted.length ? sorted : immediate
         setBotConversations(finalList)
         const nextId = finalList[0]?.id || fallbackLatest?.id || ''
-        setSelectedConversationId(nextId)
-        if (nextId) {
-          setUnseenByConversationId((prev) => ({ ...prev, [nextId]: 0 }))
-        }
+        setSelectedConversationId((prev) => (prev === initialId ? nextId : prev))
       } catch (e: any) {
         setBotConvErr(String(e?.message || e))
       } finally {
@@ -270,6 +308,12 @@ export default function DashboardPage() {
   useEffect(() => {
     selectionRef.current = { type: selectedType, groupId: selectedGroupId, convId: selectedConversationId }
   }, [selectedType, selectedGroupId, selectedConversationId])
+
+  useEffect(() => {
+    if (selectedType !== 'assistant') return
+    if (!assistantConversationId) return
+    setSelectedConversationId((prev) => (prev === assistantConversationId ? prev : assistantConversationId))
+  }, [assistantConversationId, selectedType])
 
   function clipPreview(text: string, max = 90) {
     const cleaned = (text || '').replace(/\s+/g, ' ').trim()
@@ -575,26 +619,26 @@ export default function DashboardPage() {
       c.items.forEach((item) => {
         const prev = nextUpdated[item.id]
         if (prev && item.updated_at > prev) {
-          if (item.id !== active) {
-            nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
-          } else {
-            nextUnseen[item.id] = 0
-          }
           updatedPreviewIds.push(item.id)
         }
         nextUpdated[item.id] = item.updated_at
+        if (item.id === active) {
+          nextUnseen[item.id] = 0
+        } else if (prev && item.updated_at > prev) {
+          nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
+        }
       })
       g.items.forEach((item) => {
         const prev = nextUpdated[item.id]
         if (prev && item.updated_at > prev) {
-          if (item.id !== active) {
-            nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
-          } else {
-            nextUnseen[item.id] = 0
-          }
           updatedPreviewIds.push(item.id)
         }
         nextUpdated[item.id] = item.updated_at
+        if (item.id === active) {
+          nextUnseen[item.id] = 0
+        } else if (prev && item.updated_at > prev) {
+          nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
+        }
       })
       if (updatedPreviewIds.length) {
         setPreviewByConversationId((prev) => {
@@ -610,6 +654,21 @@ export default function DashboardPage() {
     } catch {
       // ignore
     }
+  }
+
+  function handleCacheUpdate(conversationId: string, entry: ChatCacheEntry) {
+    if (!conversationId) return
+    setChatCache((prev) => ({ ...prev, [conversationId]: entry }))
+    if (entry?.items?.length) {
+      const last = [...entry.items].reverse().find((m) => m.role !== 'tool')
+      if (last?.text) {
+        setPreviewByConversationId((prev) => ({ ...prev, [conversationId]: clipPreview(last.text) }))
+      }
+    }
+  }
+
+  function notifySync() {
+    // no-op when single-tab only
   }
 
   useEffect(() => {
@@ -789,6 +848,26 @@ export default function DashboardPage() {
     setGroupSelected((prev) => (prev.includes(botId) ? prev.filter((id) => id !== botId) : [...prev, botId]))
   }
 
+  if (singleTabBlocked) {
+    return (
+      <div className="singleTabBlock">
+        <div className="singleTabCard">
+          <div className="chatBrand">
+            <span className="chatBrandDot" />
+            GravexStudio
+          </div>
+          <div className="cardTitle">Single‑tab mode</div>
+          <div className="muted">
+            {singleTabMessage || 'Another GravexStudio tab is active. Please close this tab.'}
+          </div>
+          <button className="btn" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="chatLayout withWorkspace">
       <aside className="chatSidebar">
@@ -843,6 +922,7 @@ export default function DashboardPage() {
                         className={`waAssistantCard ${selectedType === 'assistant' && selectedBotId === b.id ? 'active' : ''}`}
                         onClick={() => {
                           setSelectedType('assistant')
+                          if (selectedBotId !== b.id) setSelectedConversationId('')
                           setSelectedBotId(b.id)
                         }}
                       >
@@ -1172,6 +1252,9 @@ export default function DashboardPage() {
                 startToken={startToken}
                 onConversationIdChange={setAssistantConversationId}
                 onStageChange={setAssistantStage}
+                cache={chatCache}
+                onCacheUpdate={handleCacheUpdate}
+                onSync={notifySync}
                 hideWorkspace
                 allowUploads={canUpload}
                 uploadDisabledReason={uploadDisabledReason}

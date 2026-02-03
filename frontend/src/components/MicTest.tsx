@@ -13,7 +13,7 @@ import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
-import type { ConversationDetail, DataAgentStatus, ConversationFiles } from '../types'
+import type { ConversationDetail, DataAgentStatus, ConversationFiles, ConversationMessage } from '../types'
 import LoadingSpinner from './LoadingSpinner'
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
@@ -33,6 +33,7 @@ type ChatItem = {
   created_at?: string
   details?: any
   timings?: Timings
+  local?: boolean
 }
 
 function makeId(): string {
@@ -49,10 +50,15 @@ function b64ToBytes(b64: string): Uint8Array {
   return out
 }
 
-function wsBase(): string {
+  function wsBase(): string {
   const u = new URL(BACKEND_URL)
   const proto = u.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${u.host}`
+}
+
+export type ChatCacheEntry = {
+  items: ChatItem[]
+  lastAt?: string
 }
 
 export default function MicTest({
@@ -62,6 +68,9 @@ export default function MicTest({
   startToken,
   onConversationIdChange,
   onStageChange,
+  cache,
+  onCacheUpdate,
+  onSync,
   hideWorkspace = false,
   allowUploads = false,
   uploadDisabledReason = '',
@@ -74,13 +83,17 @@ export default function MicTest({
   startToken?: number
   onConversationIdChange?: (id: string | null) => void
   onStageChange?: (stage: Stage) => void
+  cache?: Record<string, ChatCacheEntry>
+  onCacheUpdate?: (conversationId: string, entry: ChatCacheEntry) => void
+  onSync?: () => void
   hideWorkspace?: boolean
   allowUploads?: boolean
   uploadDisabledReason?: string
   uploading?: boolean
   onUploadFiles?: (files: FileList) => void
 }) {
-  const [stage, setStage] = useState<Stage>('disconnected')
+  const [connectionStage, setConnectionStage] = useState<Stage>('disconnected')
+  const [stageByConversationId, setStageByConversationId] = useState<Record<string, Stage>>({})
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [speak, setSpeak] = useState(true)
   const [testFlag, setTestFlag] = useState(true)
@@ -116,9 +129,84 @@ export default function MicTest({
   const toolProgressIdRef = useRef<Record<string, string>>({})
   const timingsByReq = useRef<Record<string, Timings>>({})
   const scrollerRef = useRef<HTMLDivElement | null>(null)
-  const hydratedConvIdRef = useRef<string | null>(null)
+  const hydrateSeqRef = useRef(0)
   const ignoreInitialConversationRef = useRef(false)
   const startTokenRef = useRef<number | undefined>(startToken)
+  const cacheRef = useRef<Record<string, ChatCacheEntry> | undefined>(cache)
+  const conversationIdRef = useRef<string | null>(null)
+  const reqToConversationRef = useRef<Record<string, string>>({})
+  const pendingInitReqIdRef = useRef<string | null>(null)
+
+  const activeStage = useMemo(() => {
+    if (connectionStage === 'disconnected' || connectionStage === 'error') return connectionStage
+    if (!conversationId) return connectionStage === 'idle' ? 'idle' : connectionStage
+    return stageByConversationId[conversationId] || 'idle'
+  }, [connectionStage, conversationId, stageByConversationId])
+
+  function mapConversationMessage(m: ConversationMessage): ChatItem {
+    let role: ChatItem['role'] = m.role === 'assistant' ? 'assistant' : m.role === 'tool' ? 'tool' : 'user'
+    let text = m.content
+    if (m.role === 'tool') {
+      if (m.tool_name && m.tool_kind) text = `[tool_${m.tool_kind}] ${m.tool_name}`
+      else if (m.tool_name) text = `[tool] ${m.tool_name}`
+      else text = '[tool]'
+    }
+    return {
+      id: m.id,
+      role,
+      text,
+      created_at: m.created_at,
+      details: m.role === 'tool' ? m.tool : undefined,
+      timings: m.metrics
+        ? {
+            asr: m.metrics.asr ?? undefined,
+            llm_ttfb: m.metrics.llm1 ?? undefined,
+            llm_total: m.metrics.llm ?? undefined,
+            tts_first_audio: m.metrics.tts1 ?? undefined,
+            total: m.metrics.total ?? undefined,
+          }
+        : undefined,
+    }
+  }
+
+  function isActiveConversationForReq(reqId?: string | null) {
+    const id = reqId ? reqToConversationRef.current[reqId] : null
+    if (!id) return true
+    return id === conversationIdRef.current
+  }
+
+  function mergeItems(prev: ChatItem[], next: ChatItem[]) {
+    const serverCounts = new Map<string, number>()
+    next.forEach((it) => {
+      const key = `${it.role}::${(it.text || '').trim()}`
+      serverCounts.set(key, (serverCounts.get(key) || 0) + 1)
+    })
+    const filteredPrev = prev.filter((it) => {
+      if (!it.local) return true
+      if (it.role === 'tool') return true
+      const key = `${it.role}::${(it.text || '').trim()}`
+      const remaining = serverCounts.get(key) || 0
+      if (remaining > 0) {
+        serverCounts.set(key, remaining - 1)
+        return false
+      }
+      return true
+    })
+    const merged = [...filteredPrev, ...next]
+    const seen = new Set<string>()
+    const unique = merged.filter((it) => {
+      if (seen.has(it.id)) return false
+      seen.add(it.id)
+      return true
+    })
+    unique.sort((a, b) => {
+      const at = new Date(a.created_at || '').getTime()
+      const bt = new Date(b.created_at || '').getTime()
+      if (at !== bt) return at - bt
+      return String(a.id).localeCompare(String(b.id))
+    })
+    return unique
+  }
 
   async function ensureWsOpen(timeoutMs = 1500): Promise<boolean> {
     const ws = wsRef.current
@@ -132,8 +220,23 @@ export default function MicTest({
     return result === true && !!wsRef.current && wsRef.current.readyState === WebSocket.OPEN
   }
 
-  function finalizeTurn() {
-    setStage('idle')
+  useEffect(() => {
+    cacheRef.current = cache
+  }, [cache])
+
+  useEffect(() => {
+    conversationIdRef.current = conversationId
+    if (conversationId && !stageByConversationId[conversationId]) {
+      setConversationStage(conversationId, 'idle')
+    }
+  }, [conversationId, stageByConversationId])
+
+  function setConversationStage(cid: string, next: Stage) {
+    setStageByConversationId((prev) => ({ ...prev, [cid]: next }))
+  }
+
+  function finalizeTurn(reqId?: string) {
+    if (reqId && activeReqIdRef.current !== reqId) return
     activeReqIdRef.current = null
     draftAssistantIdRef.current = null
     toolProgressIdRef.current = {}
@@ -146,10 +249,34 @@ export default function MicTest({
 
   async function hydrateConversation(cid: string) {
     if (!cid) return
-    if (hydratedConvIdRef.current === cid) return
+    const seq = ++hydrateSeqRef.current
+    const isCurrent = () => hydrateSeqRef.current === seq
+    if (cache && cache[cid]?.items?.length && isCurrent()) {
+      setItems(cache[cid].items)
+    }
     try {
+      if (cache && cache[cid]?.lastAt) {
+        try {
+          const since = encodeURIComponent(cache[cid].lastAt || '')
+          const d = await apiGet<{ messages: ConversationMessage[] }>(
+            `/api/conversations/${cid}/messages?since=${since}`,
+          )
+          if (d?.messages?.length) {
+            const delta = d.messages.map(mapConversationMessage)
+            if (!isCurrent()) return
+            setItems((prev) => mergeItems(prev, delta))
+            const lastAt = delta[delta.length - 1]?.created_at
+            if (onCacheUpdate && lastAt && isCurrent()) {
+              onCacheUpdate(cid, { items: mergeItems(cache[cid].items, delta), lastAt })
+            }
+            return
+          }
+        } catch {
+          // fall back to full fetch
+        }
+      }
       const d = await apiGet<ConversationDetail>(`/api/conversations/${cid}`)
-      hydratedConvIdRef.current = cid
+      if (!isCurrent()) return
       draftAssistantIdRef.current = null
       const sorted = [...d.messages].sort((a, b) => {
         const at = new Date(a.created_at).getTime()
@@ -176,33 +303,14 @@ export default function MicTest({
         }
         return String(a.id).localeCompare(String(b.id))
       })
-      const mapped: ChatItem[] = sorted.map((m) => {
-        let role: ChatItem['role'] = m.role === 'assistant' ? 'assistant' : m.role === 'tool' ? 'tool' : 'user'
-        let text = m.content
-        if (m.role === 'tool') {
-          if (m.tool_name && m.tool_kind) text = `[tool_${m.tool_kind}] ${m.tool_name}`
-          else if (m.tool_name) text = `[tool] ${m.tool_name}`
-          else text = '[tool]'
-        }
-        return {
-          id: m.id,
-          role,
-          text,
-          created_at: m.created_at,
-          details: m.role === 'tool' ? m.tool : undefined,
-          timings: m.metrics
-            ? {
-                asr: m.metrics.asr ?? undefined,
-                llm_ttfb: m.metrics.llm1 ?? undefined,
-                llm_total: m.metrics.llm ?? undefined,
-                tts_first_audio: m.metrics.tts1 ?? undefined,
-                total: m.metrics.total ?? undefined,
-              }
-            : undefined,
-        }
-      })
+      const mapped: ChatItem[] = sorted.map(mapConversationMessage)
       setItems(mapped)
+      if (onCacheUpdate) {
+        const lastAt = mapped.length ? mapped[mapped.length - 1].created_at : undefined
+        onCacheUpdate(cid, { items: mapped, lastAt })
+      }
     } catch (e: any) {
+      if (!isCurrent()) return
       setErr(String(e?.message || e))
     }
   }
@@ -244,11 +352,14 @@ export default function MicTest({
     }
   }
 
-  const canInit = useMemo(() => stage === 'idle' || stage === 'disconnected' || stage === 'error', [stage])
+  const canInit = useMemo(
+    () => connectionStage === 'idle' || connectionStage === 'disconnected' || connectionStage === 'error',
+    [connectionStage],
+  )
   const canRecord = useMemo(() => {
-    if (layout === 'whatsapp') return stage === 'idle' && !!conversationId
-    return speak && stage === 'idle' && !!conversationId
-  }, [layout, speak, stage, conversationId])
+    if (layout === 'whatsapp') return connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
+    return speak && connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
+  }, [layout, speak, conversationId, activeStage, connectionStage])
 
   useEffect(() => {
     const token = getBasicAuthToken()
@@ -257,22 +368,22 @@ export default function MicTest({
     wsRef.current = ws
     playerRef.current = new WavQueuePlayer()
     setErr(null)
-    setStage('disconnected')
+    setConnectionStage('disconnected')
     wsOpenPromiseRef.current = new Promise((resolve) => {
       wsOpenResolveRef.current = resolve
     })
 
     ws.onopen = () => {
       setErr(null)
-      setStage('idle')
+      setConnectionStage('idle')
       wsOpenResolveRef.current?.(true)
     }
     ws.onclose = () => {
-      setStage('disconnected')
+      setConnectionStage('disconnected')
       wsOpenResolveRef.current?.(false)
     }
     ws.onerror = () => {
-      setStage('error')
+      setConnectionStage('error')
       setErr('WebSocket error')
       wsOpenResolveRef.current?.(false)
     }
@@ -286,23 +397,39 @@ export default function MicTest({
       }
 
       if (msg.type === 'status') {
-        setStage(msg.stage || 'idle')
+        const reqId = String(msg.req_id || '')
+        const convId = reqId ? reqToConversationRef.current[reqId] : conversationIdRef.current
+        if (convId) {
+          setConversationStage(convId, msg.stage || 'idle')
+        }
         if (msg.stage === 'idle') {
-          finalizeTurn()
+          finalizeTurn(reqId)
         }
         return
       }
       if (msg.type === 'conversation') {
         const cid = msg.conversation_id || msg.id
         if (cid) {
+          const reqId = String(msg.req_id || '')
+          const pendingReq = pendingInitReqIdRef.current
+          if (pendingReq && reqId && reqId !== pendingReq) return
+          if (!pendingReq && conversationIdRef.current) return
           const s = String(cid)
           setConversationId(s)
           void hydrateConversation(s)
+          if (pendingInitReqIdRef.current) {
+            reqToConversationRef.current[pendingInitReqIdRef.current] = s
+            pendingInitReqIdRef.current = null
+          } else if (reqId) {
+            reqToConversationRef.current[reqId] = s
+          }
+          setConversationStage(s, 'idle')
         }
         return
       }
       if (msg.type === 'metrics') {
         const reqId = String(msg.req_id || '')
+        if (!isActiveConversationForReq(reqId)) return
         const t = (msg.timings_ms || {}) as Timings
         if (reqId) timingsByReq.current[reqId] = t
         setLastTimings(t)
@@ -314,16 +441,21 @@ export default function MicTest({
         const pendingId = pendingUserIdRef.current
         if (pendingId) {
           setItems((prev) =>
-            prev.map((it) => (it.id === pendingId ? { ...it, text, created_at: new Date().toISOString() } : it)),
+            prev.map((it) => (it.id === pendingId ? { ...it, text, created_at: new Date().toISOString(), local: true } : it)),
           )
           pendingUserIdRef.current = null
         } else {
-          setItems((prev) => [...prev, { id: makeId(), role: 'user', text, created_at: new Date().toISOString() }])
+          setItems((prev) => [
+            ...prev,
+            { id: makeId(), role: 'user', text, created_at: new Date().toISOString(), local: true },
+          ])
         }
         }
         return
       }
       if (msg.type === 'tool_call') {
+        const reqId = String(msg.req_id || '')
+        if (!isActiveConversationForReq(reqId)) return
         const details = normalizeToolEventForDisplay(msg)
         const toolItem = {
           id: makeId(),
@@ -331,6 +463,7 @@ export default function MicTest({
           text: `[tool_call] ${msg.name}`,
           details,
           created_at: new Date().toISOString(),
+          local: true,
         }
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
@@ -342,6 +475,8 @@ export default function MicTest({
         return
       }
       if (msg.type === 'tool_result') {
+        const reqId = String(msg.req_id || '')
+        if (!isActiveConversationForReq(reqId)) return
         const details = normalizeToolEventForDisplay(msg)
         const toolItem = {
           id: makeId(),
@@ -349,6 +484,7 @@ export default function MicTest({
           text: `[tool_result] ${msg.name}`,
           details,
           created_at: new Date().toISOString(),
+          local: true,
         }
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
@@ -360,6 +496,8 @@ export default function MicTest({
         return
       }
       if (msg.type === 'tool_progress') {
+        const reqId = String(msg.req_id || '')
+        if (!isActiveConversationForReq(reqId)) return
         const text = String(msg.text || '').trim()
         if (!text) return
         const key = `${String(msg.req_id || '')}:${String(msg.name || 'tool')}`
@@ -369,12 +507,13 @@ export default function MicTest({
           const draftId = draftAssistantIdRef.current
           const hasItem = prev.some((it) => it.id === toolId)
           if (!hasItem) {
-            const toolItem = {
-              id: toolId,
-              role: 'tool' as const,
-              text: `[tool_progress] ${text}`,
-              created_at: new Date().toISOString(),
-            }
+          const toolItem = {
+            id: toolId,
+            role: 'tool' as const,
+            text: `[tool_progress] ${text}`,
+            created_at: new Date().toISOString(),
+            local: true,
+          }
             if (!draftId) return [...prev, toolItem]
             const idx = prev.findIndex((it) => it.id === draftId)
             if (idx === -1) return [...prev, toolItem]
@@ -387,10 +526,15 @@ export default function MicTest({
       if (msg.type === 'interim') {
         const text = String(msg.text || '').trim()
         if (!text) return
-        setItems((prev) => [...prev, { id: makeId(), role: 'assistant', text, created_at: new Date().toISOString() }])
+        setItems((prev) => [
+          ...prev,
+          { id: makeId(), role: 'assistant', text, created_at: new Date().toISOString(), local: true },
+        ])
         return
       }
       if (msg.type === 'text_delta') {
+        const reqId = String(msg.req_id || '')
+        if (!isActiveConversationForReq(reqId)) return
         const delta = String(msg.delta || '')
         if (!delta) return
         if (!draftAssistantIdRef.current) draftAssistantIdRef.current = makeId()
@@ -398,7 +542,10 @@ export default function MicTest({
         setItems((prev) => {
           const hasDraft = prev.some((it) => it.id === draftId)
           if (!hasDraft)
-            return [...prev, { id: draftId, role: 'assistant', text: delta, created_at: new Date().toISOString() }]
+            return [
+              ...prev,
+              { id: draftId, role: 'assistant', text: delta, created_at: new Date().toISOString(), local: true },
+            ]
           return prev.map((it) => (it.id === draftId ? { ...it, text: it.text + delta } : it))
         })
         return
@@ -415,15 +562,16 @@ export default function MicTest({
       if (msg.type === 'error') {
         const errorText = String(msg.error || 'Unknown error')
         setErr(errorText)
-        setStage('error')
+        setConnectionStage('error')
         setItems((prev) => [
           ...prev,
-          { id: makeId(), role: 'assistant', text: `Error: ${errorText}`, created_at: new Date().toISOString() },
+          { id: makeId(), role: 'assistant', text: `Error: ${errorText}`, created_at: new Date().toISOString(), local: true },
         ])
         return
       }
       if (msg.type === 'done') {
         const reqId = String(msg.req_id || '')
+        if (!isActiveConversationForReq(reqId)) return
         const t = reqId ? timingsByReq.current[reqId] : undefined
         const doneText = String(msg.text || '')
         const draftId = draftAssistantIdRef.current
@@ -434,7 +582,7 @@ export default function MicTest({
             draftAssistantIdRef.current = newId
             return [
               ...prev,
-              { id: newId, role: 'assistant', text: doneText, timings: t, created_at: new Date().toISOString() },
+              { id: newId, role: 'assistant', text: doneText, timings: t, created_at: new Date().toISOString(), local: true },
             ]
           }
           if (draftId && hasDraft) {
@@ -446,7 +594,14 @@ export default function MicTest({
           }
           return prev
         })
-        finalizeTurn()
+        if (reqId) {
+          const convId = reqToConversationRef.current[reqId]
+          if (convId) setConversationStage(convId, 'idle')
+        } else if (conversationIdRef.current) {
+          setConversationStage(conversationIdRef.current, 'idle')
+        }
+        finalizeTurn(reqId)
+        onSync?.()
         return
       }
     }
@@ -471,8 +626,11 @@ export default function MicTest({
     if (conversationId === initialConversationId) return
     setErr(null)
     setConversationId(initialConversationId)
-    setItems([])
-    hydratedConvIdRef.current = null
+    if (cache && cache[initialConversationId]?.items?.length) {
+      setItems(cache[initialConversationId].items)
+    } else {
+      setItems([])
+    }
     draftAssistantIdRef.current = null
     void hydrateConversation(initialConversationId)
   }, [initialConversationId, conversationId])
@@ -484,8 +642,43 @@ export default function MicTest({
 
   useEffect(() => {
     if (!onStageChange) return
-    onStageChange(stage)
-  }, [stage, onStageChange])
+    onStageChange(activeStage)
+  }, [activeStage, onStageChange])
+
+  useEffect(() => {
+    if (!conversationId || !onCacheUpdate) return
+    const lastAt = items.length ? items[items.length - 1]?.created_at : undefined
+    onCacheUpdate(conversationId, { items, lastAt })
+  }, [items, conversationId, onCacheUpdate])
+
+  useEffect(() => {
+    if (!conversationId) return
+    let canceled = false
+    const fetchDelta = async () => {
+      const entry = cacheRef.current?.[conversationId]
+      if (!entry?.lastAt) return
+      try {
+        const since = encodeURIComponent(entry.lastAt)
+        const d = await apiGet<{ messages: ConversationMessage[] }>(
+          `/api/conversations/${conversationId}/messages?since=${since}`,
+        )
+        if (!d?.messages?.length) return
+        const delta = d.messages.map(mapConversationMessage)
+        if (canceled) return
+        setItems((prev) => mergeItems(prev, delta))
+      } catch {
+        // ignore
+      }
+    }
+    void fetchDelta()
+    const t = window.setInterval(() => {
+      void fetchDelta()
+    }, 5000)
+    return () => {
+      canceled = true
+      window.clearInterval(t)
+    }
+  }, [conversationId])
 
   useEffect(() => {
     if (layout !== 'whatsapp') return
@@ -506,6 +699,9 @@ export default function MicTest({
   useEffect(() => {
     if (!conversationId) return
     void loadContainerStatus(conversationId)
+    if (cache && cache[conversationId]?.items?.length) {
+      setItems(cache[conversationId].items)
+    }
     const id = conversationId
     const t = setInterval(() => {
       void loadContainerStatus(id)
@@ -533,10 +729,10 @@ export default function MicTest({
     setErr(null)
     setConversationId(null)
     setItems([])
-    hydratedConvIdRef.current = null
     draftAssistantIdRef.current = null
     const reqId = makeId()
     activeReqIdRef.current = reqId
+    pendingInitReqIdRef.current = reqId
     ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag, debug }))
   }
 
@@ -550,7 +746,7 @@ export default function MicTest({
     }
     const text = chatText.trim()
     if (!text) return
-    if (stage !== 'idle') return
+    if (activeStage !== 'idle') return
     setErr(null)
     setChatText('')
     const draftId = makeId()
@@ -558,11 +754,12 @@ export default function MicTest({
     const now = new Date().toISOString()
     setItems((prev) => [
       ...prev,
-      { id: makeId(), role: 'user', text, created_at: now },
-      { id: draftId, role: 'assistant', text: '', created_at: now },
+      { id: makeId(), role: 'user', text, created_at: now, local: true },
+      { id: draftId, role: 'assistant', text: '', created_at: now, local: true },
     ])
     const reqId = makeId()
     activeReqIdRef.current = reqId
+    reqToConversationRef.current[reqId] = conversationId
     ws.send(
       JSON.stringify({
         type: 'chat',
@@ -574,6 +771,7 @@ export default function MicTest({
         text,
       }),
     )
+    onSync?.()
   }
 
   async function startRecording() {
@@ -593,11 +791,12 @@ export default function MicTest({
       pendingUserIdRef.current = userId
       setItems((prev) => [
         ...prev,
-        { id: userId, role: 'user', text: '…', created_at: new Date().toISOString() },
+        { id: userId, role: 'user', text: '…', created_at: new Date().toISOString(), local: true },
       ])
     }
     const reqId = makeId()
     activeReqIdRef.current = reqId
+    reqToConversationRef.current[reqId] = conversationId
     wsRef.current.send(
       JSON.stringify({ type: 'start', req_id: reqId, conversation_id: conversationId, speak, test_flag: testFlag, debug }),
     )
@@ -866,10 +1065,14 @@ export default function MicTest({
                       void sendChat()
                     }
                   }}
-                  disabled={!conversationId || stage !== 'idle'}
+                  disabled={!conversationId}
                 />
               </div>
-              <button className="btn primary" onClick={() => void sendChat()} disabled={!conversationId || stage !== 'idle' || !chatText.trim()}>
+              <button
+                className="btn primary"
+                onClick={() => void sendChat()}
+                disabled={!conversationId || activeStage !== 'idle' || !chatText.trim()}
+              >
                 Send
               </button>
             </div>
@@ -887,7 +1090,7 @@ export default function MicTest({
           <div className="cardTitle">Conversation</div>
           <div className="muted">Assistant speaks first; record only when you press “Record”.</div>
         </div>
-        <div className="pill accent">status: {stage}</div>
+        <div className="pill accent">status: {activeStage}</div>
       </div>
 
       {err ? <div className="alert">{err}</div> : null}
@@ -925,9 +1128,13 @@ export default function MicTest({
                 void sendChat()
               }
             }}
-            disabled={!conversationId || stage !== 'idle'}
+            disabled={!conversationId}
           />
-          <button className="btn primary" onClick={() => void sendChat()} disabled={!conversationId || stage !== 'idle' || !chatText.trim()}>
+          <button
+            className="btn primary"
+            onClick={() => void sendChat()}
+            disabled={!conversationId || activeStage !== 'idle' || !chatText.trim()}
+          >
             Send
           </button>
         </div>

@@ -4083,9 +4083,9 @@ def create_app() -> FastAPI:
                                 open_audio = False
 
                             if (open_deltas or open_audio) and first_token_ts is None:
-                                time.sleep(0.01)
+                                await asyncio.sleep(0.01)
                             else:
-                                time.sleep(0.005)
+                                await asyncio.sleep(0.005)
 
                         t1.join()
                         t2.join()
@@ -8697,6 +8697,68 @@ def create_app() -> FastAPI:
             "bot": _bot_to_dict(bot),
             "messages": messages,
         }
+
+    @app.get("/api/conversations/{conversation_id}/messages")
+    def api_conversation_messages(
+        conversation_id: UUID,
+        since: Optional[str] = None,
+        limit: int = 200,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        _ = get_conversation(session, conversation_id)
+        since_dt: dt.datetime | None = None
+        if since:
+            try:
+                since_dt = dt.datetime.fromisoformat(str(since))
+            except Exception:
+                since_dt = None
+        stmt = select(ConversationMessage).where(
+            ConversationMessage.conversation_id == conversation_id,
+            ConversationMessage.role != "tool",
+        )
+        if since_dt is not None:
+            stmt = stmt.where(ConversationMessage.created_at > since_dt)
+        stmt = stmt.order_by(ConversationMessage.created_at.asc()).limit(min(500, max(1, int(limit))))
+        msgs_raw = list(session.exec(stmt))
+        messages = []
+        for m in msgs_raw:
+            if m.role == "tool":
+                continue
+            tool_obj = None
+            tool_name = None
+            tool_kind = None
+            if m.role == "tool":
+                tool_obj = safe_json_loads(m.content or "{}")
+                tool_name = tool_obj.get("tool") if tool_obj and isinstance(tool_obj.get("tool"), str) else None
+                if tool_obj:
+                    if "arguments" in tool_obj:
+                        tool_kind = "call"
+                    elif "result" in tool_obj:
+                        tool_kind = "result"
+            messages.append(
+                {
+                    "id": str(m.id),
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat(),
+                    "tool": tool_obj,
+                    "tool_name": tool_name,
+                    "tool_kind": tool_kind,
+                    "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
+                    "sender_name": m.sender_name,
+                    "metrics": {
+                        "in": m.input_tokens_est,
+                        "out": m.output_tokens_est,
+                        "cost": m.cost_usd_est,
+                        "asr": m.asr_ms,
+                        "llm1": m.llm_ttfb_ms,
+                        "llm": m.llm_total_ms,
+                        "tts1": m.tts_first_audio_ms,
+                        "total": m.total_ms,
+                    },
+                }
+            )
+        return {"conversation_id": str(conversation_id), "messages": messages}
 
     def _group_message_payload(m: ConversationMessage) -> dict | None:
         if m.role == "tool":
