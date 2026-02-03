@@ -101,6 +101,8 @@ export default function MicTest({
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
+  const wsOpenPromiseRef = useRef<Promise<boolean> | null>(null)
+  const wsOpenResolveRef = useRef<((ok: boolean) => void) | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
   const playerRef = useRef<WavQueuePlayer | null>(null)
   const uploadRef = useRef<HTMLInputElement | null>(null)
@@ -114,6 +116,18 @@ export default function MicTest({
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const hydratedConvIdRef = useRef<string | null>(null)
   const ignoreInitialConversationRef = useRef(false)
+
+  async function ensureWsOpen(timeoutMs = 1500): Promise<boolean> {
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) return true
+    const p = wsOpenPromiseRef.current
+    if (!p) return false
+    const result = await Promise.race([
+      p,
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ])
+    return result === true && !!wsRef.current && wsRef.current.readyState === WebSocket.OPEN
+  }
 
   function finalizeTurn() {
     setStage('idle')
@@ -239,18 +253,25 @@ export default function MicTest({
     const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk${authQuery}`)
     wsRef.current = ws
     playerRef.current = new WavQueuePlayer()
-    setStage('idle')
+    setErr(null)
+    setStage('disconnected')
+    wsOpenPromiseRef.current = new Promise((resolve) => {
+      wsOpenResolveRef.current = resolve
+    })
 
     ws.onopen = () => {
       setErr(null)
       setStage('idle')
+      wsOpenResolveRef.current?.(true)
     }
     ws.onclose = () => {
       setStage('disconnected')
+      wsOpenResolveRef.current?.(false)
     }
     ws.onerror = () => {
       setStage('error')
       setErr('WebSocket error')
+      wsOpenResolveRef.current?.(false)
     }
     ws.onmessage = async (ev) => {
       if (typeof ev.data !== 'string') return
@@ -492,10 +513,7 @@ export default function MicTest({
 
   async function initConversation() {
     ignoreInitialConversationRef.current = true
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setErr('WebSocket not connected')
-      return
-    }
+    if (!(await ensureWsOpen())) return
     if (!canInit) return
     setErr(null)
     setConversationId(null)
@@ -508,10 +526,7 @@ export default function MicTest({
   }
 
   async function sendChat() {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setErr('WebSocket not connected')
-      return
-    }
+    if (!(await ensureWsOpen())) return
     if (!conversationId) {
       setErr('Start a conversation first.')
       return
