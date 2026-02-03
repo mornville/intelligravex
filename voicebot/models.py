@@ -37,6 +37,7 @@ class Bot(SQLModel, table=True):
     data_agent_prewarm_prompt: str = Field(default="")
     enable_host_actions: bool = Field(default=False)
     enable_host_shell: bool = Field(default=False)
+    require_host_action_approval: bool = Field(default=False)
     # List of tool names disabled for this bot (JSON list stored as text).
     # Applies to system tools (e.g. web_search) and integration tools by name.
     disabled_tools_json: str = "[]"

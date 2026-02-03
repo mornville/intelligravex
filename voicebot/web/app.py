@@ -854,6 +854,94 @@ def _execute_host_action(
         return False, stdout, stderr, exit_code, str(exc), result_payload
 
 
+def _host_action_requires_approval(bot: Bot) -> bool:
+    return bool(getattr(bot, "require_host_action_approval", False))
+
+
+def _build_host_action_tool_result(action: HostAction, *, ok: bool) -> dict:
+    return {
+        "ok": ok,
+        "action_id": str(action.id),
+        "status": action.status,
+        "action_type": action.action_type,
+        "payload": safe_json_loads(action.payload_json or "{}") or {},
+        "stdout": action.stdout or "",
+        "stderr": action.stderr or "",
+        "exit_code": action.exit_code,
+        "error": action.error or "",
+    }
+
+
+def _finalize_host_action_run(
+    session: Session,
+    *,
+    action: HostAction,
+    ok: bool,
+    stdout: str,
+    stderr: str,
+    exit_code: Optional[int],
+    error: str,
+    result_payload: dict,
+) -> dict:
+    action.status = "done" if ok else "error"
+    action.stdout = stdout or ""
+    action.stderr = stderr or ""
+    action.exit_code = exit_code
+    action.error = error or ""
+    if result_payload:
+        payload = safe_json_loads(action.payload_json or "{}") or {}
+        payload.update(result_payload)
+        if result_payload.get("result_path"):
+            payload["result_download_url"] = (
+                f"/api/conversations/{action.conversation_id}/files/download?path="
+                f"{_url_quote(str(result_payload.get('result_path') or ''))}"
+            )
+        action.payload_json = json.dumps(payload, ensure_ascii=False)
+    now = dt.datetime.now(dt.timezone.utc)
+    action.executed_at = now
+    action.updated_at = now
+    session.add(action)
+    session.commit()
+    session.refresh(action)
+    return _build_host_action_tool_result(action, ok=ok)
+
+
+def _execute_host_action_and_update(session: Session, *, action: HostAction) -> dict:
+    action.status = "running"
+    action.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(action)
+    session.commit()
+    ok, stdout, stderr, exit_code, error, result_payload = _execute_host_action(action)
+    return _finalize_host_action_run(
+        session,
+        action=action,
+        ok=ok,
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        error=error,
+        result_payload=result_payload,
+    )
+
+
+async def _execute_host_action_and_update_async(session: Session, *, action: HostAction) -> dict:
+    action.status = "running"
+    action.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(action)
+    session.commit()
+    ok, stdout, stderr, exit_code, error, result_payload = await asyncio.to_thread(_execute_host_action, action)
+    return _finalize_host_action_run(
+        session,
+        action=action,
+        ok=ok,
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        error=error,
+        result_payload=result_payload,
+    )
+
+
 
 group_ws_clients: dict[str, set[WebSocket]] = {}
 group_ws_lock = asyncio.Lock()
@@ -967,6 +1055,7 @@ class BotCreateRequest(BaseModel):
     data_agent_prewarm_prompt: str = ""
     enable_host_actions: bool = False
     enable_host_shell: bool = False
+    require_host_action_approval: bool = False
     system_prompt: str
     language: str = "en"
     openai_tts_model: str = "gpt-4o-mini-tts"
@@ -993,6 +1082,7 @@ class BotUpdateRequest(BaseModel):
     data_agent_prewarm_prompt: Optional[str] = None
     enable_host_actions: Optional[bool] = None
     enable_host_shell: Optional[bool] = None
+    require_host_action_approval: Optional[bool] = None
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     openai_tts_model: Optional[str] = None
@@ -1872,14 +1962,27 @@ def create_app() -> FastAPI:
                                         action_type=action_type,
                                         payload=payload,
                                     )
-                                    tool_result = {"ok": True, "action_id": str(action.id)}
-                                    candidate = _render_with_meta(next_reply, meta_current).strip()
-                                    if candidate:
-                                        final = candidate
-                                        needs_followup_llm = False
+                                    if _host_action_requires_approval(bot):
+                                        tool_result = _build_host_action_tool_result(action, ok=True)
+                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                        if candidate:
+                                            final = candidate
+                                            needs_followup_llm = False
+                                        else:
+                                            needs_followup_llm = True
+                                            final = ""
                                     else:
-                                        needs_followup_llm = True
-                                        final = ""
+                                        tool_result = await _execute_host_action_and_update_async(
+                                            session, action=action
+                                        )
+                                        tool_failed = not bool(tool_result.get("ok", False))
+                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                        if candidate and not tool_failed:
+                                            final = candidate
+                                            needs_followup_llm = False
+                                        else:
+                                            needs_followup_llm = True
+                                            final = ""
                     elif tool_name == "give_command_to_data_agent":
                         if not bool(getattr(bot, "enable_data_agent", False)):
                             tool_result = {"ok": False, "error": {"message": "Data Agent is disabled for this bot."}}
@@ -4244,14 +4347,29 @@ def create_app() -> FastAPI:
                                                         action_type=action_type,
                                                         payload=payload,
                                                     )
-                                                    tool_result = {"ok": True, "action_id": str(action.id)}
-                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                    if candidate:
-                                                        rendered_reply = candidate
-                                                        needs_followup_llm = False
+                                                    if _host_action_requires_approval(bot):
+                                                        tool_result = _build_host_action_tool_result(action, ok=True)
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate:
+                                                            rendered_reply = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
                                                     else:
-                                                        needs_followup_llm = True
-                                                        rendered_reply = ""
+                                                        if wait_reply:
+                                                            await _send_interim(wait_reply, kind="wait")
+                                                        tool_result = await _execute_host_action_and_update_async(
+                                                            session, action=action
+                                                        )
+                                                        tool_failed = not bool(tool_result.get("ok", False))
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate and not tool_failed:
+                                                            rendered_reply = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
                                     elif tool_name == "give_command_to_data_agent":
                                         if not bool(getattr(bot, "enable_data_agent", False)):
                                             tool_result = {
@@ -5420,14 +5538,29 @@ def create_app() -> FastAPI:
                                                         action_type=action_type,
                                                         payload=payload,
                                                     )
-                                                    tool_result = {"ok": True, "action_id": str(action.id)}
-                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                    if candidate:
-                                                        rendered_reply = candidate
-                                                        needs_followup_llm = False
+                                                    if _host_action_requires_approval(bot2):
+                                                        tool_result = _build_host_action_tool_result(action, ok=True)
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate:
+                                                            rendered_reply = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
                                                     else:
-                                                        needs_followup_llm = True
-                                                        rendered_reply = ""
+                                                        if wait_reply:
+                                                            await _send_interim(wait_reply, kind="wait")
+                                                        tool_result = await _execute_host_action_and_update_async(
+                                                            session, action=action
+                                                        )
+                                                        tool_failed = not bool(tool_result.get("ok", False))
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate and not tool_failed:
+                                                            rendered_reply = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
                                     elif tool_name == "give_command_to_data_agent":
                                         if not bool(getattr(bot2, "enable_data_agent", False)):
                                             tool_result = {
@@ -6870,31 +7003,16 @@ def create_app() -> FastAPI:
         if action.action_type == "run_shell" and not bool(getattr(bot, "enable_host_shell", False)):
             raise HTTPException(status_code=400, detail="Shell commands are disabled for this assistant.")
 
-        action.status = "running"
-        action.updated_at = dt.datetime.now(dt.timezone.utc)
-        session.add(action)
-        session.commit()
-
-        ok, stdout, stderr, exit_code, error, result_payload = _execute_host_action(action)
-        action.status = "done" if ok else "error"
-        action.stdout = stdout or ""
-        action.stderr = stderr or ""
-        action.exit_code = exit_code
-        action.error = error or ""
-        if result_payload:
-            payload = safe_json_loads(action.payload_json or "{}") or {}
-            payload.update(result_payload)
-            if result_payload.get("result_path"):
-                payload["result_download_url"] = (
-                    f"/api/conversations/{action.conversation_id}/files/download?path="
-                    f"{_url_quote(str(result_payload.get('result_path') or ''))}"
-                )
-            action.payload_json = json.dumps(payload, ensure_ascii=False)
-        action.executed_at = dt.datetime.now(dt.timezone.utc)
-        action.updated_at = action.executed_at
-        session.add(action)
-        session.commit()
-        session.refresh(action)
+        tool_result = _execute_host_action_and_update(session, action=action)
+        tool_result_msg = add_message_with_metrics(
+            session,
+            conversation_id=action.conversation_id,
+            role="tool",
+            content=json.dumps({"tool": "request_host_action", "result": tool_result}, ensure_ascii=False),
+            sender_bot_id=bot.id,
+            sender_name=bot.name,
+        )
+        _mirror_group_message(session, conv=conv, msg=tool_result_msg)
 
         return _host_action_payload(action)
 
@@ -7303,14 +7421,27 @@ def create_app() -> FastAPI:
                                                     action_type=action_type,
                                                     payload=payload,
                                                 )
-                                                tool_result = {"ok": True, "action_id": str(action.id)}
-                                                candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                if candidate:
-                                                    final = candidate
-                                                    needs_followup_llm = False
+                                                if _host_action_requires_approval(bot):
+                                                    tool_result = _build_host_action_tool_result(action, ok=True)
+                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                    if candidate:
+                                                        final = candidate
+                                                        needs_followup_llm = False
+                                                    else:
+                                                        needs_followup_llm = True
+                                                        final = ""
                                                 else:
-                                                    needs_followup_llm = True
-                                                    final = ""
+                                                    tool_result = await _execute_host_action_and_update_async(
+                                                        session, action=action
+                                                    )
+                                                    tool_failed = not bool(tool_result.get("ok", False))
+                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                    if candidate and not tool_failed:
+                                                        final = candidate
+                                                        needs_followup_llm = False
+                                                    else:
+                                                        needs_followup_llm = True
+                                                        final = ""
                                 elif tool_name == "give_command_to_data_agent":
                                     if not bool(getattr(bot, "enable_data_agent", False)):
                                         tool_result = {
@@ -8013,6 +8144,7 @@ def create_app() -> FastAPI:
             "data_agent_prewarm_prompt": getattr(bot, "data_agent_prewarm_prompt", "") or "",
             "enable_host_actions": bool(getattr(bot, "enable_host_actions", False)),
             "enable_host_shell": bool(getattr(bot, "enable_host_shell", False)),
+            "require_host_action_approval": bool(getattr(bot, "require_host_action_approval", False)),
             "disabled_tools": sorted(disabled),
             "system_prompt": bot.system_prompt,
             "language": bot.language,
@@ -8095,6 +8227,7 @@ def create_app() -> FastAPI:
             data_agent_prewarm_prompt=(payload.data_agent_prewarm_prompt or ""),
             enable_host_actions=bool(getattr(payload, "enable_host_actions", False)),
             enable_host_shell=bool(getattr(payload, "enable_host_shell", False)),
+            require_host_action_approval=bool(getattr(payload, "require_host_action_approval", False)),
             system_prompt=payload.system_prompt,
             language=payload.language,
             openai_tts_model=(payload.openai_tts_model or "gpt-4o-mini-tts").strip() or "gpt-4o-mini-tts",

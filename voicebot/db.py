@@ -125,6 +125,7 @@ def _apply_light_migrations(engine) -> None:
         add_bot_col("data_agent_prewarm_prompt", "TEXT NOT NULL DEFAULT ''")
         add_bot_col("enable_host_actions", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("enable_host_shell", "INTEGER NOT NULL DEFAULT 0")
+        add_bot_col("require_host_action_approval", "INTEGER NOT NULL DEFAULT 0")
         add_bot_col("disabled_tools_json", "TEXT NOT NULL DEFAULT '[]'")
         try:
             conn.execute(

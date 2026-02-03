@@ -718,7 +718,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               <details className="accordion" open>
                 <summary>Host actions (one‑click)</summary>
                 <div className="muted" style={{ marginTop: 6 }}>
-                  Allow this employee to request actions on your Mac. Every action must be approved in the Action Queue.
+                  Allow this employee to request actions on your Mac. You can require approvals or auto-run actions.
                 </div>
                 <div className="row gap" style={{ marginTop: 10, flexWrap: 'wrap' }}>
                   <label className="check">
@@ -728,6 +728,17 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
                       onChange={(e) => setBot((p) => (p ? { ...p, enable_host_actions: e.target.checked } : p))}
                     />
                     Enable host actions
+                  </label>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(bot.require_host_action_approval)}
+                      disabled={!bot.enable_host_actions}
+                      onChange={(e) =>
+                        setBot((p) => (p ? { ...p, require_host_action_approval: e.target.checked } : p))
+                      }
+                    />
+                    Require approval
                   </label>
                   <label className="check">
                     <input
@@ -746,6 +757,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
                       void save({
                         enable_host_actions: Boolean(bot.enable_host_actions),
                         enable_host_shell: Boolean(bot.enable_host_shell),
+                        require_host_action_approval: Boolean(bot.require_host_action_approval),
                       })
                     }
                   >

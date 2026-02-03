@@ -18,6 +18,7 @@ export type Bot = {
   data_agent_prewarm_prompt?: string
   enable_host_actions?: boolean
   enable_host_shell?: boolean
+  require_host_action_approval?: boolean
   system_prompt: string
   language: string
   openai_tts_model: string

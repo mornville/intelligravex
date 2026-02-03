@@ -145,6 +145,7 @@ export default function DashboardPage() {
   const [hostActions, setHostActions] = useState<HostAction[]>([])
   const [hostActionsErr, setHostActionsErr] = useState<string | null>(null)
   const [hostActionsLoading, setHostActionsLoading] = useState(false)
+  const [hostActionApprovals, setHostActionApprovals] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     void (async () => {
@@ -712,6 +713,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!activeConversationId) {
       setHostActions([])
+      setHostActionApprovals({})
       return
     }
     if (!isVisible) return
@@ -826,6 +828,15 @@ export default function DashboardPage() {
     try {
       const res = await apiGet<{ items: HostAction[] }>(`/api/conversations/${id}/host-actions`)
       setHostActions(res.items || [])
+      setHostActionApprovals((prev) => {
+        const next: Record<string, boolean> = {}
+        ;(res.items || []).forEach((item) => {
+          if (item.status === 'pending') {
+            next[item.id] = Boolean(prev[item.id])
+          }
+        })
+        return next
+      })
     } catch (e: any) {
       setHostActionsErr(String(e?.message || e))
     } finally {
@@ -833,9 +844,19 @@ export default function DashboardPage() {
     }
   }
 
-  async function runHostAction(actionId: string) {
+  function hostActionRequiresApproval(action: HostAction) {
+    const botId = action.requested_by_bot_id || null
+    const sourceBot = botId ? bots.find((b) => b.id === botId) : activeBot
+    return Boolean(sourceBot?.require_host_action_approval)
+  }
+
+  async function runHostAction(action: HostAction) {
     try {
-      await apiPost(`/api/host-actions/${actionId}/run`, {})
+      if (hostActionRequiresApproval(action) && !hostActionApprovals[action.id]) {
+        setHostActionsErr('Approve the action before running it.')
+        return
+      }
+      await apiPost(`/api/host-actions/${action.id}/run`, {})
       await loadHostActions()
     } catch (e: any) {
       setHostActionsErr(String(e?.message || e))
@@ -1461,6 +1482,8 @@ export default function DashboardPage() {
                 <div className="workspaceFiles">
                   {hostActions.map((a) => {
                     const label = formatHostActionLabel(a)
+                    const requiresApproval = hostActionRequiresApproval(a)
+                    const isApproved = Boolean(hostActionApprovals[a.id])
                     return (
                       <div key={a.id} className="workspaceRow" style={{ alignItems: 'flex-start', gap: 10 }}>
                         <div style={{ flex: 1 }}>
@@ -1474,9 +1497,34 @@ export default function DashboardPage() {
                         </div>
                         <div>
                           {a.status === 'pending' ? (
-                            <button className="btn" onClick={() => void runHostAction(a.id)}>
-                              Run
-                            </button>
+                            requiresApproval ? (
+                              <div
+                                style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}
+                              >
+                                <label className="muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={isApproved}
+                                    onChange={(e) =>
+                                      setHostActionApprovals((prev) => ({
+                                        ...prev,
+                                        [a.id]: e.currentTarget.checked,
+                                      }))
+                                    }
+                                  />
+                                  Approve
+                                </label>
+                                {isApproved ? (
+                                  <button className="btn" onClick={() => void runHostAction(a)}>
+                                    Run
+                                  </button>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <button className="btn" onClick={() => void runHostAction(a)}>
+                                Run
+                              </button>
+                            )
                           ) : null}
                         </div>
                       </div>
