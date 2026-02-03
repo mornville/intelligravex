@@ -521,6 +521,8 @@ export default function MicTest({
   async function initConversation() {
     ignoreInitialConversationRef.current = true
     if (!(await ensureWsOpen())) return
+    const ws = wsRef.current
+    if (!ws) return
     if (!canInit) return
     setErr(null)
     setConversationId(null)
@@ -529,11 +531,13 @@ export default function MicTest({
     draftAssistantIdRef.current = null
     const reqId = makeId()
     activeReqIdRef.current = reqId
-    wsRef.current.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag, debug }))
+    ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag, debug }))
   }
 
   async function sendChat() {
     if (!(await ensureWsOpen())) return
+    const ws = wsRef.current
+    if (!ws) return
     if (!conversationId) {
       setErr('Start a conversation first.')
       return
@@ -553,7 +557,7 @@ export default function MicTest({
     ])
     const reqId = makeId()
     activeReqIdRef.current = reqId
-    wsRef.current.send(
+    ws.send(
       JSON.stringify({
         type: 'chat',
         req_id: reqId,
