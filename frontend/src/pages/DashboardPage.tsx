@@ -104,6 +104,7 @@ export default function DashboardPage() {
   const [assistantConversationId, setAssistantConversationId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadErr, setUploadErr] = useState<string | null>(null)
+  const [previewByConversationId, setPreviewByConversationId] = useState<Record<string, string>>({})
 
   const [workspaceStatus, setWorkspaceStatus] = useState<DataAgentStatus | null>(null)
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
@@ -176,13 +177,19 @@ export default function DashboardPage() {
   const latestConversationByBot = useMemo(() => {
     const map = new Map<string, ConversationSummary>()
     for (const c of conversations) {
-      if (!map.has(c.bot_id)) map.set(c.bot_id, c)
+      const prev = map.get(c.bot_id)
+      if (!prev || c.updated_at > prev.updated_at) {
+        map.set(c.bot_id, c)
+      }
     }
     return map
   }, [conversations])
 
   useEffect(() => {
     if (!selectedBotId) return
+    setSelectedConversationId('')
+    setAssistantConversationId(null)
+    setBotConversations([])
     void (async () => {
       setBotConvLoading(true)
       setBotConvErr(null)
@@ -190,8 +197,9 @@ export default function DashboardPage() {
         const c = await apiGet<{ items: ConversationSummary[] }>(
           `/api/conversations?page=1&page_size=50&bot_id=${selectedBotId}`,
         )
-        setBotConversations(c.items)
-        setSelectedConversationId(c.items[0]?.id || '')
+        const sorted = [...(c.items || [])].sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        setBotConversations(sorted)
+        setSelectedConversationId(sorted[0]?.id || '')
       } catch (e: any) {
         setBotConvErr(String(e?.message || e))
       } finally {
@@ -199,6 +207,58 @@ export default function DashboardPage() {
       }
     })()
   }, [selectedBotId])
+
+  function clipPreview(text: string, max = 90) {
+    const cleaned = (text || '').replace(/\s+/g, ' ').trim()
+    if (!cleaned) return ''
+    if (cleaned.length <= max) return cleaned
+    return `${cleaned.slice(0, max - 3)}...`
+  }
+
+  useEffect(() => {
+    if (loading) return
+    const ids = new Set<string>()
+    if (showBots) {
+      filteredBots.forEach((b) => {
+        const latest = latestConversationByBot.get(b.id)
+        if (latest?.id) ids.add(latest.id)
+      })
+    }
+    if (showGroups) {
+      filteredGroups.forEach((g) => {
+        if (g.id) ids.add(g.id)
+      })
+    }
+    const missing = Array.from(ids).filter((id) => !(id in previewByConversationId))
+    if (!missing.length) return
+    let canceled = false
+    void (async () => {
+      const results: Record<string, string> = {}
+      await Promise.all(
+        missing.map(async (id) => {
+          try {
+            const d = await apiGet<{ messages: ConversationMessage[] }>(`/api/conversations/${id}`)
+            const msgs = Array.isArray(d.messages) ? d.messages : []
+            for (let i = msgs.length - 1; i >= 0; i -= 1) {
+              const m = msgs[i]
+              if (m.role !== 'tool' && m.role !== 'system') {
+                results[id] = clipPreview(m.content || '')
+                break
+              }
+            }
+            if (!(id in results)) results[id] = ''
+          } catch {
+            results[id] = ''
+          }
+        }),
+      )
+      if (canceled) return
+      setPreviewByConversationId((prev) => ({ ...prev, ...results }))
+    })()
+    return () => {
+      canceled = true
+    }
+  }, [loading, showBots, showGroups, filteredBots, filteredGroups, latestConversationByBot, previewByConversationId])
 
   useEffect(() => {
     if (selectedType !== 'group' || !selectedGroupId) return
@@ -638,6 +698,7 @@ export default function DashboardPage() {
                   </div>
                   {filteredBots.map((b) => {
                     const latest = latestConversationByBot.get(b.id)
+                    const preview = latest?.id ? previewByConversationId[latest.id] : ''
                     return (
                       <button
                         key={b.id}
@@ -651,13 +712,14 @@ export default function DashboardPage() {
                           <div className="waAvatar">{b.name.slice(0, 2).toUpperCase()}</div>
                           <div>
                             <div className="waAssistantName">{b.name}</div>
-                            <div className="waAssistantMeta">{b.stats?.conversations ?? 0} conversations</div>
                           </div>
-                          {b.id === selectedBotId ? <span className="waAssistantBadge">Active</span> : null}
                         </div>
                         <div className="waConversationRow">
-                          <strong>{latest ? 'Latest conversation' : 'No conversations yet'}</strong>
-                          {latest ? `Updated ${fmtIso(latest.updated_at)}` : 'Start a new conversation'}
+                          {preview
+                            ? preview
+                            : latest
+                              ? 'No messages yet'
+                              : 'No conversations yet'}
                         </div>
                       </button>
                     )
@@ -673,28 +735,27 @@ export default function DashboardPage() {
                       <PlusIcon />
                     </button>
                   </div>
-                  {filteredGroups.map((g) => (
-                    <button
-                      key={g.id}
-                      className={`waAssistantCard ${selectedType === 'group' && selectedGroupId === g.id ? 'active' : ''}`}
-                      onClick={() => {
-                        setSelectedType('group')
-                        setSelectedGroupId(g.id)
-                      }}
-                    >
-                      <div className="waAssistantHeader">
-                        <div className="waAvatar">{g.title.slice(0, 2).toUpperCase()}</div>
-                        <div>
-                          <div className="waAssistantName">{g.title || 'Group chat'}</div>
-                          <div className="waAssistantMeta">@{g.group_bots.map((b) => b.slug).join(' @')}</div>
+                  {filteredGroups.map((g) => {
+                    const preview = previewByConversationId[g.id] || ''
+                    return (
+                      <button
+                        key={g.id}
+                        className={`waAssistantCard ${selectedType === 'group' && selectedGroupId === g.id ? 'active' : ''}`}
+                        onClick={() => {
+                          setSelectedType('group')
+                          setSelectedGroupId(g.id)
+                        }}
+                      >
+                        <div className="waAssistantHeader">
+                          <div className="waAvatar">{g.title.slice(0, 2).toUpperCase()}</div>
+                          <div>
+                            <div className="waAssistantName">{g.title || 'Group chat'}</div>
+                          </div>
                         </div>
-                      </div>
-                      <div className="waConversationRow">
-                        <strong>Updated {fmtIso(g.updated_at)}</strong>
-                        {g.group_bots.length} assistants in the group
-                      </div>
-                    </button>
-                  ))}
+                        <div className="waConversationRow">{preview || 'No messages yet'}</div>
+                      </button>
+                    )
+                  })}
                 </>
               ) : null}
             </>
@@ -961,6 +1022,7 @@ export default function DashboardPage() {
           ) : (
             selectedBotId ? (
               <MicTest
+                key={selectedBotId}
                 botId={selectedBotId}
                 initialConversationId={selectedConversationId || undefined}
                 layout="whatsapp"

@@ -1475,7 +1475,7 @@ label {
 
 .bubble {
   max-width: 88%;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--panel2);
@@ -1519,7 +1519,7 @@ label {
   word-break: break-word;
 }
 .bubbleTime {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 11px;
   color: rgba(148, 163, 184, 0.8);
   display: flex;
