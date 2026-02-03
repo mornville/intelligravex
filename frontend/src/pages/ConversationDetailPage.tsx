@@ -25,6 +25,18 @@ function fmtBytes(n: number): string {
   return i === 0 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`
 }
 
+function normalizeCitations(citations?: ConversationMessage['citations']) {
+  if (!Array.isArray(citations)) return []
+  const seen = new Set<string>()
+  return citations.filter((c) => {
+    if (!c || typeof c.url !== 'string' || !c.url.trim()) return false
+    const key = `${c.url}|${c.title || ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 export default function ConversationDetailPage() {
   const { conversationId } = useParams()
   const nav = useNavigate()
@@ -365,6 +377,7 @@ function MessageRow({ m }: { m: ConversationMessage }) {
     m.metrics.cost !== null
 
   const label = m.role === 'tool' ? (m.tool_kind ? `tool ${m.tool_kind}` : 'tool') : m.role
+  const citations = m.role === 'assistant' ? normalizeCitations(m.citations) : []
 
   return (
     <div className={cls}>
@@ -372,6 +385,20 @@ function MessageRow({ m }: { m: ConversationMessage }) {
         <span className="pill accent">{label}</span> <span className="muted">{fmtIso(m.created_at)}</span>
       </div>
       <div className="bubbleText">{m.role === 'tool' ? (m.tool_name ? `${m.tool_name}` : 'tool') : m.content}</div>
+      {m.role === 'assistant' && citations.length ? (
+        <div className="citationBlock">
+          <div className="citationTitle">Sources</div>
+          <ol className="citationList">
+            {citations.map((c, idx) => (
+              <li key={`${c.url}-${idx}`}>
+                <a className="citationLink" href={c.url} target="_blank" rel="noreferrer">
+                  {c.title || c.url}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
       {showMetrics ? (
         <div className="bubbleMeta mono">
           tok in {m.metrics.in ?? '—'} • out {m.metrics.out ?? '—'} • cost {m.metrics.cost ?? '—'} • ASR {fmtMs(m.metrics.asr)} •

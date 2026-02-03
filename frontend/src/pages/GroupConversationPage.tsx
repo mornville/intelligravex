@@ -683,6 +683,7 @@ function GroupMessageRow({ m }: { m: ConversationMessage }) {
   const label = `~${sender}`
   const body = isTool ? (m.tool_name ? `${m.tool_name}` : m.content) : m.content
   const bubbleStyle = isAssistant ? assistantBubbleStyle(m.sender_bot_id || sender) : undefined
+  const citations = isAssistant ? normalizeCitations(m.citations) : []
 
   return (
     <div className={rowCls}>
@@ -694,6 +695,20 @@ function GroupMessageRow({ m }: { m: ConversationMessage }) {
           <span>{label}</span> <span className="muted">• {fmtIso(m.created_at)}</span>
         </div>
         <div className="bubbleText">{body}</div>
+        {isAssistant && citations.length ? (
+          <div className="citationBlock">
+            <div className="citationTitle">Sources</div>
+            <ol className="citationList">
+              {citations.map((c, idx) => (
+                <li key={`${c.url}-${idx}`}>
+                  <a className="citationLink" href={c.url} target="_blank" rel="noreferrer">
+                    {c.title || c.url}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
         {isTool ? (
           <details className="details">
             <summary>details</summary>
@@ -703,6 +718,18 @@ function GroupMessageRow({ m }: { m: ConversationMessage }) {
       </div>
     </div>
   )
+}
+
+function normalizeCitations(citations?: ConversationMessage['citations']) {
+  if (!Array.isArray(citations)) return []
+  const seen = new Set<string>()
+  return citations.filter((c) => {
+    if (!c || typeof c.url !== 'string' || !c.url.trim()) return false
+    const key = `${c.url}|${c.title || ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function assistantBubbleStyle(key: string): React.CSSProperties {

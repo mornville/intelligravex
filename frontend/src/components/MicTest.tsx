@@ -13,7 +13,7 @@ import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
-import type { DataAgentStatus, ConversationFiles, ConversationMessage } from '../types'
+import type { DataAgentStatus, ConversationFiles, ConversationMessage, Citation } from '../types'
 import LoadingSpinner from './LoadingSpinner'
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
@@ -34,6 +34,7 @@ type ChatItem = {
   details?: any
   timings?: Timings
   local?: boolean
+  citations?: Citation[]
 }
 
 const PAGE_SIZE = 10
@@ -52,6 +53,20 @@ function makeId(): string {
     return crypto.randomUUID()
   }
   return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function normalizeCitations(citations?: Citation[]): Citation[] {
+  if (!Array.isArray(citations)) return []
+  const seen = new Set<string>()
+  const out: Citation[] = []
+  for (const c of citations) {
+    if (!c || typeof c.url !== 'string' || !c.url.trim()) continue
+    const key = `${c.url}|${c.title || ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(c)
+  }
+  return out
 }
 
 function b64ToBytes(b64: string): Uint8Array {
@@ -177,6 +192,7 @@ export default function MicTest({
       text,
       created_at: m.created_at,
       details: m.role === 'tool' ? m.tool : undefined,
+      citations: Array.isArray(m.citations) ? m.citations : undefined,
       timings: m.metrics
         ? {
             asr: m.metrics.asr ?? undefined,
@@ -568,6 +584,7 @@ export default function MicTest({
         if (!isActiveConversationForReq(reqId)) return
         const t = reqId ? timingsByReq.current[reqId] : undefined
         const doneText = String(msg.text || '')
+        const msgCitations = Array.isArray(msg.citations) ? (msg.citations as Citation[]) : undefined
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
           const hasDraft = draftId ? prev.some((it) => it.id === draftId) : false
@@ -576,14 +593,22 @@ export default function MicTest({
             draftAssistantIdRef.current = newId
             return [
               ...prev,
-              { id: newId, role: 'assistant', text: doneText, timings: t, created_at: new Date().toISOString(), local: true },
+              {
+                id: newId,
+                role: 'assistant',
+                text: doneText,
+                timings: t,
+                created_at: new Date().toISOString(),
+                local: true,
+                citations: msgCitations,
+              },
             ]
           }
           if (draftId && hasDraft) {
             return prev.map((it) => {
               if (it.id !== draftId) return it
               const fixedText = doneText.trim() && it.text.trim().length < doneText.trim().length ? doneText : it.text
-              return { ...it, text: fixedText, timings: t ?? it.timings }
+              return { ...it, text: fixedText, timings: t ?? it.timings, citations: msgCitations ?? it.citations }
             })
           }
           return prev
@@ -925,6 +950,7 @@ export default function MicTest({
     <>
       {items.map((it) => {
         const role = it.role
+        const citations = role === 'assistant' ? normalizeCitations(it.citations) : []
         return (
           <div key={it.id} className={`msgRow ${role}`}>
             <div className={`avatar ${role}`} aria-hidden="true">
@@ -932,6 +958,20 @@ export default function MicTest({
             </div>
             <div className={role === 'user' ? 'bubble user' : role === 'assistant' ? 'bubble assistant' : 'bubble tool'}>
               <div className="bubbleText">{it.text || '…'}</div>
+              {role === 'assistant' && citations.length ? (
+                <div className="citationBlock">
+                  <div className="citationTitle">Sources</div>
+                  <ol className="citationList">
+                    {citations.map((c, idx) => (
+                      <li key={`${c.url}-${idx}`}>
+                        <a className="citationLink" href={c.url} target="_blank" rel="noreferrer">
+                          {c.title || c.url}
+                        </a>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
               {role === 'assistant' && it.timings ? (
                 <details className="details">
                   <summary>metrics</summary>

@@ -41,7 +41,7 @@ from voicebot.llm.codex_http_agent import run_codex_http_agent_one_shot, run_cod
 from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
-from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall
+from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall, CitationEvent
 from voicebot.models import Bot, Conversation, ConversationMessage, HostAction
 from voicebot.store import (
     create_bot,
@@ -85,7 +85,7 @@ from voicebot.utils.python_postprocess import run_python_postprocessor
 # Backwards-compatible alias used in legacy tool handlers.
 run_python_postprocess = run_python_postprocessor
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
-from voicebot.tools.web_search import web_search as run_web_search, web_search_tool_def
+from voicebot.tools.web_search import web_search_tool_def
 from voicebot.tools.data_agent import give_command_to_data_agent_tool_def
 from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
@@ -114,7 +114,7 @@ helpful, and practical. Prefer short paragraphs or bullet points.
 What you know about GravexStudio:
 - A desktop studio for building assistants with voice, tools, and automation.
 - Uses OpenAI models for LLM, ASR, and TTS.
-- Optional web search is available (ScrapingBee key) and can be disabled.
+- Optional web search is available and can be disabled.
 - A Data Agent runs long tasks in a Docker container per conversation (Docker required).
 - The Data Agent can read/write files, run scripts, and keep a workspace per conversation.
 - Git/SSH tooling is available for data-agent workflows.
@@ -124,8 +124,8 @@ What you know about GravexStudio:
 When asked about handling large tool outputs, suggest: use response schemas, map only needed fields, and
 post-process results with scripts in the Data Agent workspace.
 
-If asked for setup steps, mention: OpenAI API key is required; ScrapingBee key is optional for web search;
-Docker is required only for the Data Agent; other features work without it.
+If asked for setup steps, mention: OpenAI API key is required; Docker is required only for the Data Agent;
+other features work without it.
 
 Never claim features that are not listed here. Do not ask the user to run commands. Do not use tools.
 """.strip()
@@ -1726,6 +1726,7 @@ def create_app() -> FastAPI:
         first_token_ts: Optional[float] = None
         tool_calls: list[ToolCall] = []
         full_text_parts: list[str] = []
+        citations: list[dict[str, Any]] = []
         dispatch_targets: list[UUID] = []
 
         async for ev in _aiter_from_blocking_iterator(
@@ -1733,6 +1734,9 @@ def create_app() -> FastAPI:
         ):
             if isinstance(ev, ToolCall):
                 tool_calls.append(ev)
+                continue
+            if isinstance(ev, CitationEvent):
+                citations.extend(ev.citations)
                 continue
             d = str(ev)
             if d:
@@ -1808,49 +1812,13 @@ def create_app() -> FastAPI:
                         new_meta = merge_conversation_metadata(session, conversation_id=conversation_id, patch=patch)
                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                     elif tool_name == "web_search":
-                        scrapingbee_key = _get_scrapingbee_api_key(session)
-                        search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
-                        vector_queries = str(
-                            patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
-                        ).strip()
-                        why = str(patch.get("why") or patch.get("reason") or "").strip()
-                        top_k_arg = patch.get("top_k")
-                        max_results_arg = patch.get("max_results")
-                        try:
-                            top_k_val = int(top_k_arg) if top_k_arg is not None else None
-                        except Exception:
-                            top_k_val = None
-                        try:
-                            max_results_val = int(max_results_arg) if max_results_arg is not None else None
-                        except Exception:
-                            max_results_val = None
-
-                        if not scrapingbee_key:
-                            tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
-                            tool_failed = True
-                            needs_followup_llm = True
-                            final = ""
-                        else:
-                            try:
-                                ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                summary_text = await asyncio.to_thread(
-                                    run_web_search,
-                                    search_term=search_term,
-                                    vector_search_queries=vector_queries,
-                                    why=why,
-                                    openai_api_key=api_key or "",
-                                    scrapingbee_api_key=scrapingbee_key,
-                                    model=ws_model,
-                                    top_k=top_k_val,
-                                    max_results=max_results_val,
-                                )
-                                tool_result = str(summary_text or "").strip()
-                            except Exception as exc:
-                                tool_result = f"WEB_SEARCH_ERROR: {exc}"
-                                tool_failed = True
-                        if tool_failed or not next_reply:
-                            needs_followup_llm = True
-                            final = ""
+                        tool_result = {
+                            "ok": False,
+                            "error": {"message": "web_search runs inside the model; no server tool is available."},
+                        }
+                        tool_failed = True
+                        needs_followup_llm = True
+                        final = ""
                     elif tool_name == "summarize_screenshot":
                         ok, summary_text, rel_path = _summarize_screenshot(
                             session,
@@ -2301,6 +2269,7 @@ def create_app() -> FastAPI:
                             llm_ttfb_ms=llm_ttfb_ms,
                             llm_total_ms=llm_total_ms,
                             total_ms=llm_total_ms,
+                            citations_json=json.dumps(citations, ensure_ascii=False),
                         )
             else:
                 assistant_msg = add_message_with_metrics(
@@ -2316,6 +2285,7 @@ def create_app() -> FastAPI:
                     llm_ttfb_ms=llm_ttfb_ms,
                     llm_total_ms=llm_total_ms,
                     total_ms=llm_total_ms,
+                    citations_json=json.dumps(citations, ensure_ascii=False),
                 )
                 _mirror_group_message(session, conv=conv, msg=assistant_msg)
             update_conversation_metrics(
@@ -2423,21 +2393,6 @@ def create_app() -> FastAPI:
     def _get_openai_api_key_for_bot(session: Session, *, bot: Bot) -> str:
         _ = bot
         return _get_openai_api_key(session)
-
-    def _get_scrapingbee_api_key(session: Session) -> str:
-        key = (settings.scrapingbee_api_key or os.environ.get("SCRAPINGBEE_API_KEY") or "").strip()
-        if key:
-            return key
-        try:
-            crypto = require_crypto()
-        except Exception:
-            crypto = None
-        if crypto is None:
-            return ""
-        try:
-            return (decrypt_provider_key(session, crypto=crypto, provider="scrapingbee") or "").strip()
-        except Exception:
-            return ""
 
     def _normalize_git_provider(provider: str) -> str:
         p = (provider or "").strip().lower()
@@ -2864,14 +2819,17 @@ def create_app() -> FastAPI:
         # UI-friendly list of built-in tools (do not include full JSON Schema).
         out: list[dict[str, Any]] = []
         for d in _system_tools_defs(bot=bot):
-            name = str(d.get("name") or "")
+            name = str(d.get("name") or d.get("type") or "")
             if not name:
                 continue
+            desc = str(d.get("description") or "")
+            if not desc and str(d.get("type") or "") == "web_search":
+                desc = "Search the web for recent information with citations."
             can_disable = name not in ("set_metadata", "set_variable")
             out.append(
                 {
                     "name": name,
-                    "description": str(d.get("description") or ""),
+                    "description": desc,
                     "enabled": name not in disabled,
                     "can_disable": can_disable,
                 }
@@ -3041,9 +2999,12 @@ def create_app() -> FastAPI:
     def _build_tools_for_bot(session: Session, bot_id: UUID) -> list[dict[str, Any]]:
         bot = get_bot(session, bot_id)
         disabled = _disabled_tool_names(bot)
-        tools: list[dict[str, Any]] = [
-            d for d in _system_tools_defs(bot=bot) if str(d.get("name") or "") not in disabled
-        ]
+        tools: list[dict[str, Any]] = []
+        for d in _system_tools_defs(bot=bot):
+            tool_id = str(d.get("name") or d.get("type") or "")
+            if tool_id and tool_id in disabled:
+                continue
+            tools.append(d)
         for t in list_integration_tools(session, bot_id=bot_id):
             if not bool(getattr(t, "enabled", True)):
                 continue
@@ -3980,7 +3941,9 @@ def create_app() -> FastAPI:
                         tool_calls: list[ToolCall] = []
                         error_q: "queue.Queue[Optional[str]]" = queue.Queue()
                         full_text_parts: list[str] = []
+                        citations_collected: list[dict[str, Any]] = []
                         metrics_lock = threading.Lock()
+                        citations_lock = threading.Lock()
                         first_token_ts: Optional[float] = None
                         tts_start_ts: Optional[float] = None
                         first_audio_ts: Optional[float] = None
@@ -3990,6 +3953,10 @@ def create_app() -> FastAPI:
                                 for ev in llm.stream_text_or_tool(messages=history, tools=tools_defs):
                                     if isinstance(ev, ToolCall):
                                         tool_calls.append(ev)
+                                        continue
+                                    if isinstance(ev, CitationEvent):
+                                        with citations_lock:
+                                            citations_collected.extend(ev.citations)
                                         continue
                                     d = ev
                                     full_text_parts.append(d)
@@ -4092,6 +4059,9 @@ def create_app() -> FastAPI:
 
                         llm_end_ts = time.time()
                         final_text = "".join(full_text_parts).strip()
+                        with citations_lock:
+                            citations = list(citations_collected)
+                        citations_json = json.dumps(citations, ensure_ascii=False) if citations else "[]"
 
                         timings: dict[str, int] = {"total": int(round((llm_end_ts - llm_start_ts) * 1000.0))}
                         if first_token_ts is not None:
@@ -4211,80 +4181,13 @@ def create_app() -> FastAPI:
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
-                                        scrapingbee_key = _get_scrapingbee_api_key(session)
-                                        search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
-                                        vector_queries = str(
-                                            patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
-                                        ).strip()
-                                        why = str(patch.get("why") or patch.get("reason") or "").strip()
-                                        top_k_arg = patch.get("top_k")
-                                        max_results_arg = patch.get("max_results")
-                                        try:
-                                            top_k_val = int(top_k_arg) if top_k_arg is not None else None
-                                        except Exception:
-                                            top_k_val = None
-                                        try:
-                                            max_results_val = int(max_results_arg) if max_results_arg is not None else None
-                                        except Exception:
-                                            max_results_val = None
-                                        progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                        def _progress(s: str) -> None:
-                                            try:
-                                                progress_q.put_nowait(str(s))
-                                            except Exception:
-                                                return
-                                        if not scrapingbee_key:
-                                            tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
-                                            tool_failed = True
-                                            needs_followup_llm = True
-                                            rendered_reply = ""
-                                        else:
-                                            try:
-                                                ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                                task = asyncio.create_task(
-                                                    asyncio.to_thread(
-                                                        run_web_search,
-                                                        search_term=search_term,
-                                                        vector_search_queries=vector_queries,
-                                                        why=why,
-                                                        openai_api_key=api_key or "",
-                                                        scrapingbee_api_key=scrapingbee_key,
-                                                        model=ws_model,
-                                                        progress_fn=_progress,
-                                                        top_k=top_k_val,
-                                                        max_results=max_results_val,
-                                                    )
-                                                )
-                                                if wait_reply:
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                last_wait = time.time()
-                                                while not task.done():
-                                                    # Drain progress updates (best-effort).
-                                                    try:
-                                                        while True:
-                                                            p = progress_q.get_nowait()
-                                                            if p:
-                                                                await _send_interim(p, kind="progress")
-                                                    except queue.Empty:
-                                                        pass
-                                                    if wait_reply and (time.time() - last_wait) >= 7.0:
-                                                        await _send_interim(wait_reply, kind="wait")
-                                                        last_wait = time.time()
-                                                    await asyncio.sleep(0.2)
-                                                summary_text = await task
-                                                tool_result = str(summary_text or "").strip()
-                                            except Exception as exc:
-                                                tool_result = f"WEB_SEARCH_ERROR: {exc}"
-                                                tool_failed = True
-                                        # If the tool finishes while the bot is still speaking, wait before continuing.
-                                        if speak:
-                                            now = time.time()
-                                            if now < tts_busy_until:
-                                                await asyncio.sleep(tts_busy_until - now)
-                                        if tool_failed or not next_reply:
-                                            needs_followup_llm = True
-                                            rendered_reply = ""
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": "web_search runs inside the model; no server tool is available."},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
                                     elif tool_name == "summarize_screenshot":
                                         ok, summary_text, rel_path = _summarize_screenshot(
                                             session,
@@ -4999,7 +4902,10 @@ def create_app() -> FastAPI:
                                         },
                                     )
 
-                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": rendered_reply})
+                            await _ws_send_json(
+                                ws,
+                                {"type": "done", "req_id": req_id, "text": rendered_reply, "citations": citations},
+                            )
                         else:
                             # Store assistant response.
                             try:
@@ -5019,6 +4925,7 @@ def create_app() -> FastAPI:
                                         llm_total_ms=timings.get("llm_total"),
                                         tts_first_audio_ms=timings.get("tts_first_audio"),
                                         total_ms=timings.get("total"),
+                                        citations_json=citations_json,
                                     )
                                     update_conversation_metrics(
                                         session,
@@ -5035,7 +4942,10 @@ def create_app() -> FastAPI:
                             except Exception:
                                 pass
 
-                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": final_text})
+                            await _ws_send_json(
+                                ws,
+                                {"type": "done", "req_id": req_id, "text": final_text, "citations": citations},
+                            )
 
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                         active_req_id = None
@@ -5165,6 +5075,8 @@ def create_app() -> FastAPI:
                         error_q: "queue.Queue[Optional[str]]" = queue.Queue()
                         full_text_parts: list[str] = []
                         metrics_lock = threading.Lock()
+                        citations_collected: list[dict[str, Any]] = []
+                        citations_lock = threading.Lock()
                         first_token_ts: Optional[float] = None
                         tts_start_ts: Optional[float] = None
                         first_audio_ts: Optional[float] = None
@@ -5174,6 +5086,10 @@ def create_app() -> FastAPI:
                                 for ev in llm.stream_text_or_tool(messages=history, tools=tools_defs):
                                     if isinstance(ev, ToolCall):
                                         tool_calls.append(ev)
+                                        continue
+                                    if isinstance(ev, CitationEvent):
+                                        with citations_lock:
+                                            citations_collected.extend(ev.citations)
                                         continue
                                     d = ev
                                     full_text_parts.append(d)
@@ -5278,6 +5194,9 @@ def create_app() -> FastAPI:
                         llm_end_ts = time.time()
 
                         final_text = "".join(full_text_parts).strip()
+                        with citations_lock:
+                            citations = list(citations_collected)
+                        citations_json = json.dumps(citations, ensure_ascii=False) if citations else "[]"
 
                         timings: dict[str, int] = {
                             "asr": int(round((asr_end_ts - asr_start_ts) * 1000.0)),
@@ -5312,6 +5231,7 @@ def create_app() -> FastAPI:
                                         llm_total_ms=timings.get("llm_total"),
                                         tts_first_audio_ms=timings.get("tts_first_audio"),
                                         total_ms=timings.get("total"),
+                                        citations_json=citations_json,
                                     )
                                     update_conversation_metrics(
                                         session,
@@ -5437,78 +5357,13 @@ def create_app() -> FastAPI:
                                         new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                         tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                     elif tool_name == "web_search":
-                                        scrapingbee_key = _get_scrapingbee_api_key(session)
-                                        search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
-                                        vector_queries = str(
-                                            patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
-                                        ).strip()
-                                        why = str(patch.get("why") or patch.get("reason") or "").strip()
-                                        top_k_arg = patch.get("top_k")
-                                        max_results_arg = patch.get("max_results")
-                                        try:
-                                            top_k_val = int(top_k_arg) if top_k_arg is not None else None
-                                        except Exception:
-                                            top_k_val = None
-                                        try:
-                                            max_results_val = int(max_results_arg) if max_results_arg is not None else None
-                                        except Exception:
-                                            max_results_val = None
-                                        progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                        def _progress(s: str) -> None:
-                                            try:
-                                                progress_q.put_nowait(str(s))
-                                            except Exception:
-                                                return
-                                        if not scrapingbee_key:
-                                            tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
-                                            tool_failed = True
-                                            needs_followup_llm = True
-                                            rendered_reply = ""
-                                        else:
-                                            try:
-                                                ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                                task = asyncio.create_task(
-                                                    asyncio.to_thread(
-                                                        run_web_search,
-                                                        search_term=search_term,
-                                                        vector_search_queries=vector_queries,
-                                                        why=why,
-                                                        openai_api_key=api_key or "",
-                                                        scrapingbee_api_key=scrapingbee_key,
-                                                        model=ws_model,
-                                                        progress_fn=_progress,
-                                                        top_k=top_k_val,
-                                                        max_results=max_results_val,
-                                                    )
-                                                )
-                                                if wait_reply:
-                                                    await _send_interim(wait_reply, kind="wait")
-                                                last_wait = time.time()
-                                                while not task.done():
-                                                    try:
-                                                        while True:
-                                                            p = progress_q.get_nowait()
-                                                            if p:
-                                                                await _send_interim(p, kind="progress")
-                                                    except queue.Empty:
-                                                        pass
-                                                    if wait_reply and (time.time() - last_wait) >= 7.0:
-                                                        await _send_interim(wait_reply, kind="wait")
-                                                        last_wait = time.time()
-                                                    await asyncio.sleep(0.2)
-                                                summary_text = await task
-                                                tool_result = str(summary_text or "").strip()
-                                            except Exception as exc:
-                                                tool_result = f"WEB_SEARCH_ERROR: {exc}"
-                                                tool_failed = True
-                                        if speak:
-                                            now = time.time()
-                                            if now < tts_busy_until:
-                                                await asyncio.sleep(tts_busy_until - now)
-                                        if tool_failed or not next_reply:
-                                            needs_followup_llm = True
-                                            rendered_reply = ""
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": "web_search runs inside the model; no server tool is available."},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
                                     elif tool_name == "summarize_screenshot":
                                         ok, summary_text, rel_path = _summarize_screenshot(
                                             session,
@@ -6171,6 +6026,7 @@ def create_app() -> FastAPI:
                                                 llm_ttfb_ms=timings.get("llm_ttfb"),
                                                 llm_total_ms=timings.get("llm_total"),
                                                 total_ms=timings.get("total"),
+                                                citations_json=citations_json,
                                             )
                                             update_conversation_metrics(
                                                 session,
@@ -6202,9 +6058,15 @@ def create_app() -> FastAPI:
                                         },
                                     )
 
-                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": rendered_reply})
+                            await _ws_send_json(
+                                ws,
+                                {"type": "done", "req_id": req_id, "text": rendered_reply, "citations": citations},
+                            )
                         else:
-                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": final_text})
+                            await _ws_send_json(
+                                ws,
+                                {"type": "done", "req_id": req_id, "text": final_text, "citations": citations},
+                            )
 
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
 
@@ -6316,6 +6178,13 @@ def create_app() -> FastAPI:
             except Exception:
                 return None
 
+        def _safe_json_list(s: str) -> list:
+            try:
+                obj = json.loads(s)
+                return obj if isinstance(obj, list) else []
+            except Exception:
+                return []
+
         messages: list[dict] = []
         for m in msgs_raw:
             if m.role == "tool" and not include_tools:
@@ -6342,6 +6211,7 @@ def create_app() -> FastAPI:
                     "tool": tool_obj,
                     "tool_name": tool_name,
                     "tool_kind": tool_kind,
+                    "citations": _safe_json_list(getattr(m, "citations_json", "") or "[]"),
                     "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
                     "sender_name": m.sender_name,
                 }
@@ -7028,8 +6898,13 @@ def create_app() -> FastAPI:
 
         return _host_action_payload(action)
 
-    async def _public_send_done(ws: WebSocket, *, req_id: str, text: str, metrics: dict) -> None:
-        await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": text, "metrics": metrics})
+    async def _public_send_done(
+        ws: WebSocket, *, req_id: str, text: str, metrics: dict, citations: Optional[list[dict]] = None
+    ) -> None:
+        payload = {"type": "done", "req_id": req_id, "text": text, "metrics": metrics}
+        if citations:
+            payload["citations"] = citations
+        await _ws_send_json(ws, payload)
 
     async def _public_send_interim(ws: WebSocket, *, req_id: str, kind: str, text: str) -> None:
         t = (text or "").strip()
@@ -7287,12 +7162,16 @@ def create_app() -> FastAPI:
                         first_token_ts: Optional[float] = None
                         full_text_parts: list[str] = []
                         tool_calls: list[ToolCall] = []
+                        citations: list[dict[str, Any]] = []
 
                         async for ev in _aiter_from_blocking_iterator(
                             lambda: llm.stream_text_or_tool(messages=history, tools=tools_defs)
                         ):
                             if isinstance(ev, ToolCall):
                                 tool_calls.append(ev)
+                                continue
+                            if isinstance(ev, CitationEvent):
+                                citations.extend(ev.citations)
                                 continue
                             d = str(ev)
                             if d:
@@ -7303,6 +7182,7 @@ def create_app() -> FastAPI:
 
                         llm_end_ts = time.time()
                         rendered_reply = "".join(full_text_parts).strip()
+                        citations_json = json.dumps(citations, ensure_ascii=False) if citations else "[]"
 
                         llm_ttfb_ms: Optional[int] = None
                         if first_token_ts is not None:
@@ -7360,80 +7240,13 @@ def create_app() -> FastAPI:
                                     new_meta = merge_conversation_metadata(session, conversation_id=conv_id, patch=patch)
                                     tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
                                 elif tool_name == "web_search":
-                                    scrapingbee_key = _get_scrapingbee_api_key(session)
-                                    search_term = str(patch.get("search_term") or patch.get("query") or "").strip()
-                                    vector_queries = str(
-                                        patch.get("vector_search_queries") or patch.get("vector_searcg_queries") or ""
-                                    ).strip()
-                                    why = str(patch.get("why") or patch.get("reason") or "").strip()
-                                    top_k_arg = patch.get("top_k")
-                                    max_results_arg = patch.get("max_results")
-                                    try:
-                                        top_k_val = int(top_k_arg) if top_k_arg is not None else None
-                                    except Exception:
-                                        top_k_val = None
-                                    try:
-                                        max_results_val = int(max_results_arg) if max_results_arg is not None else None
-                                    except Exception:
-                                        max_results_val = None
-
-                                    progress_q: "queue.Queue[str]" = queue.Queue()
-
-                                    def _progress(s: str) -> None:
-                                        try:
-                                            progress_q.put_nowait(str(s))
-                                        except Exception:
-                                            return
-
-                                    if not scrapingbee_key:
-                                        tool_result = "WEB_SEARCH_DISABLED: Missing ScrapingBee API key."
-                                        tool_failed = True
-                                        needs_followup_llm = True
-                                        final = ""
-                                    else:
-                                        try:
-                                            ws_model = (getattr(bot, "web_search_model", "") or bot.openai_model).strip()
-                                            task = asyncio.create_task(
-                                                asyncio.to_thread(
-                                                    run_web_search,
-                                                    search_term=search_term,
-                                                    vector_search_queries=vector_queries,
-                                                    why=why,
-                                                    openai_api_key=api_key or "",
-                                                    scrapingbee_api_key=scrapingbee_key,
-                                                    model=ws_model,
-                                                    progress_fn=_progress,
-                                                    top_k=top_k_val,
-                                                    max_results=max_results_val,
-                                                )
-                                            )
-                                            if wait_reply:
-                                                await _public_send_interim(ws, req_id=req_id, kind="wait", text=wait_reply)
-                                            last_wait = time.time()
-                                            while not task.done():
-                                                try:
-                                                    while True:
-                                                        p = progress_q.get_nowait()
-                                                        if p:
-                                                            await _public_send_interim(
-                                                                ws, req_id=req_id, kind="progress", text=p
-                                                            )
-                                                except queue.Empty:
-                                                    pass
-                                                if wait_reply and (time.time() - last_wait) >= 7.0:
-                                                    await _public_send_interim(
-                                                        ws, req_id=req_id, kind="wait", text=wait_reply
-                                                    )
-                                                    last_wait = time.time()
-                                                await asyncio.sleep(0.2)
-                                            summary_text = await task
-                                            tool_result = str(summary_text or "").strip()
-                                        except Exception as exc:
-                                            tool_result = f"WEB_SEARCH_ERROR: {exc}"
-                                            tool_failed = True
-                                    if tool_failed or not next_reply:
-                                        needs_followup_llm = True
-                                        final = ""
+                                    tool_result = {
+                                        "ok": False,
+                                        "error": {"message": "web_search runs inside the model; no server tool is available."},
+                                    }
+                                    tool_failed = True
+                                    needs_followup_llm = True
+                                    final = ""
                                 elif tool_name == "summarize_screenshot":
                                     ok, summary_text, rel_path = _summarize_screenshot(
                                         session,
@@ -8037,6 +7850,7 @@ def create_app() -> FastAPI:
                             llm_ttfb_ms=llm_ttfb_ms,
                             llm_total_ms=llm_total_ms,
                             total_ms=llm_total_ms,
+                            citations_json=citations_json,
                         )
                         update_conversation_metrics(
                             session,
@@ -8059,7 +7873,9 @@ def create_app() -> FastAPI:
                             "llm_ttfb_ms": llm_ttfb_ms,
                             "llm_total_ms": llm_total_ms,
                         }
-                        await _public_send_done(ws, req_id=req_id, text=rendered_reply, metrics=metrics)
+                        await _public_send_done(
+                            ws, req_id=req_id, text=rendered_reply, metrics=metrics, citations=citations
+                        )
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                     continue
 
@@ -8130,10 +7946,8 @@ def create_app() -> FastAPI:
     @app.get("/api/status")
     def api_status(session: Session = Depends(get_session)) -> dict:
         openai_key = bool(_get_openai_api_key(session))
-        scrapingbee_key = bool(_get_scrapingbee_api_key(session))
         return {
             "openai_key_configured": openai_key,
-            "scrapingbee_key_configured": scrapingbee_key,
             "docker_available": docker_available(),
         }
 
@@ -8454,7 +8268,7 @@ def create_app() -> FastAPI:
     @app.post("/api/keys")
     def api_create_key(payload: ApiKeyCreateRequest, session: Session = Depends(get_session)) -> dict:
         provider = (payload.provider or "").strip().lower() or "openai"
-        if provider not in ("openai", "scrapingbee"):
+        if provider not in ("openai",):
             raise HTTPException(status_code=400, detail="Unsupported provider.")
         crypto = require_crypto()
         k = create_key(session, crypto=crypto, provider=provider, name=payload.name, secret=payload.secret)
@@ -8637,6 +8451,13 @@ def create_app() -> FastAPI:
             except Exception:
                 return None
 
+        def _safe_json_list(s: str) -> list:
+            try:
+                obj = json.loads(s)
+                return obj if isinstance(obj, list) else []
+            except Exception:
+                return []
+
         messages: list[dict] = []
         for m in msgs_raw:
             if m.role == "tool":
@@ -8658,6 +8479,7 @@ def create_app() -> FastAPI:
                     "tool": tool_obj,
                     "tool_name": tool_name,
                     "tool_kind": tool_kind,
+                    "citations": _safe_json_list(getattr(m, "citations_json", "") or "[]"),
                     "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
                     "sender_name": m.sender_name,
                     "metrics": {
@@ -8749,6 +8571,12 @@ def create_app() -> FastAPI:
                         tool_kind = "call"
                     elif "result" in tool_obj:
                         tool_kind = "result"
+            try:
+                citations = json.loads(getattr(m, "citations_json", "") or "[]")
+                if not isinstance(citations, list):
+                    citations = []
+            except Exception:
+                citations = []
             messages.append(
                 {
                     "id": str(m.id),
@@ -8758,6 +8586,7 @@ def create_app() -> FastAPI:
                     "tool": tool_obj,
                     "tool_name": tool_name,
                     "tool_kind": tool_kind,
+                    "citations": citations,
                     "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
                     "sender_name": m.sender_name,
                     "metrics": {
@@ -8785,6 +8614,12 @@ def create_app() -> FastAPI:
                 tool_kind = "call"
             elif "result" in tool_obj:
                 tool_kind = "result"
+        try:
+            citations = json.loads(getattr(m, "citations_json", "") or "[]")
+            if not isinstance(citations, list):
+                citations = []
+        except Exception:
+            citations = []
         return {
             "id": str(m.id),
             "role": m.role,
@@ -8793,6 +8628,7 @@ def create_app() -> FastAPI:
             "tool": tool_obj,
             "tool_name": tool_name,
             "tool_kind": tool_kind,
+            "citations": citations,
             "sender_bot_id": str(m.sender_bot_id) if m.sender_bot_id else None,
             "sender_name": m.sender_name,
             "metrics": {

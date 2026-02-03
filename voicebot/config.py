@@ -73,9 +73,6 @@ class Settings(BaseSettings):
     openai_tts_voice: str = "alloy"
     openai_tts_speed: float = 1.0
 
-    # Web scraping (for system tool: web_search)
-    scrapingbee_api_key: Optional[str] = Field(default=None, alias="SCRAPINGBEE_API_KEY")
-
     @field_validator("data_dir", mode="before")
     @classmethod
     def _normalize_data_dir(cls, v):

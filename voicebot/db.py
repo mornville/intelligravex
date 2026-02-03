@@ -173,6 +173,7 @@ def _apply_light_migrations(engine) -> None:
         add_msg_col("total_ms", "INTEGER")
         add_msg_col("sender_bot_id", "TEXT")
         add_msg_col("sender_name", "TEXT")
+        add_msg_col("citations_json", "TEXT NOT NULL DEFAULT '[]'")
 
         # IntegrationTool
         try:

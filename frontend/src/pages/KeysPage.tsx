@@ -7,14 +7,11 @@ import { fmtIso } from '../utils/format'
 
 export default function KeysPage() {
   const [keys, setKeys] = useState<ApiKey[]>([])
-  const [scrapingbeeKeys, setScrapingbeeKeys] = useState<ApiKey[]>([])
   const [clientKeys, setClientKeys] = useState<ClientKey[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ name: '', secret: '' })
-  const [creatingScrapingbee, setCreatingScrapingbee] = useState(false)
-  const [scrapingbeeForm, setScrapingbeeForm] = useState({ name: '', secret: '' })
   const [creatingClient, setCreatingClient] = useState(false)
   const [clientForm, setClientForm] = useState({ name: '', allowed_origins: '' })
   const [newClientSecret, setNewClientSecret] = useState<string | null>(null)
@@ -26,13 +23,11 @@ export default function KeysPage() {
     setLoading(true)
     setErr(null)
     try {
-      const [r, s, c] = await Promise.all([
+      const [r, c] = await Promise.all([
         apiGet<{ items: ApiKey[] }>('/api/keys?provider=openai'),
-        apiGet<{ items: ApiKey[] }>('/api/keys?provider=scrapingbee'),
         apiGet<{ items: ClientKey[] }>('/api/client-keys'),
       ])
       setKeys(r.items)
-      setScrapingbeeKeys(s.items)
       setClientKeys(c.items)
     } catch (e: any) {
       setErr(String(e?.message || e))
@@ -67,25 +62,6 @@ export default function KeysPage() {
       setErr(String(e?.message || e))
     } finally {
       setCreating(false)
-    }
-  }
-
-  async function onCreateScrapingbee() {
-    if (!scrapingbeeForm.name.trim() || !scrapingbeeForm.secret.trim()) return
-    setCreatingScrapingbee(true)
-    setErr(null)
-    try {
-      await apiPost<ApiKey>('/api/keys', {
-        provider: 'scrapingbee',
-        name: scrapingbeeForm.name.trim(),
-        secret: scrapingbeeForm.secret.trim(),
-      })
-      setScrapingbeeForm({ name: '', secret: '' })
-      await reload()
-    } catch (e: any) {
-      setErr(String(e?.message || e))
-    } finally {
-      setCreatingScrapingbee(false)
     }
   }
 
@@ -183,38 +159,6 @@ export default function KeysPage() {
             </button>
           </div>
         </section>
-
-        <section className="card">
-          <div className="cardTitle">Add ScrapingBee key (optional)</div>
-          <div className="formRow">
-            <label>Name</label>
-            <input
-              value={scrapingbeeForm.name}
-              onChange={(e) => setScrapingbeeForm((p) => ({ ...p, name: e.target.value }))}
-              placeholder="e.g. Team"
-            />
-          </div>
-          <div className="formRow">
-            <label>Secret</label>
-            <input
-              value={scrapingbeeForm.secret}
-              onChange={(e) => setScrapingbeeForm((p) => ({ ...p, secret: e.target.value }))}
-              placeholder="scrapingbee_..."
-              type="password"
-              autoComplete="off"
-            />
-            <div className="muted">Enables the `web_search` system tool.</div>
-          </div>
-          <div className="row">
-            <button
-              className="btn primary"
-              onClick={onCreateScrapingbee}
-              disabled={creatingScrapingbee || !scrapingbeeForm.name.trim() || !scrapingbeeForm.secret.trim()}
-            >
-              {creatingScrapingbee ? 'Saving…' : 'Save key'}
-            </button>
-          </div>
-        </section>
       </div>
 
       <div style={{ height: 16 }} />
@@ -243,42 +187,6 @@ export default function KeysPage() {
               </thead>
               <tbody>
                 {keys.map((k) => (
-                  <tr key={k.id}>
-                    <td>{k.name}</td>
-                    <td className="mono">{k.hint}</td>
-                    <td>{fmtIso(k.created_at)}</td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button className="btn iconBtn danger" onClick={() => void onDelete(k)} aria-label="Delete key" title="Delete key">
-                        <TrashIcon aria-hidden="true" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
-
-        <section className="card">
-          <div className="cardTitle">ScrapingBee keys</div>
-          {loading ? (
-            <div className="muted">
-              <LoadingSpinner />
-            </div>
-          ) : scrapingbeeKeys.length === 0 ? (
-            <div className="muted">No keys yet.</div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Hint</th>
-                  <th>Created</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {scrapingbeeKeys.map((k) => (
                   <tr key={k.id}>
                     <td>{k.name}</td>
                     <td className="mono">{k.hint}</td>

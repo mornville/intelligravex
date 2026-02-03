@@ -102,6 +102,7 @@ class ConversationMessage(SQLModel, table=True):
     llm_total_ms: Optional[int] = Field(default=None)
     tts_first_audio_ms: Optional[int] = Field(default=None)
     total_ms: Optional[int] = Field(default=None)
+    citations_json: str = Field(default="[]")
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
 
 

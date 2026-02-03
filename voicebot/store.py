@@ -383,6 +383,7 @@ def add_message(
     content: str,
     sender_bot_id: Optional[UUID] = None,
     sender_name: Optional[str] = None,
+    citations_json: Optional[str] = None,
 ) -> ConversationMessage:
     msg = ConversationMessage(
         conversation_id=conversation_id,
@@ -390,6 +391,7 @@ def add_message(
         content=content,
         sender_bot_id=sender_bot_id,
         sender_name=sender_name,
+        citations_json=citations_json or "[]",
     )
     session.add(msg)
     session.commit()
@@ -416,6 +418,7 @@ def add_message_with_metrics(
     llm_total_ms: Optional[int] = None,
     tts_first_audio_ms: Optional[int] = None,
     total_ms: Optional[int] = None,
+    citations_json: Optional[str] = None,
 ) -> ConversationMessage:
     msg = ConversationMessage(
         conversation_id=conversation_id,
@@ -431,6 +434,7 @@ def add_message_with_metrics(
         llm_total_ms=llm_total_ms,
         tts_first_audio_ms=tts_first_audio_ms,
         total_ms=total_ms,
+        citations_json=citations_json or "[]",
     )
     session.add(msg)
     session.commit()

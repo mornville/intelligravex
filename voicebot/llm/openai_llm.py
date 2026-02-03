@@ -36,10 +36,62 @@ class ToolCall:
     first_event_ts: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class CitationEvent:
+    citations: list[dict[str, Any]]
+
+
 def _get(obj: Any, key: str, default=None):
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _extract_citations_from_annotations(annotations: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(annotations, list):
+        return out
+    for ann in annotations:
+        if not isinstance(ann, dict):
+            continue
+        if ann.get("type") != "url_citation":
+            continue
+        url = ann.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        title = ann.get("title")
+        start_index = ann.get("start_index")
+        end_index = ann.get("end_index")
+        out.append(
+            {
+                "url": url,
+                "title": title if isinstance(title, str) else None,
+                "start_index": start_index if isinstance(start_index, int) else None,
+                "end_index": end_index if isinstance(end_index, int) else None,
+            }
+        )
+    return out
+
+
+def _extract_citations_from_item(item: Any) -> list[dict[str, Any]]:
+    if not item:
+        return []
+    item_type = _get(item, "type")
+    if item_type == "message":
+        content = _get(item, "content")
+        if not isinstance(content, list):
+            return []
+        citations: list[dict[str, Any]] = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "output_text":
+                continue
+            citations.extend(_extract_citations_from_annotations(part.get("annotations")))
+        return citations
+    if item_type == "output_text":
+        return _extract_citations_from_annotations(_get(item, "annotations"))
+    return []
 
 
 def _parse_stream_events(
@@ -47,7 +99,7 @@ def _parse_stream_events(
     *,
     tool_name_hint: Optional[str] = None,
     now_fn=time.time,
-) -> Generator[str | ToolCall, None, None]:
+) -> Generator[str | ToolCall | CitationEvent, None, None]:
     """
     Parses Responses streaming events.
 
@@ -59,12 +111,31 @@ def _parse_stream_events(
     fc_args: List[str] = []
     fc_first_ts: Optional[float] = None
 
+    citations_seen: set[tuple] = set()
+
+    def _dedupe(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique: list[dict[str, Any]] = []
+        for c in citations:
+            key = (c.get("url"), c.get("title"), c.get("start_index"), c.get("end_index"))
+            if key in citations_seen:
+                continue
+            citations_seen.add(key)
+            unique.append(c)
+        return unique
+
     for event in events:
         et = _get(event, "type")
         if et == "response.output_text.delta":
             delta = _get(event, "delta")
             if isinstance(delta, str) and delta:
                 yield delta
+            continue
+
+        if et == "response.output_text.done":
+            annotations = _get(event, "annotations")
+            citations = _dedupe(_extract_citations_from_annotations(annotations))
+            if citations:
+                yield CitationEvent(citations=citations)
             continue
 
         if et == "response.function_call_arguments.delta":
@@ -108,6 +179,9 @@ def _parse_stream_events(
                     if fc_first_ts is None:
                         fc_first_ts = now_fn()
                     fc_args = [arguments]
+            citations = _dedupe(_extract_citations_from_item(item))
+            if citations:
+                yield CitationEvent(citations=citations)
             continue
 
 
@@ -172,7 +246,7 @@ class OpenAILLM:
         *,
         messages: Sequence[Message],
         tools: Optional[list[dict[str, Any]]] = None,
-    ) -> Generator[str | ToolCall, None, None]:
+    ) -> Generator[str | ToolCall | CitationEvent, None, None]:
         """
         Streams assistant text deltas. If the model emits function/tool calls,
         yields ToolCall events (may be multiple in one stream).

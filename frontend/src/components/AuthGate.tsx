@@ -4,15 +4,12 @@ import { BACKEND_URL, apiPost } from '../api/client'
 import { authHeader } from '../auth'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<{ openai_key_configured: boolean; scrapingbee_key_configured: boolean; docker_available: boolean } | null>(
-    null,
-  )
+  const [status, setStatus] = useState<{ openai_key_configured: boolean; docker_available: boolean } | null>(null)
   const [checkingStatus, setCheckingStatus] = useState(false)
   const [statusErr, setStatusErr] = useState<string | null>(null)
   const [setupActive, setSetupActive] = useState(false)
-  const [setupStep, setSetupStep] = useState<'openai' | 'optional' | 'docker'>('openai')
+  const [setupStep, setSetupStep] = useState<'openai' | 'docker'>('openai')
   const [openaiKey, setOpenaiKey] = useState('')
-  const [scrapingbeeKey, setScrapingbeeKey] = useState('')
   const [setupErr, setSetupErr] = useState<string | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
   const [pullingImage, setPullingImage] = useState(false)
@@ -39,7 +36,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           setSetupActive(true)
           setSetupStep('openai')
         } else if (setupActive && setupStep === 'openai') {
-          setSetupStep('optional')
+          setSetupStep('docker')
         }
       } catch (e: any) {
         if (!canceled) {
@@ -100,36 +97,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       if (res.ok) {
         const data = await res.json()
         setStatus(data)
-        setSetupStep('optional')
+        setSetupStep('docker')
       }
     } catch (e: any) {
       setSetupErr(e?.message || 'Failed to save OpenAI key.')
-    } finally {
-      setSetupBusy(false)
-    }
-  }
-
-  async function saveScrapingbeeKey() {
-    if (!scrapingbeeKey.trim()) {
-      setSetupStep('docker')
-      return
-    }
-    setSetupErr(null)
-    setSetupBusy(true)
-    try {
-      await apiPost('/api/keys', { provider: 'scrapingbee', name: 'default', secret: scrapingbeeKey.trim() })
-      setScrapingbeeKey('')
-      const res = await fetch(`${BACKEND_URL}/api/status`, {
-        method: 'GET',
-        headers: { ...authHeader() },
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setStatus(data)
-      }
-      setSetupStep('docker')
-    } catch (e: any) {
-      setSetupErr(e?.message || 'Failed to save ScrapingBee key.')
     } finally {
       setSetupBusy(false)
     }
@@ -174,16 +145,15 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (setupActive) {
-    const stepIndex = setupStep === 'openai' ? 1 : setupStep === 'optional' ? 2 : 3
+    const stepIndex = setupStep === 'openai' ? 1 : 2
     return (
       <div className="authWrap">
         <div className="authCard">
           <div className="authTitle">First‑time setup</div>
-          <div className="authSubtitle">Step {stepIndex} of 3</div>
+          <div className="authSubtitle">Step {stepIndex} of 2</div>
           <div className="setupSteps">
             <div className={`setupStep ${stepIndex >= 1 ? 'active' : ''}`} />
             <div className={`setupStep ${stepIndex >= 2 ? 'active' : ''}`} />
-            <div className={`setupStep ${stepIndex >= 3 ? 'active' : ''}`} />
           </div>
           {setupErr ? <div className="alert">{setupErr}</div> : null}
           {setupStep === 'openai' ? (
@@ -201,31 +171,6 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               <button className="btn primary" onClick={() => void saveOpenAIKey()} disabled={setupBusy || !openaiKey.trim()}>
                 {setupBusy ? 'Saving…' : 'Save and continue'}
               </button>
-            </>
-          ) : null}
-          {setupStep === 'optional' ? (
-            <>
-              <div className="setupHeading">Web search (optional)</div>
-              <div className="muted" style={{ marginBottom: 10 }}>
-                Add a ScrapingBee key to enable web search. You can skip this and add it later.
-              </div>
-              <div className="formRow">
-                <label>ScrapingBee API key</label>
-                <input
-                  type="password"
-                  placeholder="Optional"
-                  value={scrapingbeeKey}
-                  onChange={(e) => setScrapingbeeKey(e.target.value)}
-                />
-              </div>
-              <div className="row gap" style={{ marginTop: 6 }}>
-                <button className="btn" onClick={() => setSetupStep('docker')} disabled={setupBusy}>
-                  Skip for now
-                </button>
-                <button className="btn primary" onClick={() => void saveScrapingbeeKey()} disabled={setupBusy}>
-                  {setupBusy ? 'Saving…' : 'Save and continue'}
-                </button>
-              </div>
             </>
           ) : null}
           {setupStep === 'docker' ? (

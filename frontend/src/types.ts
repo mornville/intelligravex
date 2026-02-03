@@ -95,6 +95,13 @@ export type MessageMetrics = {
   total: number | null
 }
 
+export type Citation = {
+  url: string
+  title?: string | null
+  start_index?: number | null
+  end_index?: number | null
+}
+
 export type ConversationMessage = {
   id: UUID
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -105,6 +112,7 @@ export type ConversationMessage = {
   tool_kind: 'call' | 'result' | null
   sender_bot_id?: UUID | null
   sender_name?: string | null
+  citations?: Citation[]
   metrics: MessageMetrics
 }
 
