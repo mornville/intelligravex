@@ -42,6 +42,15 @@ type MentionState = {
 
 const PAGE_SIZE = 10
 
+function getOldestGroupCursor(items: ConversationMessage[]): string | null {
+  let oldest: string | null = null
+  for (const it of items) {
+    if (!it.created_at) continue
+    if (!oldest || it.created_at < oldest) oldest = it.created_at
+  }
+  return oldest
+}
+
 export default function DashboardPage() {
   const [bots, setBots] = useState<Bot[]>([])
   const [groups, setGroups] = useState<GroupConversationSummary[]>([])
@@ -381,10 +390,11 @@ export default function DashboardPage() {
         missing.map(async (id) => {
           try {
             const d = await apiGet<{ messages: ConversationMessage[] }>(
-              `/api/conversations/${id}/messages?limit=1&order=desc`,
+              `/api/conversations/${id}/messages?limit=5&order=desc&include_tools=1`,
             )
-            const m = Array.isArray(d.messages) ? d.messages[0] : null
-            results[id] = m && m.role !== 'tool' && m.role !== 'system' ? clipPreview(m.content || '') : ''
+            const msgs = Array.isArray(d.messages) ? d.messages : []
+            const m = msgs.find((msg) => msg.role !== 'tool' && msg.role !== 'system') || null
+            results[id] = m ? clipPreview(m.content || '') : ''
           } catch {
             results[id] = ''
           }
@@ -403,6 +413,7 @@ export default function DashboardPage() {
     setGroupMessages([])
     setGroupHasMore(true)
     setGroupOldestCursor(null)
+    groupNearBottomRef.current = true
     void (async () => {
       setGroupLoading(true)
       setGroupErr(null)
@@ -449,6 +460,7 @@ export default function DashboardPage() {
     el.addEventListener('scroll', onScroll)
     return () => el.removeEventListener('scroll', onScroll)
   }, [groupHasMore, groupLoadingOlder, selectedGroupId])
+
 
   useEffect(() => {
     const active = selectedType === 'group' ? selectedGroupId : selectedConversationId
@@ -588,7 +600,7 @@ export default function DashboardPage() {
       const mapped = raw.reverse()
       setGroupMessages(mapped)
       setGroupHasMore(raw.length === PAGE_SIZE)
-      setGroupOldestCursor(mapped[0]?.created_at || null)
+      setGroupOldestCursor(getOldestGroupCursor(mapped))
     } catch (e: any) {
       setGroupErr(String(e?.message || e))
     }
@@ -611,7 +623,7 @@ export default function DashboardPage() {
       const mapped = raw.reverse()
       if (mapped.length) {
         setGroupMessages((prev) => mergeGroupMessages(prev, mapped))
-        setGroupOldestCursor(mapped[0]?.created_at || groupOldestCursor)
+        setGroupOldestCursor(getOldestGroupCursor(mapped) || groupOldestCursor)
         didAdd = true
       }
       if (raw.length < PAGE_SIZE) setGroupHasMore(false)
@@ -1050,7 +1062,9 @@ export default function DashboardPage() {
                               {preview
                                 ? preview
                                 : latest
-                                  ? 'No messages yet'
+                                  ? unseen > 0
+                                    ? 'New messages'
+                                    : 'No messages yet'
                                   : 'No conversations yet'}
                             </div>
                           </div>
@@ -1088,7 +1102,9 @@ export default function DashboardPage() {
                           <div className="waAvatar">{g.title.slice(0, 2).toUpperCase()}</div>
                           <div className="waAssistantTitle">
                             <div className="waAssistantName">{g.title || 'Group chat'}</div>
-                            <div className="waConversationRow">{preview || 'No messages yet'}</div>
+                            <div className="waConversationRow">
+                              {preview ? preview : unseen > 0 ? 'New messages' : 'No messages yet'}
+                            </div>
                           </div>
                           {showTyping ? <span className="waTyping">typing…</span> : unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
                         </div>
@@ -1221,9 +1237,15 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div className="chatArea" ref={groupScrollRef}>
-                  {groupLoadingOlder ? (
+                  {groupLoadingOlder || groupHasMore ? (
                     <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
-                      <LoadingSpinner label="Loading older messages" />
+                      {groupLoadingOlder ? (
+                        <LoadingSpinner label="Loading older messages" />
+                      ) : (
+                        <button className="btn ghost" onClick={() => void loadGroupMessagesOlder()} disabled={!groupHasMore}>
+                          Load earlier messages
+                        </button>
+                      )}
                     </div>
                   ) : null}
                   {visibleGroupMessages.map((m) => (

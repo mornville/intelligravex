@@ -38,6 +38,15 @@ type ChatItem = {
 
 const PAGE_SIZE = 10
 
+function getOldestCursor(items: ChatItem[]): string | null {
+  let oldest: string | null = null
+  for (const it of items) {
+    if (!it.created_at) continue
+    if (!oldest || it.created_at < oldest) oldest = it.created_at
+  }
+  return oldest
+}
+
 function makeId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
@@ -146,6 +155,7 @@ export default function MicTest({
   const pendingInitReqIdRef = useRef<string | null>(null)
   const isNearBottomRef = useRef(true)
   const pendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
+  const cacheAppliedConvRef = useRef<string | null>(null)
 
   const activeStage = useMemo(() => {
     if (connectionStage === 'disconnected' || connectionStage === 'error') return connectionStage
@@ -243,6 +253,8 @@ export default function MicTest({
   useEffect(() => {
     setHasMore(true)
     setOldestCursor(null)
+    cacheAppliedConvRef.current = null
+    isNearBottomRef.current = true
   }, [conversationId])
 
   useEffect(() => {
@@ -274,7 +286,7 @@ export default function MicTest({
     const isCurrent = () => hydrateSeqRef.current === seq
     if (cache && cache[cid]?.items?.length && isCurrent()) {
       setItems(cache[cid].items)
-      setOldestCursor(cache[cid].items[0]?.created_at || null)
+      setOldestCursor(getOldestCursor(cache[cid].items))
     }
     try {
       const d = await apiGet<{ messages: ConversationMessage[] }>(
@@ -285,7 +297,7 @@ export default function MicTest({
       const mapped: ChatItem[] = raw.map(mapConversationMessage).reverse()
       setItems(mapped)
       setHasMore(raw.length === PAGE_SIZE)
-      setOldestCursor(mapped[0]?.created_at || null)
+      setOldestCursor(getOldestCursor(mapped))
       draftAssistantIdRef.current = null
       if (onCacheUpdate) {
         const lastAt = mapped.length ? mapped[mapped.length - 1].created_at : undefined
@@ -610,7 +622,7 @@ export default function MicTest({
     setConversationId(initialConversationId)
     if (cache && cache[initialConversationId]?.items?.length) {
       setItems(cache[initialConversationId].items)
-      setOldestCursor(cache[initialConversationId].items[0]?.created_at || null)
+      setOldestCursor(getOldestCursor(cache[initialConversationId].items))
     } else {
       setItems([])
       setOldestCursor(null)
@@ -685,9 +697,10 @@ export default function MicTest({
 
   useEffect(() => {
     if (!conversationId) return
-    if (cache && cache[conversationId]?.items?.length) {
+    if (cacheAppliedConvRef.current !== conversationId && cache && cache[conversationId]?.items?.length) {
       setItems(cache[conversationId].items)
-      setOldestCursor(cache[conversationId].items[0]?.created_at || null)
+      setOldestCursor(getOldestCursor(cache[conversationId].items))
+      cacheAppliedConvRef.current = conversationId
     }
     if (hideWorkspace || !isVisible) return
     void loadContainerStatus(conversationId)
@@ -696,7 +709,7 @@ export default function MicTest({
       void loadContainerStatus(id)
     }, 5000)
     return () => clearInterval(t)
-  }, [conversationId, hideWorkspace, isVisible, cache])
+  }, [conversationId, hideWorkspace, isVisible])
 
   useEffect(() => {
     if (!showFilesPane || !conversationId) return
@@ -733,6 +746,7 @@ export default function MicTest({
     return () => el.removeEventListener('scroll', onScroll)
   }, [hasMore, loadingOlder, conversationId])
 
+
   async function loadOlder() {
     if (!conversationId || loadingOlder || !oldestCursor) return
     const el = scrollerRef.current
@@ -750,7 +764,7 @@ export default function MicTest({
       const mapped = raw.map(mapConversationMessage).reverse()
       if (mapped.length) {
         setItems((prev) => mergeItems(prev, mapped))
-        setOldestCursor(mapped[0]?.created_at || oldestCursor)
+        setOldestCursor(getOldestCursor(mapped) || oldestCursor)
         didAdd = true
       }
       if (raw.length < PAGE_SIZE) setHasMore(false)
@@ -1063,9 +1077,15 @@ export default function MicTest({
         <div className={`assistantSplit ${hideWorkspace || !conversationId || !showFilesPane ? 'full' : ''}`}>
           <div className="assistantChatPane">
             <div className="chatArea" ref={scrollerRef}>
-              {loadingOlder ? (
+              {loadingOlder || hasMore ? (
                 <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
-                  <LoadingSpinner label="Loading older messages" />
+                  {loadingOlder ? (
+                    <LoadingSpinner label="Loading older messages" />
+                  ) : (
+                    <button className="btn ghost" onClick={() => void loadOlder()} disabled={!hasMore}>
+                      Load earlier messages
+                    </button>
+                  )}
                 </div>
               ) : null}
               {messages}
@@ -1200,9 +1220,15 @@ export default function MicTest({
 
         <div className="chatPane">
           <div className="chat" ref={scrollerRef}>
-            {loadingOlder ? (
+            {loadingOlder || hasMore ? (
               <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
-                <LoadingSpinner label="Loading older messages" />
+                {loadingOlder ? (
+                  <LoadingSpinner label="Loading older messages" />
+                ) : (
+                  <button className="btn ghost" onClick={() => void loadOlder()} disabled={!hasMore}>
+                    Load earlier messages
+                  </button>
+                )}
               </div>
             ) : null}
             {messages}

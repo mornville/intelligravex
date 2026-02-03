@@ -30,6 +30,15 @@ type MentionState = {
 
 const PAGE_SIZE = 10
 
+function getOldestCursor(items: ConversationMessage[]): string | null {
+  let oldest: string | null = null
+  for (const it of items) {
+    if (!it.created_at) continue
+    if (!oldest || it.created_at < oldest) oldest = it.created_at
+  }
+  return oldest
+}
+
 export default function GroupConversationPage() {
   const { groupId } = useParams()
   const nav = useNavigate()
@@ -101,7 +110,7 @@ export default function GroupConversationPage() {
       const mapped = raw.reverse()
       setMessages(mapped)
       setHasMore(raw.length === PAGE_SIZE)
-      setOldestCursor(mapped[0]?.created_at || null)
+      setOldestCursor(getOldestCursor(mapped))
     } catch (e: any) {
       setErr(String(e?.message || e))
     }
@@ -124,7 +133,7 @@ export default function GroupConversationPage() {
       const mapped = raw.reverse()
       if (mapped.length) {
         setMessages((prev) => mergeMessages(prev, mapped))
-        setOldestCursor(mapped[0]?.created_at || oldestCursor)
+        setOldestCursor(getOldestCursor(mapped) || oldestCursor)
         didAdd = true
       }
       if (raw.length < PAGE_SIZE) setHasMore(false)
@@ -141,6 +150,7 @@ export default function GroupConversationPage() {
     setMessages([])
     setHasMore(true)
     setOldestCursor(null)
+    nearBottomRef.current = true
     void (async () => {
       setLoading(true)
       setErr(null)
@@ -274,6 +284,7 @@ export default function GroupConversationPage() {
     el.addEventListener('scroll', onScroll)
     return () => el.removeEventListener('scroll', onScroll)
   }, [hasMore, loadingOlder, groupId])
+
 
   const bots = data?.conversation.group_bots || []
   const defaultBot = useMemo(() => {
@@ -536,9 +547,15 @@ export default function GroupConversationPage() {
 
         <div className="chatShell">
           <div className="chatArea" ref={scrollRef}>
-            {loading || loadingOlder ? (
+            {loading || loadingOlder || hasMore ? (
               <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
-                <LoadingSpinner label="Loading older messages" />
+                {loading || loadingOlder ? (
+                  <LoadingSpinner label="Loading older messages" />
+                ) : (
+                  <button className="btn ghost" onClick={() => void loadOlderMessages()} disabled={!hasMore}>
+                    Load earlier messages
+                  </button>
+                )}
               </div>
             ) : null}
             {messages.map((m) => (
