@@ -2,7 +2,7 @@
 
 GravexStudio is a desktop studio for building assistants that listen, reason, speak, and run real work across tools and long‑running tasks—without juggling separate servers.
 
-## One‑line build (macOS / Linux)
+## One‑line build (macOS / Linux / Windows)
 
 Choose your platform and run the single build command:
 
@@ -14,9 +14,14 @@ Choose your platform and run the single build command:
 ./scripts/package_linux_appimage.sh
 ```
 
+```powershell
+.\scripts\package_windows.ps1
+```
+
 Outputs:
 - macOS: `dist/GravexStudio.app`
 - Linux: `dist/GravexStudio-x86_64.AppImage`
+- Windows: `dist/GravexStudio.exe`
 
 ## Quick start
 

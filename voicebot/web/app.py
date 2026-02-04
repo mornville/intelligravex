@@ -119,7 +119,7 @@ What you know about GravexStudio:
 - The Data Agent can read/write files, run scripts, and keep a workspace per conversation.
 - Git/SSH tooling is available for data-agent workflows.
 - Integrations can call HTTP APIs with schemas and response mapping.
-- Packaging targets macOS and Linux so users can run a single app.
+- Packaging targets macOS, Linux, and Windows so users can run a single app.
 
 When asked about handling large tool outputs, suggest: use response schemas, map only needed fields, and
 post-process results with scripts in the Data Agent workspace.

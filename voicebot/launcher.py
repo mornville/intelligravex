@@ -329,7 +329,7 @@ def launch(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = Tr
     """
     Launch the Studio server and optionally open the browser.
 
-    Intended for packaged desktop wrappers (macOS/Linux).
+    Intended for packaged desktop wrappers (macOS/Linux/Windows).
     """
     port = _select_port(host, port)
 
