@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { apiGet, BACKEND_URL } from '../api/client'
+import { apiGet, getBackendUrl } from '../api/client'
 import LoadingSpinner from '../components/LoadingSpinner'
 import type { ConversationDetail, ConversationMessage, ConversationFiles, DataAgentStatus } from '../types'
 import { fmtIso, fmtMs, fmtUsd } from '../utils/format'
@@ -319,7 +319,7 @@ export default function ConversationDetailPage() {
                     </tr>
                   ) : (
                     visibleItems.map((it) => {
-                      const href = it.download_url ? new URL(it.download_url, BACKEND_URL).toString() : ''
+                      const href = it.download_url ? new URL(it.download_url, getBackendUrl()).toString() : ''
                       const size = it.size_bytes === null ? '—' : fmtBytes(it.size_bytes)
                       return (
                         <tr key={`${it.path}_${it.name}`}>

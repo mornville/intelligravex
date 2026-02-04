@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { apiDelete, apiGet, apiPost, BACKEND_URL } from '../api/client'
+import { apiDelete, apiGet, apiPost, getBackendUrl } from '../api/client'
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
 import MicTest, { type ChatCacheEntry } from '../components/MicTest'
@@ -878,7 +878,7 @@ export default function DashboardPage() {
     setUploading(true)
     setUploadErr(null)
     try {
-      const res = await fetch(`${BACKEND_URL}/api/conversations/${activeConversationId}/files/upload`, {
+      const res = await fetch(`${getBackendUrl()}/api/conversations/${activeConversationId}/files/upload`, {
         method: 'POST',
         headers: { ...authHeader() },
         body: form,

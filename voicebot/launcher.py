@@ -325,15 +325,52 @@ def _select_port(host: str, port: int) -> int:
             return choice
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _write_port_file(path: Optional[str], port: int) -> None:
+    if not path:
+        return
+    try:
+        dir_name = os.path.dirname(path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(port))
+    except Exception:
+        pass
+
+
 def launch(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = True) -> None:
     """
     Launch the Studio server and optionally open the browser.
 
     Intended for packaged desktop wrappers (macOS/Linux).
     """
-    port = _select_port(host, port)
+    env_host = os.environ.get("VOICEBOT_HOST") or host
+    env_port = _int_env("VOICEBOT_PORT", port)
+    env_open_browser = _bool_env("VOICEBOT_OPEN_BROWSER", open_browser)
+    port_file = os.environ.get("VOICEBOT_PORT_FILE")
 
-    if open_browser:
+    host = env_host
+    port = _select_port(host, env_port)
+    _write_port_file(port_file, port)
+
+    if env_open_browser:
         url = f"http://{host}:{port}"
 
         def _open() -> None:

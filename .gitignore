@@ -13,3 +13,4 @@ build/
 voicebot.db
 frontend/.vite-dev.log
 voicebot/web/ui/
+frontend/src-tauri/target/

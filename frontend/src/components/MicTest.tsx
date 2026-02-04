@@ -8,7 +8,7 @@ import {
   UserIcon,
   WrenchScrewdriverIcon,
 } from '@heroicons/react/24/solid'
-import { apiGet, BACKEND_URL } from '../api/client'
+import { apiGet, getBackendUrl } from '../api/client'
 import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
@@ -77,7 +77,7 @@ function b64ToBytes(b64: string): Uint8Array {
 }
 
   function wsBase(): string {
-  const u = new URL(BACKEND_URL)
+  const u = new URL(getBackendUrl())
   const proto = u.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${u.host}`
 }
@@ -1400,7 +1400,7 @@ function renderTree(
   }
   const isOpen = !!expanded[node.path]
   const indent = depth * 16
-  const href = node.download_url ? new URL(node.download_url, BACKEND_URL).toString() : ''
+  const href = node.download_url ? new URL(node.download_url, getBackendUrl()).toString() : ''
   const size = node.is_dir ? '—' : node.size_bytes === null ? '—' : fmtBytes(node.size_bytes || 0)
   const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '—'
   const fallbackName = node.name || node.path.split('/').filter(Boolean).pop() || node.path || '(root)'
