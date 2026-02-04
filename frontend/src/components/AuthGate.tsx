@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import { apiPost, getBackendUrl } from '../api/client'
+import { BACKEND_URL, apiPost } from '../api/client'
 import { authHeader } from '../auth'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
@@ -21,7 +21,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setCheckingStatus(true)
       setStatusErr(null)
       try {
-        const res = await fetch(`${getBackendUrl()}/api/status`, {
+        const res = await fetch(`${BACKEND_URL}/api/status`, {
           method: 'GET',
           headers: { ...authHeader() },
         })
@@ -90,7 +90,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     try {
       await apiPost('/api/keys', { provider: 'openai', name: 'default', secret: openaiKey.trim() })
       setOpenaiKey('')
-      const res = await fetch(`${getBackendUrl()}/api/status`, {
+      const res = await fetch(`${BACKEND_URL}/api/status`, {
         method: 'GET',
         headers: { ...authHeader() },
       })
@@ -109,7 +109,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   async function refreshStatus() {
     setCheckingStatus(true)
     try {
-      const res = await fetch(`${getBackendUrl()}/api/status`, {
+      const res = await fetch(`${BACKEND_URL}/api/status`, {
         method: 'GET',
         headers: { ...authHeader() },
       })

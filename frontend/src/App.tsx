@@ -3,7 +3,6 @@ import AuthGate from './components/AuthGate'
 import Layout from './components/Layout'
 import DashboardPage from './pages/DashboardPage'
 import LandingPage from './pages/LandingPage'
-import WidgetPage from './pages/WidgetPage'
 
 function AppShell() {
   return (
@@ -15,19 +14,7 @@ function AppShell() {
   )
 }
 
-function WidgetShell() {
-  return (
-    <AuthGate>
-      <WidgetPage />
-    </AuthGate>
-  )
-}
-
 const router = createBrowserRouter([
-  {
-    path: '/widget',
-    element: <WidgetShell />,
-  },
   {
     path: '/',
     element: <AppShell />,
