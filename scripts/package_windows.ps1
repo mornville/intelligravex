@@ -9,6 +9,23 @@ $RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $VenvDir = Join-Path $RootDir ".build/venv-windows"
 $PythonBin = $env:PYTHON_BIN
 
+function Test-Command {
+  param([string]$Name)
+  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Install-Python {
+  if (Test-Command "winget") {
+    winget install -e --id Python.Python.3.11
+    return
+  }
+  if (Test-Command "choco") {
+    choco install python -y
+    return
+  }
+  throw "Python 3.10+ is required. Install Python and re-run this script."
+}
+
 function Test-Python {
   param(
     [string]$Command,
@@ -36,6 +53,19 @@ if (-not $PythonCommand) {
     @{ Cmd = "python"; Args = @() },
     @{ Cmd = "python3"; Args = @() }
   )
+
+  foreach ($candidate in $candidates) {
+    if (Test-Python -Command $candidate.Cmd -Args $candidate.Args) {
+      $PythonCommand = $candidate.Cmd
+      $PythonArgs = $candidate.Args
+      break
+    }
+  }
+}
+
+if (-not $PythonCommand) {
+  Write-Host "Python 3.10+ not found. Attempting to install Python..."
+  Install-Python
 
   foreach ($candidate in $candidates) {
     if (Test-Python -Command $candidate.Cmd -Args $candidate.Args) {
