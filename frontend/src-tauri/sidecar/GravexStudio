@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SIDE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_BIN="${SIDE_DIR}/../Resources/GravexStudio/GravexStudio"
+
+if [[ ! -x "${BACKEND_BIN}" ]]; then
+  echo "Backend binary not found at ${BACKEND_BIN}" >&2
+  exit 1
+fi
+
+exec "${BACKEND_BIN}" "$@"
