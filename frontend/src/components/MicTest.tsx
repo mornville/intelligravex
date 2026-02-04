@@ -585,6 +585,7 @@ export default function MicTest({
         const t = reqId ? timingsByReq.current[reqId] : undefined
         const doneText = String(msg.text || '')
         const msgCitations = Array.isArray(msg.citations) ? (msg.citations as Citation[]) : undefined
+        const doneAt = new Date().toISOString()
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
           const hasDraft = draftId ? prev.some((it) => it.id === draftId) : false
@@ -598,7 +599,7 @@ export default function MicTest({
                 role: 'assistant',
                 text: doneText,
                 timings: t,
-                created_at: new Date().toISOString(),
+                created_at: doneAt,
                 local: true,
                 citations: msgCitations,
               },
@@ -608,7 +609,13 @@ export default function MicTest({
             return prev.map((it) => {
               if (it.id !== draftId) return it
               const fixedText = doneText.trim() && it.text.trim().length < doneText.trim().length ? doneText : it.text
-              return { ...it, text: fixedText, timings: t ?? it.timings, citations: msgCitations ?? it.citations }
+              return {
+                ...it,
+                text: fixedText,
+                timings: t ?? it.timings,
+                citations: msgCitations ?? it.citations,
+                created_at: doneAt,
+              }
             })
           }
           return prev
