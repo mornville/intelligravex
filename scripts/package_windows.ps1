@@ -15,10 +15,8 @@ function Test-Python {
     [string[]]$Args = @()
   )
   try {
-    $process = Start-Process -FilePath $Command `
-      -ArgumentList ($Args + @("-c", "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)")) `
-      -NoNewWindow -Wait -PassThru
-    return $process.ExitCode -eq 0
+    & $Command @($Args + @("-c", "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)")) | Out-Null
+    return $LASTEXITCODE -eq 0
   } catch {
     return $false
   }
