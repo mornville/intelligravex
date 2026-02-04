@@ -15,20 +15,16 @@ fi
 
 "${ROOT_DIR}/scripts/package_macos.sh"
 
-SIDECAR="${ROOT_DIR}/frontend/src-tauri/sidecar/GravexStudio"
-if [[ ! -f "${SIDECAR}" ]]; then
-  echo "Sidecar wrapper missing at ${SIDECAR}"
-  exit 1
+BIN_BASE="${ROOT_DIR}/dist/GravexStudio/GravexStudio"
+if [[ -f "${BIN_BASE}" ]]; then
+  ARCH="$(uname -m)"
+  if [[ "${ARCH}" == "arm64" ]]; then
+    SUFFIX="aarch64-apple-darwin"
+  else
+    SUFFIX="x86_64-apple-darwin"
+  fi
+  cp -f "${BIN_BASE}" "${BIN_BASE}-${SUFFIX}"
 fi
-chmod +x "${SIDECAR}"
-ARCH="$(uname -m)"
-if [[ "${ARCH}" == "arm64" ]]; then
-  SUFFIX="aarch64-apple-darwin"
-else
-  SUFFIX="x86_64-apple-darwin"
-fi
-cp -f "${SIDECAR}" "${SIDECAR}-${SUFFIX}"
-chmod +x "${SIDECAR}-${SUFFIX}"
 
 npm --prefix "${ROOT_DIR}/frontend" install
 npm --prefix "${ROOT_DIR}/frontend" run tauri:build

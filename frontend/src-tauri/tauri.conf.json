@@ -32,11 +32,8 @@
       "active": true,
       "targets": ["app"],
       "identifier": "com.intelligravex.widget",
-      "resources": [
-        "../../dist/GravexStudio"
-      ],
       "externalBin": [
-        "sidecar/GravexStudio"
+        "../../dist/GravexStudio/GravexStudio"
       ],
       "icon": ["icons/icon.icns"],
       "macOS": {}
