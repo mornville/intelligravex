@@ -57,7 +57,8 @@ def init_db(engine) -> None:
     mig_start = time.monotonic()
     _apply_light_migrations(engine)
     logger.info("init_db: migrations done (%.2fs)", time.monotonic() - mig_start)
-    _seed_demo_group(engine)
+    if (os.environ.get("VOICEBOT_SEED_DEMO") or "").strip().lower() in ("1", "true", "yes", "y"):
+        _seed_demo_group(engine)
     logger.info("init_db: complete (%.2fs)", time.monotonic() - start)
 
 

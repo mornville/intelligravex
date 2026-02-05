@@ -107,7 +107,7 @@ from voicebot.data_agent.docker_runner import (
 
 
 SYSTEM_BOT_NAME = "GravexStudio Guide"
-SYSTEM_BOT_START_MESSAGE = "Ask me about tools, scripts, the Data Agent, or setup."
+SYSTEM_BOT_START_MESSAGE = "Ask me about setup, features, tools, or the Data Agent."
 SYSTEM_BOT_PROMPT = """
 You are the GravexStudio Guide, a friendly product tour assistant for GravexStudio.
 
@@ -116,13 +116,19 @@ helpful, and practical. Prefer short paragraphs or bullet points.
 
 What you know about GravexStudio:
 - A desktop studio for building assistants with voice, tools, and automation.
-- Uses OpenAI models for LLM, ASR, and TTS.
-- Optional web search is available and can be disabled.
-- A Data Agent runs long tasks in a Docker container per conversation (Docker required).
-- The Data Agent can read/write files, run scripts, and keep a workspace per conversation.
-- Git/SSH tooling is available for data-agent workflows.
-- Integrations can call HTTP APIs with schemas and response mapping.
+- Local-first by default: configs and conversation data live on the device; keys are encrypted at rest.
+- Multi-model per assistant: LLM, ASR (speech-to-text), TTS (text-to-speech), web search, Codex, and summary models.
+- Real-time conversations with streamed text/audio and latency metrics.
+- Optional web search tool (can be disabled per assistant).
+- A Data Agent can run long tasks in a Docker container per conversation (Docker required for this feature).
+- The Data Agent has a persistent workspace, can read/write files, run scripts, and operate in parallel across conversations.
+- Git/SSH tooling is available for Data Agent workflows.
+- Integration tools can call HTTP APIs with tool schemas, response validation, and response-to-metadata mapping.
+- Static reply templates (Jinja2) and optional Codex post-processing are supported for tools.
+- Metadata templating lets prompts and replies reference conversation variables.
+- Embeddable public chat widget with client keys and WebSocket transport.
 - Packaging targets macOS, Linux, and Windows so users can run a single app.
+- Optional host actions let assistants request actions on the local machine (can require approval).
 
 When asked about handling large tool outputs, suggest: use response schemas, map only needed fields, and
 post-process results with scripts in the Data Agent workspace.
@@ -1210,6 +1216,10 @@ class WidgetConfigRequest(BaseModel):
     widget_mode: Optional[str] = None
 
 
+class OpenDashboardRequest(BaseModel):
+    path: Optional[str] = None
+
+
 class BotCreateRequest(BaseModel):
     name: str
     openai_model: str = "o4-mini"
@@ -1323,13 +1333,47 @@ def create_app() -> FastAPI:
         stmt = select(Bot).where(Bot.name == SYSTEM_BOT_NAME).limit(1)
         bot = session.exec(stmt).first()
         if bot:
+            updated = False
+            if bot.system_prompt != SYSTEM_BOT_PROMPT:
+                bot.system_prompt = SYSTEM_BOT_PROMPT
+                updated = True
+            if bot.start_message_mode != "static":
+                bot.start_message_mode = "static"
+                updated = True
+            if bot.start_message_text != SYSTEM_BOT_START_MESSAGE:
+                bot.start_message_text = SYSTEM_BOT_START_MESSAGE
+                updated = True
+            if not bot.enable_data_agent:
+                bot.enable_data_agent = True
+                updated = True
+            if not bot.enable_host_actions:
+                bot.enable_host_actions = True
+                updated = True
+            if not bot.enable_host_shell:
+                bot.enable_host_shell = True
+                updated = True
+            if bot.require_host_action_approval:
+                bot.require_host_action_approval = False
+                updated = True
+            if bot.disabled_tools_json != "[]":
+                bot.disabled_tools_json = "[]"
+                updated = True
+            if updated:
+                bot.updated_at = dt.datetime.now(dt.timezone.utc)
+                session.add(bot)
+                session.commit()
+                session.refresh(bot)
             return bot
         bot = Bot(
             name=SYSTEM_BOT_NAME,
             system_prompt=SYSTEM_BOT_PROMPT,
             start_message_mode="static",
             start_message_text=SYSTEM_BOT_START_MESSAGE,
-            disabled_tools_json=json.dumps(["web_search", "give_command_to_data_agent"]),
+            enable_data_agent=True,
+            enable_host_actions=True,
+            enable_host_shell=True,
+            require_host_action_approval=False,
+            disabled_tools_json="[]",
         )
         return create_bot(session, bot)
 
@@ -1565,10 +1609,15 @@ def create_app() -> FastAPI:
         return {"bot_id": bot_id, "bot_name": bot_name, "widget_mode": widget_mode}
 
     @app.post("/api/open-dashboard")
-    def api_open_dashboard() -> dict:
+    def api_open_dashboard(payload: Optional[OpenDashboardRequest] = Body(None)) -> dict:
         host = (os.environ.get("VOICEBOT_LAUNCH_HOST") or "127.0.0.1").strip() or "127.0.0.1"
         port = (os.environ.get("VOICEBOT_LAUNCH_PORT") or "8000").strip() or "8000"
-        path = (os.environ.get("VOICEBOT_OPEN_PATH") or "/dashboard").strip() or "/dashboard"
+        requested = ""
+        if payload and payload.path:
+            requested = str(payload.path or "").strip()
+        path = requested or (os.environ.get("VOICEBOT_OPEN_PATH") or "/dashboard").strip() or "/dashboard"
+        if "://" in path:
+            path = "/dashboard"
         if not path.startswith("/"):
             path = f"/{path}"
         url = f"http://{host}:{port}{path}"
