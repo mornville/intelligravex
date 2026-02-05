@@ -2458,6 +2458,75 @@ label {
   pointer-events: auto;
 }
 
+.widgetTextCard {
+  width: 180px;
+  min-height: 140px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(138, 180, 248, 0.35);
+  background: rgba(17, 25, 54, 0.8);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 8px;
+  box-shadow: 0 16px 28px rgba(2, 6, 23, 0.55);
+}
+
+.widgetTextCard.busy {
+  animation: widgetPulse 1.6s ease-in-out infinite;
+}
+
+.widgetTextReply {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  max-height: 72px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+
+.widgetTextReply.empty {
+  color: var(--muted);
+}
+
+.widgetTextInputRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.widgetTextInput {
+  flex: 1;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(8, 12, 28, 0.65);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.widgetTextInput:focus {
+  border-color: rgba(138, 180, 248, 0.7);
+}
+
+.widgetTextSend {
+  border-radius: 999px;
+  border: 1px solid rgba(138, 180, 248, 0.4);
+  background: rgba(138, 180, 248, 0.2);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.widgetTextSend:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .widgetMic {
   width: 96px;
   height: 96px;
@@ -2531,6 +2600,59 @@ label {
   display: grid;
   gap: 6px;
   z-index: 5;
+}
+
+.widgetMenuToggle {
+  position: relative;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.widgetMenuToggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.widgetSwitch {
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  position: relative;
+  transition: background 150ms ease;
+}
+
+.widgetSwitch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 150ms ease;
+}
+
+.widgetMenuToggle input:checked + .widgetSwitch {
+  background: rgba(138, 180, 248, 0.8);
+}
+
+.widgetMenuToggle input:checked + .widgetSwitch::after {
+  transform: translateX(16px);
+}
+
+.widgetMenuToggle input:disabled + .widgetSwitch {
+  opacity: 0.6;
 }
 
 .widgetMenuItem {

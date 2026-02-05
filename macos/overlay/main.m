@@ -10,6 +10,15 @@ static EventHandlerRef gHotKeyHandler = NULL;
 static OSStatus HotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData);
 static void LogLine(NSString *line);
 
+@interface DraggableWebView : WKWebView
+@end
+
+@implementation DraggableWebView
+- (BOOL)mouseDownCanMoveWindow {
+  return YES;
+}
+@end
+
 @interface OverlayApp : NSObject <NSApplicationDelegate, WKNavigationDelegate>
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) WKWebView *webView;
@@ -55,6 +64,7 @@ static void LogLine(NSString *line);
     window.opaque = NO;
     window.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:0.01];
     window.hasShadow = YES;
+    window.movableByWindowBackground = YES;
     window.level = CGWindowLevelForKey(kCGScreenSaverWindowLevelKey);
     window.collectionBehavior =
       NSWindowCollectionBehaviorCanJoinAllSpaces |
@@ -65,7 +75,7 @@ static void LogLine(NSString *line);
     LogLine(@"Window positioned");
 
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
-    WKWebView *webView = [[WKWebView alloc] initWithFrame:window.contentView.bounds configuration:config];
+    DraggableWebView *webView = [[DraggableWebView alloc] initWithFrame:window.contentView.bounds configuration:config];
     LogLine(@"WebView created");
     webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     @try {

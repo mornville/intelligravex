@@ -12,6 +12,7 @@ type WidgetStatus = {
 }
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
+type WidgetMode = 'mic' | 'text'
 
 function wsBase(): string {
   const u = new URL(BACKEND_URL)
@@ -41,15 +42,21 @@ export default function WidgetPage() {
   const [stage, setStage] = useState<Stage>('disconnected')
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [recording, setRecording] = useState(false)
+  const [widgetMode, setWidgetMode] = useState<WidgetMode>('mic')
+  const [assistantText, setAssistantText] = useState('')
+  const [textInput, setTextInput] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [modeSaving, setModeSaving] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
   const playerRef = useRef<WavQueuePlayer | null>(null)
   const recordingRef = useRef(false)
   const activeReqIdRef = useRef<string | null>(null)
+  const activeTextReqIdRef = useRef<string | null>(null)
+  const widgetModeRef = useRef<WidgetMode>('mic')
 
   useEffect(() => {
     document.body.classList.add('widgetBody')
@@ -57,6 +64,10 @@ export default function WidgetPage() {
       document.body.classList.remove('widgetBody')
     }
   }, [])
+
+  useEffect(() => {
+    widgetModeRef.current = widgetMode
+  }, [widgetMode])
 
   useEffect(() => {
     return () => {
@@ -79,6 +90,7 @@ export default function WidgetPage() {
         setStatus(s)
         let nextBotId = widget?.bot_id || null
         let nextBotName = widget?.bot_name || null
+        const nextMode: WidgetMode = widget?.widget_mode === 'text' ? 'text' : 'mic'
         if (!nextBotId) {
           const sys = await apiGet<{ id: string; name: string }>('/api/system-bot')
           nextBotId = sys.id
@@ -86,6 +98,7 @@ export default function WidgetPage() {
         }
         setBotId(nextBotId)
         setBotName(nextBotName)
+        setWidgetMode(nextMode)
       } catch (e: any) {
         if (!active) return
         setStatusErr(String(e?.message || e))
@@ -137,6 +150,27 @@ export default function WidgetPage() {
         if (id) setConversationId(id)
         return
       }
+      if (msg.type === 'text_delta') {
+        if (widgetModeRef.current !== 'text') return
+        const delta = String(msg.delta || '')
+        if (!delta) return
+        const reqId = String(msg.req_id || '')
+        if (activeTextReqIdRef.current && reqId && reqId !== activeTextReqIdRef.current) return
+        if (!activeTextReqIdRef.current && reqId) activeTextReqIdRef.current = reqId
+        setAssistantText((prev) => prev + delta)
+        return
+      }
+      if (msg.type === 'done') {
+        if (widgetModeRef.current !== 'text') return
+        const reqId = String(msg.req_id || '')
+        if (activeTextReqIdRef.current && reqId && reqId !== activeTextReqIdRef.current) return
+        const text = String(msg.text || '')
+        if (text.trim()) {
+          setAssistantText((prev) => (text.length >= prev.length ? text : prev))
+        }
+        activeTextReqIdRef.current = null
+        return
+      }
       if (msg.type === 'audio_wav') {
         const b64 = String(msg.wav_base64 || '')
         if (!b64) return
@@ -165,12 +199,18 @@ export default function WidgetPage() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     const reqId = makeId()
     activeReqIdRef.current = reqId
-    ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak: true, test_flag: false, debug: false }))
+    const speak = widgetModeRef.current === 'mic'
+    if (!speak) setAssistantText('')
+    ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: false, debug: false }))
   }
 
   async function startRecording() {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       setErr('WebSocket not connected')
+      return
+    }
+    if (widgetModeRef.current !== 'mic') {
+      setErr('Switch to mic mode to record.')
       return
     }
     if (!conversationId) {
@@ -217,6 +257,61 @@ export default function WidgetPage() {
     }
   }
 
+  async function sendText() {
+    const text = textInput.trim()
+    if (!text) return
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setErr('WebSocket not connected')
+      return
+    }
+    if (!status?.openai_key_configured) {
+      setErr('OpenAI key not configured.')
+      return
+    }
+    if (stage !== 'idle') return
+    setErr(null)
+    setTextInput('')
+    setAssistantText('')
+    const reqId = makeId()
+    activeTextReqIdRef.current = reqId
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'chat',
+        req_id: reqId,
+        conversation_id: conversationId,
+        speak: false,
+        test_flag: false,
+        debug: false,
+        text,
+      }),
+    )
+  }
+
+  async function updateWidgetMode(nextMode: WidgetMode) {
+    if (nextMode === widgetMode) return
+    if (recording) {
+      await stopRecording()
+    }
+    const prevMode = widgetMode
+    setWidgetMode(nextMode)
+    setModeSaving(true)
+    setErr(null)
+    activeTextReqIdRef.current = null
+    if (nextMode === 'text') setAssistantText('')
+    try {
+      const res = await apiPost<WidgetConfig>('/api/widget-config', { widget_mode: nextMode })
+      setBotId(res?.bot_id || null)
+      setBotName(res?.bot_name || null)
+      const mode: WidgetMode = res?.widget_mode === 'text' ? 'text' : 'mic'
+      setWidgetMode(mode)
+    } catch (e: any) {
+      setWidgetMode(prevMode)
+      setErr(String(e?.message || e))
+    } finally {
+      setModeSaving(false)
+    }
+  }
+
   async function openDashboard() {
     try {
       await apiPost('/api/open-dashboard', {})
@@ -225,9 +320,12 @@ export default function WidgetPage() {
     }
   }
 
+  const isTextMode = widgetMode === 'text'
   const canRecord = Boolean(status?.openai_key_configured && conversationId && stage === 'idle')
+  const canSendText = Boolean(status?.openai_key_configured && stage === 'idle')
   const busy = stage !== 'idle' && stage !== 'disconnected' && !recording
   const micClass = `widgetMic ${recording ? 'recording' : ''} ${busy ? 'busy' : ''}`
+  const textClass = `widgetTextCard ${busy ? 'busy' : ''}`
 
   return (
     <div className="widgetRoot">
@@ -238,9 +336,34 @@ export default function WidgetPage() {
           </div>
         ) : (
           <>
-            <button className={micClass} onClick={() => void (recording ? stopRecording() : startRecording())} disabled={!canRecord && !recording}>
-              <MicrophoneIcon />
-            </button>
+            {isTextMode ? (
+              <div className={textClass}>
+                <div className={`widgetTextReply ${assistantText ? '' : 'empty'}`}>
+                  {assistantText || 'Assistant reply will appear here.'}
+                </div>
+                <div className="widgetTextInputRow">
+                  <input
+                    className="widgetTextInput"
+                    value={textInput}
+                    onChange={(e) => setTextInput(e.target.value)}
+                    placeholder={busy ? 'Thinking...' : 'Type a message'}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        void sendText()
+                      }
+                    }}
+                  />
+                  <button className="widgetTextSend" onClick={() => void sendText()} disabled={!canSendText || !textInput.trim()}>
+                    Send
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button className={micClass} onClick={() => void (recording ? stopRecording() : startRecording())} disabled={!canRecord && !recording}>
+                <MicrophoneIcon />
+              </button>
+            )}
             <button className="widgetGear" onClick={() => setMenuOpen((v) => !v)} title="Settings">
               <Cog6ToothIcon />
             </button>
@@ -249,6 +372,19 @@ export default function WidgetPage() {
                 <button className="widgetMenuItem" onClick={() => void openDashboard()}>
                   Go to dashboard
                 </button>
+                <label className="widgetMenuToggle">
+                  <span>Text mode</span>
+                  <input
+                    type="checkbox"
+                    checked={isTextMode}
+                    disabled={modeSaving}
+                    onChange={(e) => {
+                      const nextMode: WidgetMode = e.target.checked ? 'text' : 'mic'
+                      void updateWidgetMode(nextMode)
+                    }}
+                  />
+                  <span className="widgetSwitch" aria-hidden="true" />
+                </label>
                 {botName ? <div className="widgetMenuHint">Assistant: {botName}</div> : null}
               </div>
             ) : null}

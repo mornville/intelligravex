@@ -219,6 +219,7 @@ export type Options = {
 export type WidgetConfig = {
   bot_id: UUID | null
   bot_name?: string | null
+  widget_mode?: 'mic' | 'text'
 }
 
 export type IntegrationTool = {

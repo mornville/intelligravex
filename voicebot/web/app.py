@@ -132,6 +132,7 @@ Never claim features that are not listed here. Do not ask the user to run comman
 """.strip()
 
 WIDGET_BOT_KEY = "widget_bot_id"
+WIDGET_MODE_KEY = "widget_mode"
 
 
 def _mask_secret(value: str, *, keep_start: int = 10, keep_end: int = 6) -> str:
@@ -1062,6 +1063,7 @@ class GitTokenRequest(BaseModel):
 
 class WidgetConfigRequest(BaseModel):
     bot_id: Optional[str] = None
+    widget_mode: Optional[str] = None
 
 
 class BotCreateRequest(BaseModel):
@@ -1367,6 +1369,9 @@ def create_app() -> FastAPI:
     @app.get("/api/widget-config")
     def api_widget_config(session: Session = Depends(get_session)) -> dict:
         bot_id = _get_app_setting(session, WIDGET_BOT_KEY)
+        widget_mode = (_get_app_setting(session, WIDGET_MODE_KEY) or "").strip().lower()
+        if widget_mode not in ("mic", "text"):
+            widget_mode = "mic"
         bot_name = None
         if bot_id:
             try:
@@ -1374,20 +1379,46 @@ def create_app() -> FastAPI:
                 bot_name = bot.name
             except Exception:
                 bot_id = None
-        return {"bot_id": bot_id, "bot_name": bot_name}
+        return {"bot_id": bot_id, "bot_name": bot_name, "widget_mode": widget_mode}
 
     @app.post("/api/widget-config")
     def api_widget_config_update(
         payload: WidgetConfigRequest = Body(...),
         session: Session = Depends(get_session),
     ) -> dict:
-        bot_id = str(payload.bot_id or "").strip()
-        if not bot_id:
-            _set_app_setting(session, WIDGET_BOT_KEY, "")
-            return {"bot_id": None, "bot_name": None}
-        bot = get_bot(session, UUID(bot_id))
-        _set_app_setting(session, WIDGET_BOT_KEY, str(bot.id))
-        return {"bot_id": str(bot.id), "bot_name": bot.name}
+        bot_id: Optional[str] = None
+        bot_name: Optional[str] = None
+        if payload.bot_id is not None:
+            raw_bot_id = str(payload.bot_id or "").strip()
+            if not raw_bot_id:
+                _set_app_setting(session, WIDGET_BOT_KEY, "")
+            else:
+                bot = get_bot(session, UUID(raw_bot_id))
+                _set_app_setting(session, WIDGET_BOT_KEY, str(bot.id))
+                bot_id = str(bot.id)
+                bot_name = bot.name
+
+        if payload.widget_mode is not None:
+            raw_mode = str(payload.widget_mode or "").strip().lower()
+            if raw_mode not in ("mic", "text"):
+                raise HTTPException(status_code=400, detail="widget_mode must be 'mic' or 'text'")
+            _set_app_setting(session, WIDGET_MODE_KEY, raw_mode)
+
+        if bot_id is None:
+            stored_bot_id = _get_app_setting(session, WIDGET_BOT_KEY)
+            if stored_bot_id:
+                try:
+                    bot = get_bot(session, UUID(stored_bot_id))
+                    bot_id = str(bot.id)
+                    bot_name = bot.name
+                except Exception:
+                    bot_id = None
+                    bot_name = None
+
+        widget_mode = (_get_app_setting(session, WIDGET_MODE_KEY) or "").strip().lower()
+        if widget_mode not in ("mic", "text"):
+            widget_mode = "mic"
+        return {"bot_id": bot_id, "bot_name": bot_name, "widget_mode": widget_mode}
 
     @app.post("/api/open-dashboard")
     def api_open_dashboard() -> dict:
