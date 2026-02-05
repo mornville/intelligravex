@@ -300,8 +300,12 @@ export default function WidgetPage() {
     if (nextMode === 'text') setAssistantText('')
     try {
       const res = await apiPost<WidgetConfig>('/api/widget-config', { widget_mode: nextMode })
-      setBotId(res?.bot_id || null)
-      setBotName(res?.bot_name || null)
+      if (res?.bot_id) {
+        setBotId(res.bot_id)
+      }
+      if (res?.bot_name) {
+        setBotName(res.bot_name)
+      }
       const mode: WidgetMode = res?.widget_mode === 'text' ? 'text' : 'mic'
       setWidgetMode(mode)
     } catch (e: any) {

@@ -2480,15 +2480,29 @@ label {
   font-size: 12px;
   line-height: 1.4;
   color: var(--text);
-  max-height: 72px;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
+  max-height: 96px;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.6) transparent;
+  white-space: pre-wrap;
 }
 
 .widgetTextReply.empty {
   color: var(--muted);
+}
+
+.widgetTextReply::-webkit-scrollbar {
+  width: 6px;
+}
+
+.widgetTextReply::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.widgetTextReply::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 999px;
 }
 
 .widgetTextInputRow {

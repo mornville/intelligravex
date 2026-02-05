@@ -19,6 +19,18 @@ static void LogLine(NSString *line);
 }
 @end
 
+@interface OverlayWindow : NSWindow
+@end
+
+@implementation OverlayWindow
+- (BOOL)canBecomeKeyWindow {
+  return YES;
+}
+- (BOOL)canBecomeMainWindow {
+  return YES;
+}
+@end
+
 @interface OverlayApp : NSObject <NSApplicationDelegate, WKNavigationDelegate>
 @property (nonatomic, strong) NSWindow *window;
 @property (nonatomic, strong) WKWebView *webView;
@@ -56,7 +68,7 @@ static void LogLine(NSString *line);
   LogLine(@"Setting up window");
   @try {
     NSRect rect = NSMakeRect(0, 0, 200, 200);
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:rect
+    OverlayWindow *window = [[OverlayWindow alloc] initWithContentRect:rect
                                                    styleMask:NSWindowStyleMaskBorderless
                                                      backing:NSBackingStoreBuffered
                                                        defer:NO];
@@ -87,10 +99,10 @@ static void LogLine(NSString *line);
     [window.contentView addSubview:webView];
     LogLine(@"WebView added");
 
-    [window orderFrontRegardless];
+    [window makeKeyAndOrderFront:nil];
     self.window = window;
     self.webView = webView;
-    [self loadWidget];
+    [self loadLoadingScreen];
     LogLine(@"Window setup complete");
   } @catch (NSException *ex) {
     LogLine([NSString stringWithFormat:@"setupWindow exception: %@", ex.reason ?: @"unknown"]);
@@ -171,6 +183,28 @@ static void LogLine(NSString *line);
   [self loadWidgetForce:NO];
 }
 
+- (void)loadLoadingScreen {
+  if (!self.webView) return;
+  NSString *html =
+    @"<!doctype html>"
+    "<html><head><meta charset=\"utf-8\"/>"
+    "<style>"
+    "html,body{margin:0;height:100%;font-family:-apple-system,Helvetica,Arial,sans-serif;background:transparent;color:#e5e7eb;}"
+    ".wrap{height:100%;display:flex;align-items:center;justify-content:center;}"
+    ".card{width:160px;height:160px;border-radius:22px;background:rgba(8,12,28,0.85);"
+    "box-shadow:0 18px 36px rgba(2,6,23,0.6);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;}"
+    ".spinner{width:28px;height:28px;border-radius:50%;border:3px solid rgba(255,255,255,0.15);"
+    "border-top-color:rgba(138,180,248,0.95);animation:spin 1s linear infinite;}"
+    ".label{font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:rgba(203,213,225,0.85);}"
+    "@keyframes spin{to{transform:rotate(360deg);}}"
+    "</style></head>"
+    "<body><div class=\"wrap\"><div class=\"card\"><div class=\"spinner\"></div>"
+    "<div class=\"label\">Starting...</div></div></div></body></html>";
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self.webView loadHTMLString:html baseURL:nil];
+  });
+}
+
 - (void)loadWidgetForce:(BOOL)force {
   if (!self.webView) return;
   NSString *urlString = [NSString stringWithFormat:@"http://%@:%@/widget", self.host, self.port];
@@ -184,10 +218,12 @@ static void LogLine(NSString *line);
 }
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+  [self loadLoadingScreen];
   [self scheduleReload];
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+  [self loadLoadingScreen];
   [self scheduleReload];
 }
 
@@ -212,7 +248,8 @@ static void LogLine(NSString *line);
     return;
   }
   [self positionWindow:self.window];
-  [self.window orderFrontRegardless];
+  [self.window makeKeyAndOrderFront:nil];
+  [NSApp activateIgnoringOtherApps:YES];
 }
 
 - (void)registerHotkey {
