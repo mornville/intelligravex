@@ -56,6 +56,7 @@ export default function WidgetPage() {
   const recordingRef = useRef(false)
   const activeReqIdRef = useRef<string | null>(null)
   const activeTextReqIdRef = useRef<string | null>(null)
+  const interimShownRef = useRef(false)
   const widgetModeRef = useRef<WidgetMode>('mic')
 
   useEffect(() => {
@@ -160,14 +161,27 @@ export default function WidgetPage() {
         setAssistantText((prev) => prev + delta)
         return
       }
+      if (msg.type === 'interim') {
+        if (widgetModeRef.current !== 'text') return
+        const text = String(msg.text || '').trim()
+        if (!text) return
+        const reqId = String(msg.req_id || '')
+        if (activeTextReqIdRef.current && reqId && reqId !== activeTextReqIdRef.current) return
+        if (!activeTextReqIdRef.current && reqId) activeTextReqIdRef.current = reqId
+        interimShownRef.current = true
+        setAssistantText((prev) => (prev ? `${prev}\n${text}` : text))
+        return
+      }
       if (msg.type === 'done') {
         if (widgetModeRef.current !== 'text') return
         const reqId = String(msg.req_id || '')
         if (activeTextReqIdRef.current && reqId && reqId !== activeTextReqIdRef.current) return
         const text = String(msg.text || '')
         if (text.trim()) {
-          setAssistantText((prev) => (text.length >= prev.length ? text : prev))
+          const shouldReplace = interimShownRef.current
+          setAssistantText((prev) => (shouldReplace || text.length >= prev.length ? text : prev))
         }
+        interimShownRef.current = false
         activeTextReqIdRef.current = null
         return
       }
@@ -272,6 +286,7 @@ export default function WidgetPage() {
     setErr(null)
     setTextInput('')
     setAssistantText('')
+    interimShownRef.current = false
     const reqId = makeId()
     activeTextReqIdRef.current = reqId
     wsRef.current.send(
