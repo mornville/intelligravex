@@ -173,6 +173,12 @@ class IntegrationTool(SQLModel, table=True):
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
 
 
+class AppSetting(SQLModel, table=True):
+    key: str = Field(primary_key=True)
+    value: str = Field(default="")
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+
 class ClientKey(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     name: str = Field(index=True)

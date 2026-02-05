@@ -18,6 +18,7 @@ import type {
   ConversationFiles,
   HostAction,
   Options,
+  WidgetConfig,
 } from '../types'
 import { fmtIso } from '../utils/format'
 import {
@@ -58,6 +59,9 @@ export default function DashboardPage() {
   const [options, setOptions] = useState<Options | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  const [widgetBotId, setWidgetBotId] = useState<string | null>(null)
+  const [widgetErr, setWidgetErr] = useState<string | null>(null)
+  const [widgetSaving, setWidgetSaving] = useState(false)
   const [singleTabBlocked, setSingleTabBlocked] = useState(false)
   const [singleTabMessage, setSingleTabMessage] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -152,16 +156,18 @@ export default function DashboardPage() {
       setLoading(true)
       setErr(null)
       try {
-        const [b, g, c, o] = await Promise.all([
+        const [b, g, c, o, w] = await Promise.all([
           apiGet<{ items: Bot[] }>('/api/bots'),
           apiGet<{ items: GroupConversationSummary[] }>('/api/group-conversations'),
           apiGet<{ items: ConversationSummary[] }>(`/api/conversations?page=1&page_size=200`),
           apiGet<Options>('/api/options'),
+          apiGet<WidgetConfig>('/api/widget-config'),
         ])
         setBots(b.items)
         setGroups(g.items)
         setConversations(c.items)
         setOptions(o)
+        setWidgetBotId(w?.bot_id || null)
         const initialUpdated: Record<string, string> = {}
         const initialUnseen: Record<string, number> = {}
         c.items.forEach((item) => {
@@ -214,6 +220,19 @@ export default function DashboardPage() {
       }
     })()
   }, [])
+
+  async function updateWidgetBot(nextBotId: string | null) {
+    setWidgetSaving(true)
+    setWidgetErr(null)
+    try {
+      const res = await apiPost<WidgetConfig>('/api/widget-config', { bot_id: nextBotId })
+      setWidgetBotId(res?.bot_id || null)
+    } catch (e: any) {
+      setWidgetErr(String(e?.message || e))
+    } finally {
+      setWidgetSaving(false)
+    }
+  }
 
   useEffect(() => {
     const bc = new BroadcastChannel('gravex-single-tab')
@@ -1051,6 +1070,7 @@ export default function DashboardPage() {
           ) : (
             <>
               {err ? <div className="alert">{err}</div> : null}
+              {widgetErr ? <div className="alert">{widgetErr}</div> : null}
               {showBots ? (
                 <>
                   <div className="chatSectionLabelRow">
@@ -1189,6 +1209,16 @@ export default function DashboardPage() {
                 }}
               >
                 New conversation
+              </button>
+            ) : null}
+            {selectedType === 'assistant' && selectedBotId ? (
+              <button
+                className={`btn ${widgetBotId === selectedBotId ? 'primary' : ''}`}
+                onClick={() => void updateWidgetBot(selectedBotId)}
+                disabled={widgetSaving || widgetBotId === selectedBotId}
+                title="Set this assistant as the mic overlay"
+              >
+                {widgetBotId === selectedBotId ? 'Widget enabled' : 'Enable widget'}
               </button>
             ) : null}
             {selectedType === 'group' ? (

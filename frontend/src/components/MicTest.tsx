@@ -8,7 +8,7 @@ import {
   UserIcon,
   WrenchScrewdriverIcon,
 } from '@heroicons/react/24/solid'
-import { apiGet, BACKEND_URL } from '../api/client'
+import { apiGet, BACKEND_URL, downloadFile } from '../api/client'
 import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
@@ -131,6 +131,7 @@ export default function MicTest({
   const [showFilesPane, setShowFilesPane] = useState(true)
   const [files, setFiles] = useState<ConversationFiles | null>(null)
   const [filesErr, setFilesErr] = useState<string | null>(null)
+  const [filesMsg, setFilesMsg] = useState<string | null>(null)
   const [filesLoading, setFilesLoading] = useState(false)
   const [filesRecursive, setFilesRecursive] = useState(true)
   const [filesHidden, setFilesHidden] = useState(false)
@@ -171,6 +172,7 @@ export default function MicTest({
   const isNearBottomRef = useRef(true)
   const pendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
   const cacheAppliedConvRef = useRef<string | null>(null)
+  const downloadMsgTimerRef = useRef<number | null>(null)
 
   const activeStage = useMemo(() => {
     if (connectionStage === 'disconnected' || connectionStage === 'error') return connectionStage
@@ -362,6 +364,19 @@ export default function MicTest({
     }
   }
 
+  async function handleFileDownload(downloadUrl: string, filename: string) {
+    setFilesErr(null)
+    setFilesMsg(null)
+    try {
+      await downloadFile(downloadUrl, filename || 'download')
+      setFilesMsg(`Downloaded ${filename || 'file'}.`)
+      if (downloadMsgTimerRef.current) window.clearTimeout(downloadMsgTimerRef.current)
+      downloadMsgTimerRef.current = window.setTimeout(() => setFilesMsg(null), 2500)
+    } catch (e: any) {
+      setFilesErr(String(e?.message || e))
+    }
+  }
+
   const canInit = useMemo(
     () => connectionStage === 'idle' || connectionStage === 'disconnected' || connectionStage === 'error',
     [connectionStage],
@@ -370,6 +385,12 @@ export default function MicTest({
     if (layout === 'whatsapp') return connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
     return speak && connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
   }, [layout, speak, conversationId, activeStage, connectionStage])
+
+  useEffect(() => {
+    return () => {
+      if (downloadMsgTimerRef.current) window.clearTimeout(downloadMsgTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     const token = getBasicAuthToken()
@@ -1024,6 +1045,14 @@ export default function MicTest({
         </div>
         {containerErr ? <div className="muted">{containerErr}</div> : null}
         {filesErr ? <div className="alert" style={{ marginTop: 8 }}>{filesErr}</div> : null}
+        {filesMsg ? (
+          <div
+            className="alert"
+            style={{ marginTop: 8, borderColor: 'rgba(80, 200, 160, 0.4)', background: 'rgba(80, 200, 160, 0.1)' }}
+          >
+            {filesMsg}
+          </div>
+        ) : null}
         <div className="row gap" style={{ marginTop: 8, alignItems: 'center' }}>
           <label className="check">
             <input
@@ -1053,7 +1082,7 @@ export default function MicTest({
             {modalItems.length === 0 ? (
               <div className="muted">No files found.</div>
             ) : (
-              renderTree(tree, 0, expandedPaths, setExpandedPaths)
+              renderTree(tree, 0, expandedPaths, setExpandedPaths, handleFileDownload)
             )}
           </div>
         )}
@@ -1400,23 +1429,29 @@ function renderTree(
   depth: number,
   expanded: Record<string, boolean>,
   setExpanded: Dispatch<SetStateAction<Record<string, boolean>>>,
+  onDownload?: (downloadUrl: string, filename: string) => void,
 ): React.ReactNode {
   if (!node.children.length && node.path === '') return null
   if (node.path === '') {
-    return node.children.map((child) => renderTree(child, depth, expanded, setExpanded))
+    return node.children.map((child) => renderTree(child, depth, expanded, setExpanded, onDownload))
   }
   const isOpen = !!expanded[node.path]
   const indent = depth * 16
-  const href = node.download_url ? new URL(node.download_url, BACKEND_URL).toString() : ''
+  const canDownload = Boolean(onDownload && node.download_url && !node.is_dir)
   const size = node.is_dir ? '—' : node.size_bytes === null ? '—' : fmtBytes(node.size_bytes || 0)
   const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '—'
   const fallbackName = node.name || node.path.split('/').filter(Boolean).pop() || node.path || '(root)'
   const nameNode = node.is_dir ? (
     <div className="treeName mono">{fallbackName ? `${fallbackName}/` : fallbackName}</div>
-  ) : href ? (
-    <a className="treeName mono link" href={href} title={fallbackName}>
+  ) : canDownload ? (
+    <button
+      type="button"
+      className="btn linkBtn treeName mono link"
+      title={fallbackName}
+      onClick={() => onDownload?.(node.download_url || '', fallbackName)}
+    >
       {fallbackName}
-    </a>
+    </button>
   ) : (
     <div className="treeName mono">{fallbackName}</div>
   )
@@ -1442,7 +1477,9 @@ function renderTree(
           </div>
         </div>
       </div>
-      {node.is_dir && isOpen ? node.children.map((child) => renderTree(child, depth + 1, expanded, setExpanded)) : null}
+      {node.is_dir && isOpen
+        ? node.children.map((child) => renderTree(child, depth + 1, expanded, setExpanded, onDownload))
+        : null}
     </div>
   )
 }

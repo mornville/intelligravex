@@ -54,6 +54,21 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
+export async function downloadFile(path: string, filename?: string): Promise<void> {
+  const res = await fetch(withBase(path), { method: 'GET', headers: { ...authHeader() } })
+  if (!res.ok) throw new Error(await safeErr(res))
+  const blob = await res.blob()
+  const objectUrl = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = filename || 'download'
+  a.rel = 'noreferrer'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.URL.revokeObjectURL(objectUrl)
+}
+
 async function safeErr(res: Response): Promise<string> {
   try {
     const j = await res.json()

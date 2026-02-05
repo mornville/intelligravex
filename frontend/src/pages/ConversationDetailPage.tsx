@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { apiGet, BACKEND_URL } from '../api/client'
+import { apiGet, downloadFile } from '../api/client'
 import LoadingSpinner from '../components/LoadingSpinner'
 import type { ConversationDetail, ConversationMessage, ConversationFiles, DataAgentStatus } from '../types'
 import { fmtIso, fmtMs, fmtUsd } from '../utils/format'
@@ -47,10 +47,13 @@ export default function ConversationDetailPage() {
   const [agentLoading, setAgentLoading] = useState(false)
   const [files, setFiles] = useState<ConversationFiles | null>(null)
   const [filesErr, setFilesErr] = useState<string | null>(null)
+  const [filesDownloadErr, setFilesDownloadErr] = useState<string | null>(null)
+  const [filesDownloadMsg, setFilesDownloadMsg] = useState<string | null>(null)
   const [filesLoading, setFilesLoading] = useState(false)
   const [filesPath, setFilesPath] = useState('')
   const [filesRecursive, setFilesRecursive] = useState(false)
   const [filesHidden, setFilesHidden] = useState(false)
+  const downloadMsgTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (!conversationId) return
@@ -90,6 +93,7 @@ export default function ConversationDetailPage() {
     if (includeHidden) params.set('include_hidden', '1')
     setFilesLoading(true)
     setFilesErr(null)
+    setFilesDownloadErr(null)
     try {
       const d = await apiGet<ConversationFiles>(`/api/conversations/${conversationId}/files?${params.toString()}`)
       setFiles(d)
@@ -108,6 +112,28 @@ export default function ConversationDetailPage() {
     void loadAgentStatus()
     void loadFiles('')
   }, [conversationId])
+
+  useEffect(() => {
+    return () => {
+      if (downloadMsgTimerRef.current) {
+        window.clearTimeout(downloadMsgTimerRef.current)
+      }
+    }
+  }, [])
+
+  async function handleDownload(downloadUrl: string | null | undefined, filename: string) {
+    if (!downloadUrl) return
+    setFilesDownloadErr(null)
+    setFilesDownloadMsg(null)
+    try {
+      await downloadFile(downloadUrl, filename || 'download')
+      setFilesDownloadMsg(`Downloaded ${filename || 'file'}.`)
+      if (downloadMsgTimerRef.current) window.clearTimeout(downloadMsgTimerRef.current)
+      downloadMsgTimerRef.current = window.setTimeout(() => setFilesDownloadMsg(null), 2500)
+    } catch (e: any) {
+      setFilesDownloadErr(String(e?.message || e))
+    }
+  }
 
   const conv = data?.conversation
   const statusLabel = !agentStatus
@@ -247,7 +273,15 @@ export default function ConversationDetailPage() {
                 {filesLoading ? <LoadingSpinner label="Refreshing" /> : 'Refresh'}
               </button>
             </div>
-            {filesErr ? <div className="alert">{filesErr}</div> : null}
+            {filesErr || filesDownloadErr ? <div className="alert">{filesErr || filesDownloadErr}</div> : null}
+            {filesDownloadMsg ? (
+              <div
+                className="alert"
+                style={{ borderColor: 'rgba(80, 200, 160, 0.4)', background: 'rgba(80, 200, 160, 0.1)' }}
+              >
+                {filesDownloadMsg}
+              </div>
+            ) : null}
             <div className="row gap" style={{ marginTop: 10, alignItems: 'center' }}>
               <label className="muted">Path</label>
               <input
@@ -319,7 +353,6 @@ export default function ConversationDetailPage() {
                     </tr>
                   ) : (
                     visibleItems.map((it) => {
-                      const href = it.download_url ? new URL(it.download_url, BACKEND_URL).toString() : ''
                       const size = it.size_bytes === null ? '—' : fmtBytes(it.size_bytes)
                       return (
                         <tr key={`${it.path}_${it.name}`}>
@@ -334,9 +367,13 @@ export default function ConversationDetailPage() {
                                 Open
                               </button>
                             ) : it.download_url ? (
-                              <a className="btn" href={href}>
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={() => void handleDownload(it.download_url, it.name || 'download')}
+                              >
                                 Download
-                              </a>
+                              </button>
                             ) : (
                               <span className="muted">—</span>
                             )}

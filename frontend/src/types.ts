@@ -216,6 +216,11 @@ export type Options = {
   http_methods?: string[]
 }
 
+export type WidgetConfig = {
+  bot_id: UUID | null
+  bot_name?: string | null
+}
+
 export type IntegrationTool = {
   id: UUID
   bot_id: UUID

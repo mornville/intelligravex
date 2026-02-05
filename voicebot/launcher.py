@@ -290,15 +290,18 @@ def _ask_initial_port_zenity(default_port: int) -> Optional[int]:
 
 
 def _select_port(host: str, port: int) -> int:
-    initial = _ask_initial_port_gui(port)
-    if initial is None:
-        initial = _ask_initial_port_osascript(port)
-    if initial is None:
-        initial = _ask_initial_port_zenity(port)
-    if initial == 0:
-        raise SystemExit(0)
-    if initial is not None:
-        port = int(initial)
+    prompt_initial_env = (os.environ.get("VOICEBOT_PROMPT_INITIAL_PORT") or "").strip().lower()
+    prompt_initial = prompt_initial_env not in ("0", "false", "no")
+    if prompt_initial:
+        initial = _ask_initial_port_gui(port)
+        if initial is None:
+            initial = _ask_initial_port_osascript(port)
+        if initial is None:
+            initial = _ask_initial_port_zenity(port)
+        if initial == 0:
+            raise SystemExit(0)
+        if initial is not None:
+            port = int(initial)
     if port < 1024 or port > 65535:
         port = 8000
     if _port_available(host, port):
@@ -331,10 +334,20 @@ def launch(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = Tr
 
     Intended for packaged desktop wrappers (macOS/Linux/Windows).
     """
+    open_browser_env = (os.environ.get("VOICEBOT_OPEN_BROWSER") or "").strip().lower()
+    if open_browser_env:
+        open_browser = open_browser_env not in ("0", "false", "no")
     port = _select_port(host, port)
+    os.environ["VOICEBOT_LAUNCH_HOST"] = host
+    os.environ["VOICEBOT_LAUNCH_PORT"] = str(port)
+    print(f"GRAVEX_HOST={host}", flush=True)
+    print(f"GRAVEX_PORT={port}", flush=True)
 
     if open_browser:
-        url = f"http://{host}:{port}"
+        open_path = (os.environ.get("VOICEBOT_OPEN_PATH") or "").strip()
+        if open_path and not open_path.startswith("/"):
+            open_path = f"/{open_path}"
+        url = f"http://{host}:{port}{open_path}"
 
         def _open() -> None:
             time.sleep(1.2)

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
@@ -42,7 +43,7 @@ from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall, CitationEvent
-from voicebot.models import Bot, Conversation, ConversationMessage, HostAction
+from voicebot.models import AppSetting, Bot, Conversation, ConversationMessage, HostAction
 from voicebot.store import (
     create_bot,
     create_conversation,
@@ -130,6 +131,8 @@ other features work without it.
 Never claim features that are not listed here. Do not ask the user to run commands. Do not use tools.
 """.strip()
 
+WIDGET_BOT_KEY = "widget_bot_id"
+
 
 def _mask_secret(value: str, *, keep_start: int = 10, keep_end: int = 6) -> str:
     v = value or ""
@@ -175,6 +178,25 @@ def _headers_configured(headers_json: str) -> bool:
     if not isinstance(obj, dict):
         return bool((headers_json or "").strip())
     return any(k for k, v in obj.items() if str(k).strip() and (v is not None and str(v).strip()))
+
+
+def _get_app_setting(session: Session, key: str) -> Optional[str]:
+    row = session.get(AppSetting, key)
+    if not row:
+        return None
+    return str(row.value or "").strip() or None
+
+
+def _set_app_setting(session: Session, key: str, value: str) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    row = session.get(AppSetting, key)
+    if row:
+        row.value = value
+        row.updated_at = now
+    else:
+        row = AppSetting(key=key, value=value, updated_at=now)
+        session.add(row)
+    session.commit()
 
 
 def _get_json_path(obj: Any, path: str) -> Any:
@@ -1038,6 +1060,10 @@ class GitTokenRequest(BaseModel):
     token: str
 
 
+class WidgetConfigRequest(BaseModel):
+    bot_id: Optional[str] = None
+
+
 class BotCreateRequest(BaseModel):
     name: str
     openai_model: str = "o4-mini"
@@ -1337,6 +1363,45 @@ def create_app() -> FastAPI:
     def api_system_bot(session: Session = Depends(get_session)) -> dict:
         bot = _get_or_create_system_bot(session)
         return {"id": str(bot.id), "name": bot.name}
+
+    @app.get("/api/widget-config")
+    def api_widget_config(session: Session = Depends(get_session)) -> dict:
+        bot_id = _get_app_setting(session, WIDGET_BOT_KEY)
+        bot_name = None
+        if bot_id:
+            try:
+                bot = get_bot(session, UUID(bot_id))
+                bot_name = bot.name
+            except Exception:
+                bot_id = None
+        return {"bot_id": bot_id, "bot_name": bot_name}
+
+    @app.post("/api/widget-config")
+    def api_widget_config_update(
+        payload: WidgetConfigRequest = Body(...),
+        session: Session = Depends(get_session),
+    ) -> dict:
+        bot_id = str(payload.bot_id or "").strip()
+        if not bot_id:
+            _set_app_setting(session, WIDGET_BOT_KEY, "")
+            return {"bot_id": None, "bot_name": None}
+        bot = get_bot(session, UUID(bot_id))
+        _set_app_setting(session, WIDGET_BOT_KEY, str(bot.id))
+        return {"bot_id": str(bot.id), "bot_name": bot.name}
+
+    @app.post("/api/open-dashboard")
+    def api_open_dashboard() -> dict:
+        host = (os.environ.get("VOICEBOT_LAUNCH_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+        port = (os.environ.get("VOICEBOT_LAUNCH_PORT") or "8000").strip() or "8000"
+        path = (os.environ.get("VOICEBOT_OPEN_PATH") or "/dashboard").strip() or "/dashboard"
+        if not path.startswith("/"):
+            path = f"/{path}"
+        url = f"http://{host}:{port}{path}"
+        try:
+            webbrowser.open(url)
+        except Exception:
+            return {"ok": False, "url": url}
+        return {"ok": True, "url": url}
 
     @app.get("/", include_in_schema=False)
     def root(request: Request):
