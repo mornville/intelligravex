@@ -333,7 +333,7 @@ export default function WidgetPage() {
 
   async function openDashboard() {
     try {
-      await apiPost('/api/open-dashboard', {})
+      await apiPost('/api/open-dashboard', { path: '/dashboard' })
     } catch (e: any) {
       setErr(String(e?.message || e))
     }
