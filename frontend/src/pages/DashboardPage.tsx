@@ -43,11 +43,26 @@ type MentionState = {
 
 const PAGE_SIZE = 10
 
-function getOldestGroupCursor(items: ConversationMessage[]): string | null {
-  let oldest: string | null = null
+type MessageCursor = {
+  created_at: string
+  id: string
+}
+
+function getOldestGroupCursor(items: ConversationMessage[]): MessageCursor | null {
+  let oldest: MessageCursor | null = null
   for (const it of items) {
-    if (!it.created_at) continue
-    if (!oldest || it.created_at < oldest) oldest = it.created_at
+    if (!it.created_at || !it.id) continue
+    if (!oldest) {
+      oldest = { created_at: it.created_at, id: it.id }
+      continue
+    }
+    if (it.created_at < oldest.created_at) {
+      oldest = { created_at: it.created_at, id: it.id }
+      continue
+    }
+    if (it.created_at === oldest.created_at && String(it.id) < String(oldest.id)) {
+      oldest = { created_at: it.created_at, id: it.id }
+    }
   }
   return oldest
 }
@@ -82,7 +97,7 @@ export default function DashboardPage() {
   const [groupMessages, setGroupMessages] = useState<ConversationMessage[]>([])
   const [groupLoadingOlder, setGroupLoadingOlder] = useState(false)
   const [groupHasMore, setGroupHasMore] = useState(true)
-  const [groupOldestCursor, setGroupOldestCursor] = useState<string | null>(null)
+  const [groupOldestCursor, setGroupOldestCursor] = useState<MessageCursor | null>(null)
   const [groupText, setGroupText] = useState('')
   const [groupSendErr, setGroupSendErr] = useState<string | null>(null)
   const [mention, setMention] = useState<MentionState | null>(null)
@@ -635,9 +650,10 @@ export default function DashboardPage() {
     setGroupLoadingOlder(true)
     let didAdd = false
     try {
-      const before = encodeURIComponent(groupOldestCursor)
+      const before = encodeURIComponent(groupOldestCursor.created_at)
+      const beforeId = encodeURIComponent(groupOldestCursor.id)
       const d = await apiGet<{ messages: ConversationMessage[] }>(
-        `/api/group-conversations/${selectedGroupId}/messages?before=${before}&limit=${PAGE_SIZE}&order=desc`,
+        `/api/group-conversations/${selectedGroupId}/messages?before=${before}&before_id=${beforeId}&limit=${PAGE_SIZE}&order=desc`,
       )
       const raw = Array.isArray(d.messages) ? d.messages : []
       const mapped = raw.reverse()

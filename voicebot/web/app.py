@@ -35,6 +35,7 @@ from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, delete, select
+from sqlalchemy import and_, or_
 
 from voicebot.config import Settings
 from voicebot.crypto import CryptoError, build_hint, get_crypto_box
@@ -4053,6 +4054,47 @@ def create_app() -> FastAPI:
         except Exception:
             return max(0.5, min(12.0, float(len(wav_bytes)) / float(max(1, sr * 2))))
 
+    def _split_tts_buffer(buf: str, min_words: int) -> tuple[Optional[str], str]:
+        if not buf:
+            return None, buf
+        word_count = 0
+        in_word = False
+        cut_idx: Optional[int] = None
+        for i, ch in enumerate(buf):
+            if ch.isspace():
+                if in_word:
+                    word_count += 1
+                    in_word = False
+                    if word_count >= min_words:
+                        cut_idx = i
+                        break
+            else:
+                if not in_word:
+                    in_word = True
+        if cut_idx is None:
+            return None, buf
+        chunk = buf[:cut_idx].strip()
+        remainder = buf[cut_idx:]
+        return (chunk if chunk else None, remainder)
+
+    def _iter_tts_chunks(delta_q: "queue.Queue[Optional[str]]", min_words: int) -> Generator[str, None, None]:
+        buffer = ""
+        while True:
+            d = delta_q.get()
+            if d is None:
+                break
+            if not d:
+                continue
+            buffer += d
+            while True:
+                chunk, buffer = _split_tts_buffer(buffer, min_words)
+                if not chunk:
+                    break
+                yield chunk
+        tail = buffer.strip()
+        if tail:
+            yield tail
+
     def _record_llm_debug_payload(
         *,
         conversation_id: UUID,
@@ -4445,15 +4487,9 @@ def create_app() -> FastAPI:
                                 return
                             try:
                                 synth = tts_synth or _get_tts_synth_fn(bot, api_key)
-                                parts: list[str] = []
-                                while True:
-                                    d = delta_q_tts.get()
-                                    if d is None:
-                                        break
-                                    if d:
-                                        parts.append(d)
-                                text_to_speak = "".join(parts).strip()
-                                if text_to_speak:
+                                for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                                    if not text_to_speak:
+                                        continue
                                     with metrics_lock:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
@@ -5593,15 +5629,9 @@ def create_app() -> FastAPI:
                                 return
                             try:
                                 tts_synth = _get_tts_synth_fn(bot, api_key)
-                                parts: list[str] = []
-                                while True:
-                                    d = delta_q_tts.get()
-                                    if d is None:
-                                        break
-                                    if d:
-                                        parts.append(d)
-                                text_to_speak = "".join(parts).strip()
-                                if text_to_speak:
+                                for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                                    if not text_to_speak:
+                                        continue
                                     with metrics_lock:
                                         if tts_start_ts is None:
                                             tts_start_ts = time.time()
@@ -9108,6 +9138,7 @@ def create_app() -> FastAPI:
         conversation_id: UUID,
         since: Optional[str] = None,
         before: Optional[str] = None,
+        before_id: Optional[str] = None,
         limit: int = 200,
         order: str = "asc",
         include_tools: bool = False,
@@ -9126,17 +9157,34 @@ def create_app() -> FastAPI:
                 before_dt = dt.datetime.fromisoformat(str(before))
             except Exception:
                 before_dt = None
+        before_uuid: UUID | None = None
+        if before_id:
+            try:
+                before_uuid = UUID(str(before_id))
+            except Exception:
+                before_uuid = None
         stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
         if not include_tools:
             stmt = stmt.where(ConversationMessage.role != "tool")
         if since_dt is not None:
             stmt = stmt.where(ConversationMessage.created_at > since_dt)
         if before_dt is not None:
-            stmt = stmt.where(ConversationMessage.created_at < before_dt)
+            if before_uuid is not None:
+                stmt = stmt.where(
+                    or_(
+                        ConversationMessage.created_at < before_dt,
+                        and_(
+                            ConversationMessage.created_at == before_dt,
+                            ConversationMessage.id < before_uuid,
+                        ),
+                    )
+                )
+            else:
+                stmt = stmt.where(ConversationMessage.created_at < before_dt)
         if str(order).lower() == "desc":
-            stmt = stmt.order_by(ConversationMessage.created_at.desc())
+            stmt = stmt.order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
         else:
-            stmt = stmt.order_by(ConversationMessage.created_at.asc())
+            stmt = stmt.order_by(ConversationMessage.created_at.asc(), ConversationMessage.id.asc())
         stmt = stmt.limit(min(500, max(1, int(limit))))
         msgs_raw = list(session.exec(stmt))
         messages = []
@@ -9342,6 +9390,7 @@ def create_app() -> FastAPI:
         conversation_id: UUID,
         since: Optional[str] = None,
         before: Optional[str] = None,
+        before_id: Optional[str] = None,
         limit: int = 200,
         order: str = "asc",
         include_tools: bool = False,
@@ -9362,17 +9411,34 @@ def create_app() -> FastAPI:
                 before_dt = dt.datetime.fromisoformat(str(before))
             except Exception:
                 before_dt = None
+        before_uuid: UUID | None = None
+        if before_id:
+            try:
+                before_uuid = UUID(str(before_id))
+            except Exception:
+                before_uuid = None
         stmt = select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id)
         if not include_tools:
             stmt = stmt.where(ConversationMessage.role != "tool")
         if since_dt is not None:
             stmt = stmt.where(ConversationMessage.created_at > since_dt)
         if before_dt is not None:
-            stmt = stmt.where(ConversationMessage.created_at < before_dt)
+            if before_uuid is not None:
+                stmt = stmt.where(
+                    or_(
+                        ConversationMessage.created_at < before_dt,
+                        and_(
+                            ConversationMessage.created_at == before_dt,
+                            ConversationMessage.id < before_uuid,
+                        ),
+                    )
+                )
+            else:
+                stmt = stmt.where(ConversationMessage.created_at < before_dt)
         if str(order).lower() == "desc":
-            stmt = stmt.order_by(ConversationMessage.created_at.desc())
+            stmt = stmt.order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
         else:
-            stmt = stmt.order_by(ConversationMessage.created_at.asc())
+            stmt = stmt.order_by(ConversationMessage.created_at.asc(), ConversationMessage.id.asc())
         stmt = stmt.limit(min(500, max(1, int(limit))))
         msgs_raw = list(session.exec(stmt))
         messages: list[dict] = []
@@ -9626,15 +9692,9 @@ def create_app() -> FastAPI:
                     return
                 try:
                     tts_synth = _get_tts_synth_fn(bot, api_key)
-                    parts: list[str] = []
-                    while True:
-                        d = delta_q_tts.get()
-                        if d is None:
-                            break
-                        if d:
-                            parts.append(d)
-                    text_to_speak = "".join(parts).strip()
-                    if text_to_speak:
+                    for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                        if not text_to_speak:
+                            continue
                         wav, sr = tts_synth(text_to_speak)
                         audio_q.put((wav, sr))
                 finally:
@@ -9777,15 +9837,9 @@ def create_app() -> FastAPI:
                     return
                 try:
                     tts_synth = _get_tts_synth_fn(bot, api_key)
-                    parts: list[str] = []
-                    while True:
-                        d = delta_q_tts.get()
-                        if d is None:
-                            break
-                        if d:
-                            parts.append(d)
-                    text_to_speak = "".join(parts).strip()
-                    if text_to_speak:
+                    for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                        if not text_to_speak:
+                            continue
                         wav, sr = tts_synth(text_to_speak)
                         audio_q.put((wav, sr))
                 finally:

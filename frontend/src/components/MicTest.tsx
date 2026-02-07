@@ -37,13 +37,28 @@ type ChatItem = {
   citations?: Citation[]
 }
 
+type MessageCursor = {
+  created_at: string
+  id: string
+}
+
 const PAGE_SIZE = 10
 
-function getOldestCursor(items: ChatItem[]): string | null {
-  let oldest: string | null = null
+function getOldestCursor(items: ChatItem[]): MessageCursor | null {
+  let oldest: MessageCursor | null = null
   for (const it of items) {
-    if (!it.created_at) continue
-    if (!oldest || it.created_at < oldest) oldest = it.created_at
+    if (!it.created_at || !it.id) continue
+    if (!oldest) {
+      oldest = { created_at: it.created_at, id: it.id }
+      continue
+    }
+    if (it.created_at < oldest.created_at) {
+      oldest = { created_at: it.created_at, id: it.id }
+      continue
+    }
+    if (it.created_at === oldest.created_at && String(it.id) < String(oldest.id)) {
+      oldest = { created_at: it.created_at, id: it.id }
+    }
   }
   return oldest
 }
@@ -146,7 +161,7 @@ export default function MicTest({
   )
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasMore, setHasMore] = useState(true)
-  const [oldestCursor, setOldestCursor] = useState<string | null>(null)
+  const [oldestCursor, setOldestCursor] = useState<MessageCursor | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const wsOpenPromiseRef = useRef<Promise<boolean> | null>(null)
@@ -809,9 +824,10 @@ export default function MicTest({
     setLoadingOlder(true)
     let didAdd = false
     try {
-      const before = encodeURIComponent(oldestCursor)
+      const before = encodeURIComponent(oldestCursor.created_at)
+      const beforeId = encodeURIComponent(oldestCursor.id)
       const d = await apiGet<{ messages: ConversationMessage[] }>(
-        `/api/conversations/${conversationId}/messages?before=${before}&limit=${PAGE_SIZE}&order=desc&include_tools=1`,
+        `/api/conversations/${conversationId}/messages?before=${before}&before_id=${beforeId}&limit=${PAGE_SIZE}&order=desc&include_tools=1`,
       )
       const raw = Array.isArray(d.messages) ? d.messages : []
       const mapped = raw.map(mapConversationMessage).reverse()

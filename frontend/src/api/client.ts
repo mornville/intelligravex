@@ -5,10 +5,13 @@ const DEFAULT_BACKEND = (() => {
     const proto = window.location.protocol || 'http:'
     const host = window.location.hostname || '127.0.0.1'
     const port = window.location.port || ''
+    const origin = window.location.origin || ''
+    const isHttp = origin.startsWith('http://') || origin.startsWith('https://')
     if (port === '5173' || port === '4173') {
       return `${proto}//${host}:8000`
     }
-    return window.location.origin || `${proto}//${host}${port ? `:${port}` : ''}`
+    if (isHttp) return origin
+    return 'http://127.0.0.1:8000'
   } catch {
     return 'http://127.0.0.1:8000'
   }
