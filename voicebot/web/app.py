@@ -22,7 +22,7 @@ import webbrowser
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
-from urllib.parse import quote as _url_quote
+from urllib.parse import quote as _url_quote, parse_qsl
 from uuid import UUID
 
 import httpx
@@ -91,6 +91,7 @@ run_python_postprocess = run_python_postprocessor
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search_tool_def
 from voicebot.tools.data_agent import give_command_to_data_agent_tool_def
+from voicebot.tools.http_request import http_request_tool_def
 from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
 from voicebot.data_agent.docker_runner import (
@@ -2199,6 +2200,13 @@ def create_app() -> FastAPI:
                         tool_failed = True
                         needs_followup_llm = True
                         final = ""
+                    elif tool_name == "http_request":
+                        tool_result = await asyncio.to_thread(
+                            _execute_http_request_tool, tool_args=patch, meta=meta_current
+                        )
+                        tool_failed = not bool(tool_result.get("ok", False))
+                        needs_followup_llm = True
+                        final = ""
                     elif tool_name == "capture_screenshot":
                         if not bool(getattr(bot, "enable_host_actions", False)):
                             tool_result = {"ok": False, "error": {"message": "Host actions are disabled for this bot."}}
@@ -3221,6 +3229,9 @@ def create_app() -> FastAPI:
     def _web_search_tool_def() -> dict:
         return web_search_tool_def()
 
+    def _http_request_tool_def() -> dict:
+        return http_request_tool_def()
+
     def _host_action_tool_def() -> dict:
         return {
             "type": "function",
@@ -3274,6 +3285,7 @@ def create_app() -> FastAPI:
         tools = [
             _set_metadata_tool_def(),
             _web_search_tool_def(),
+            _http_request_tool_def(),
         ]
         if bool(getattr(bot, "enable_data_agent", False)):
             tools.append(give_command_to_data_agent_tool_def())
@@ -3691,6 +3703,180 @@ def create_app() -> FastAPI:
             template_text,
             ctx={"meta": meta, "response": response_json, "args": tool_args, "params": tool_args},
         )
+
+    def _coerce_json_object(value: Any) -> dict:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return {}
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                return {}
+            return obj if isinstance(obj, dict) else {}
+        return {}
+
+    def _render_templates_in_obj(value: Any, *, ctx: dict[str, Any]) -> Any:
+        if isinstance(value, dict):
+            return {k: _render_templates_in_obj(v, ctx=ctx) for k, v in value.items() if k is not None}
+        if isinstance(value, list):
+            return [_render_templates_in_obj(v, ctx=ctx) for v in value]
+        if isinstance(value, str):
+            return render_template(value, ctx=ctx)
+        return value
+
+    def _parse_query_params(value: Any, *, ctx: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return _render_templates_in_obj(value, ctx=ctx)
+        if isinstance(value, str):
+            rendered = render_template(value, ctx=ctx).strip()
+            if not rendered:
+                return {}
+            if rendered.startswith("{") and rendered.endswith("}"):
+                try:
+                    obj = json.loads(rendered)
+                except Exception:
+                    obj = None
+                if isinstance(obj, dict):
+                    return _render_templates_in_obj(obj, ctx=ctx)
+            pairs = parse_qsl(rendered, keep_blank_values=True)
+            out: dict[str, Any] = {}
+            for k, v in pairs:
+                if not k:
+                    continue
+                out[k] = v
+            return out
+        return {}
+
+    def _parse_fields_required(value: Any) -> list[str]:
+        out: list[str] = []
+        if isinstance(value, list):
+            for item in value:
+                s = str(item or "").strip()
+                if s:
+                    out.append(s)
+            return out
+        if isinstance(value, str):
+            for part in re.split(r"[\\n,]+", value):
+                s = part.strip()
+                if s:
+                    out.append(s)
+        return out
+
+    def _build_response_mapper_from_fields(fields_required: list[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for item in fields_required:
+            s = str(item or "").strip()
+            if not s:
+                continue
+            key = s
+            expr = s
+            for sep in ("=>", "=", ":"):
+                if sep in s:
+                    left, right = s.split(sep, 1)
+                    if left.strip():
+                        key = left.strip()
+                        expr = right.strip() or expr
+                    break
+            if "{{" in expr and "}}" in expr:
+                out[key] = expr
+                continue
+            if not (
+                expr.startswith("response.")
+                or expr.startswith("meta.")
+                or expr.startswith("args.")
+                or expr.startswith("params.")
+            ):
+                expr = f"response.{expr}"
+            out[key] = f"{{{{{expr}}}}}"
+        return out
+
+    def _execute_http_request_tool(*, tool_args: dict, meta: dict) -> dict:
+        url = str(tool_args.get("url") or "").strip()
+        if not url:
+            return {"ok": False, "error": {"message": "Missing required tool arg: url"}}
+
+        ctx = {"meta": meta, "args": tool_args, "params": tool_args, "env": dict(os.environ)}
+        url = render_template(url, ctx=ctx)
+        method = str(tool_args.get("method") or "GET").strip().upper() or "GET"
+
+        headers_raw = tool_args.get("headers")
+        headers_obj = _coerce_json_object(headers_raw)
+        if not headers_obj and isinstance(headers_raw, str):
+            rendered_headers = render_template(headers_raw, ctx=ctx)
+            headers_obj = _coerce_json_object(rendered_headers)
+        headers_obj = _render_templates_in_obj(headers_obj, ctx=ctx)
+        headers_obj = _normalize_headers_for_json(headers_obj)
+
+        query_params = _parse_query_params(tool_args.get("query"), ctx=ctx)
+
+        body_raw = tool_args.get("body")
+        body_obj: Any = None
+        if isinstance(body_raw, (dict, list)):
+            body_obj = _render_templates_in_obj(body_raw, ctx=ctx)
+        elif isinstance(body_raw, str):
+            rendered_body = render_template(body_raw, ctx=ctx).strip()
+            if rendered_body:
+                if rendered_body.startswith("{") or rendered_body.startswith("["):
+                    try:
+                        body_obj = json.loads(rendered_body)
+                    except Exception:
+                        body_obj = rendered_body
+                else:
+                    body_obj = rendered_body
+        else:
+            body_obj = body_raw
+
+        fields_required = _parse_fields_required(tool_args.get("fields_required"))
+        mapper_obj = _coerce_json_object(tool_args.get("response_mapper_json"))
+        if not mapper_obj and not fields_required:
+            return {"ok": False, "error": {"message": "Missing required tool arg: fields_required"}}
+        if not mapper_obj:
+            mapper_obj = _build_response_mapper_from_fields(fields_required)
+        mapper_json = json.dumps(mapper_obj, ensure_ascii=False)
+
+        timeout = httpx.Timeout(60.0, connect=20.0)
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                req_kwargs = {"headers": headers_obj or None, "params": query_params or None}
+                if method in ("GET", "HEAD"):
+                    resp = client.request(method, url, **req_kwargs)
+                else:
+                    if isinstance(body_obj, (dict, list)):
+                        resp = client.request(method, url, json=body_obj, **req_kwargs)
+                    elif body_obj is None:
+                        resp = client.request(method, url, **req_kwargs)
+                    else:
+                        resp = client.request(method, url, content=str(body_obj), **req_kwargs)
+            if resp.status_code >= 400:
+                err = _http_error_response(
+                    url=str(resp.request.url),
+                    status_code=resp.status_code,
+                    body=(resp.text or None),
+                    message=resp.reason_phrase,
+                )
+                return {"ok": False, "error": err.get("__http_error__") or {"message": "HTTP error"}}
+            try:
+                response_json = resp.json()
+            except Exception:
+                response_json = {"raw": resp.text or ""}
+            mapped = _apply_response_mapper(
+                mapper_json=mapper_json,
+                response_json=response_json,
+                meta=meta,
+                tool_args=tool_args,
+            )
+            return {
+                "ok": True,
+                "status_code": int(resp.status_code),
+                "url": str(resp.request.url),
+                "data": mapped,
+            }
+        except httpx.RequestError as exc:
+            err = _http_error_response(url=url, status_code=None, body=None, message=str(exc))
+            return {"ok": False, "error": err.get("__http_error__")}
 
     def _execute_integration_http(
         *,
@@ -4690,6 +4876,27 @@ def create_app() -> FastAPI:
                                             "error": {"message": "web_search runs inside the model; no server tool is available."},
                                         }
                                         tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
+                                    elif tool_name == "http_request":
+                                        task = asyncio.create_task(
+                                            asyncio.to_thread(
+                                                _execute_http_request_tool, tool_args=patch, meta=meta_current
+                                            )
+                                        )
+                                        if wait_reply:
+                                            await _send_interim(wait_reply, kind="wait")
+                                        while True:
+                                            try:
+                                                tool_result = await asyncio.wait_for(
+                                                    asyncio.shield(task), timeout=60.0
+                                                )
+                                                break
+                                            except asyncio.TimeoutError:
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                continue
+                                        tool_failed = not bool(tool_result.get("ok", False))
                                         needs_followup_llm = True
                                         rendered_reply = ""
                                     elif tool_name == "summarize_screenshot":
@@ -5875,6 +6082,27 @@ def create_app() -> FastAPI:
                                             "error": {"message": "web_search runs inside the model; no server tool is available."},
                                         }
                                         tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
+                                    elif tool_name == "http_request":
+                                        task = asyncio.create_task(
+                                            asyncio.to_thread(
+                                                _execute_http_request_tool, tool_args=patch, meta=meta_current
+                                            )
+                                        )
+                                        if wait_reply:
+                                            await _send_interim(wait_reply, kind="wait")
+                                        while True:
+                                            try:
+                                                tool_result = await asyncio.wait_for(
+                                                    asyncio.shield(task), timeout=60.0
+                                                )
+                                                break
+                                            except asyncio.TimeoutError:
+                                                if wait_reply:
+                                                    await _send_interim(wait_reply, kind="wait")
+                                                continue
+                                        tool_failed = not bool(tool_result.get("ok", False))
                                         needs_followup_llm = True
                                         rendered_reply = ""
                                     elif tool_name == "summarize_screenshot":
@@ -7758,6 +7986,13 @@ def create_app() -> FastAPI:
                                         "error": {"message": "web_search runs inside the model; no server tool is available."},
                                     }
                                     tool_failed = True
+                                    needs_followup_llm = True
+                                    final = ""
+                                elif tool_name == "http_request":
+                                    tool_result = await asyncio.to_thread(
+                                        _execute_http_request_tool, tool_args=patch, meta=meta_current
+                                    )
+                                    tool_failed = not bool(tool_result.get("ok", False))
                                     needs_followup_llm = True
                                     final = ""
                                 elif tool_name == "capture_screenshot":
