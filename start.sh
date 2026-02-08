@@ -78,12 +78,29 @@ python -m pip install -U pip >/dev/null
 log_step "Upgrading pip done ($(( $(date +%s) - pip_start ))s)"
 
 cmd="run"
+subcmd=""
 if [[ "$#" -gt 0 ]]; then
   if [[ "$1" == -* ]]; then
     cmd="run"
   else
     cmd="$1"
   fi
+  if [[ "$#" -gt 1 ]]; then
+    subcmd="$2"
+  fi
+fi
+
+if [[ "$cmd" == "package-overlay" ]]; then
+  exec "${ROOT_DIR}/scripts/package_macos_overlay.sh"
+fi
+
+if [[ "$cmd" == "package-studio" ]]; then
+  exec "${ROOT_DIR}/scripts/package_macos.sh"
+fi
+
+if [[ "$cmd" == "package-all" ]]; then
+  "${ROOT_DIR}/scripts/package_macos.sh"
+  exec "${ROOT_DIR}/scripts/package_macos_overlay.sh"
 fi
 
 need_install=0

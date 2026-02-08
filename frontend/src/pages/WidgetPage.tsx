@@ -339,6 +339,18 @@ export default function WidgetPage() {
     }
   }
 
+  async function startNewConversation() {
+    if (recording) {
+      await stopRecording()
+    }
+    setErr(null)
+    setAssistantText('')
+    interimShownRef.current = false
+    activeTextReqIdRef.current = null
+    setConversationId(null)
+    initConversation()
+  }
+
   const isTextMode = widgetMode === 'text'
   const canRecord = Boolean(status?.openai_key_configured && conversationId && stage === 'idle')
   const canSendText = Boolean(status?.openai_key_configured && stage === 'idle')
@@ -390,6 +402,9 @@ export default function WidgetPage() {
             </button>
             {menuOpen ? (
               <div className="widgetMenu">
+                <button className="widgetMenuItem" onClick={() => void startNewConversation()}>
+                  New conversation
+                </button>
                 <button className="widgetMenuItem" onClick={() => void openDashboard()}>
                   Go to dashboard
                 </button>

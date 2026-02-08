@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-}"
 VENV_DIR="${ROOT_DIR}/.build/venv-macos"
+DIST_DIR="${ROOT_DIR}/dist"
+MARKETING_DIR="${ROOT_DIR}/marketing/download"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This script is intended for macOS."
@@ -51,5 +53,11 @@ pyinstaller --noconfirm --clean \
   --add-data "${ROOT_DIR}/voicebot/web/ui:voicebot/web/ui" \
   --add-data "${ROOT_DIR}/voicebot/web/static:voicebot/web/static" \
   "${ROOT_DIR}/voicebot/launcher.py"
+
+DMG_PATH="${DIST_DIR}/GravexStudio.dmg"
+if [[ -f "${DMG_PATH}" ]]; then
+  mkdir -p "${MARKETING_DIR}"
+  cp -f "${DMG_PATH}" "${MARKETING_DIR}/GravexStudio.dmg"
+fi
 
 echo "Built macOS app: dist/GravexStudio.app"

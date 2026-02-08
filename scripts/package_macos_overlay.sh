@@ -6,6 +6,7 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 VENV_DIR="${ROOT_DIR}/.build/venv-macos"
 BUILD_DIR="${ROOT_DIR}/.build/overlay"
 DIST_DIR="${ROOT_DIR}/dist"
+MARKETING_DIR="${ROOT_DIR}/marketing/download"
 APP_NAME="GravexOverlay"
 APP_DIR="${DIST_DIR}/${APP_NAME}.app"
 
@@ -88,6 +89,11 @@ fi
 DMG_PATH="${DIST_DIR}/${APP_NAME}.dmg"
 rm -f "${DMG_PATH}"
 hdiutil create -volname "${APP_NAME}" -srcfolder "${APP_DIR}" -ov -format UDZO "${DMG_PATH}"
+
+if [[ -d "${MARKETING_DIR}" ]]; then
+  mkdir -p "${MARKETING_DIR}"
+  cp -f "${DMG_PATH}" "${MARKETING_DIR}/${APP_NAME}.dmg"
+fi
 
 echo "Built macOS app: ${APP_DIR}"
 echo "Built macOS DMG: ${DMG_PATH}"
