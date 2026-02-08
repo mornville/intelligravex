@@ -47,6 +47,7 @@ static void LogLine(NSString *line);
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   LogLine(@"App did finish launching");
+  [self setupMenu];
   self.host = @"127.0.0.1";
   self.port = @"8000";
   self.outputBuffer = [NSMutableString string];
@@ -62,6 +63,20 @@ static void LogLine(NSString *line);
   if (self.serverProcess) {
     [self.serverProcess terminate];
   }
+}
+
+- (void)setupMenu {
+  NSMenu *menubar = [[NSMenu alloc] init];
+  NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
+  [menubar addItem:appMenuItem];
+  [NSApp setMainMenu:menubar];
+
+  NSMenu *appMenu = [[NSMenu alloc] init];
+  NSString *appName = [[NSProcessInfo processInfo] processName];
+  NSString *quitTitle = [NSString stringWithFormat:@"Quit %@", appName];
+  NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:quitTitle action:@selector(terminate:) keyEquivalent:@"q"];
+  [appMenu addItem:quitItem];
+  [appMenuItem setSubmenu:appMenu];
 }
 
 - (void)setupWindow {
@@ -247,7 +262,6 @@ static void LogLine(NSString *line);
     [self.window orderOut:nil];
     return;
   }
-  [self positionWindow:self.window];
   [self.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 }

@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Intelligravex | Gravex Overlay</title>
+    <meta
+      name="description"
+      content="Intelligravex is a local-first assistant studio with a macOS overlay for real-time, tool-driven conversations, persistent workspaces, and embeddable widgets."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-noise" aria-hidden="true"></div>
+    <header class="hero">
+      <nav class="nav">
+        <div class="brand">
+          <span class="brand-mark">IGX</span>
+          <span class="brand-text">Intelligravex</span>
+        </div>
+        <div class="nav-actions">
+          <a class="btn ghost" href="#feature-matrix">All features</a>
+          <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download Overlay DMG</a>
+        </div>
+      </nav>
+
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Gravex Overlay</p>
+          <h1>Summon your assistant anywhere. Keep the full studio local.</h1>
+          <p class="hero-subtitle">
+            Intelligravex pairs a local-first assistant studio with a macOS overlay so you can talk, search, and run tasks
+            without leaving your workflow.
+          </p>
+          <div class="hero-actions">
+            <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download Overlay DMG</a>
+            <a class="btn ghost" href="#setup">First-time setup</a>
+          </div>
+          <div class="hero-chips">
+            <span>macOS Overlay DMG</span>
+            <span>Local-first by design</span>
+            <span>Embeddable widget</span>
+          </div>
+        </div>
+        <div class="hero-panel">
+          <div class="panel-card">
+            <div class="panel-top">
+              <div>
+                <p class="panel-title">Mission Control</p>
+                <p class="panel-caption">Assistants, tools, and workspaces in one dashboard.</p>
+              </div>
+              <div class="pulse"></div>
+            </div>
+            <div class="panel-grid">
+              <div class="mini">
+                <p class="mini-title">Realtime replies</p>
+                <p class="mini-text">Stream text and audio with latency metrics.</p>
+              </div>
+              <div class="mini">
+                <p class="mini-title">Multi-model stack</p>
+                <p class="mini-text">Chat reasoning, voice input, voice output, and search.</p>
+              </div>
+              <div class="mini">
+                <p class="mini-title">Data Agent</p>
+                <p class="mini-text">One workspace per conversation, persistent and isolated.</p>
+              </div>
+              <div class="mini">
+                <p class="mini-title">Mac overlay</p>
+                <p class="mini-text">Global hotkeys and an always-on-top widget.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="section" id="overview">
+        <div class="section-head">
+          <p class="eyebrow">Why Intelligravex</p>
+          <h2>Everything you need to build and run assistants, all on your machine.</h2>
+          <p class="section-subtitle">Keep control of your data while still moving fast with tools, voice, and live search.</p>
+        </div>
+        <div class="highlight-grid">
+          <article class="highlight-card">
+            <h3>Local-first control</h3>
+            <p>Workspaces, configs, and conversation history stay on your device unless you decide otherwise.</p>
+          </article>
+          <article class="highlight-card">
+            <h3>Realtime, multi-model</h3>
+            <p>Stream text and audio, blend voice input and voice output, and ground answers with live search.</p>
+          </article>
+          <article class="highlight-card">
+            <h3>Automation-ready</h3>
+            <p>Connect tools, run long tasks, and keep outputs organized in persistent workspaces.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section overlay-section" id="overlay">
+        <div class="split">
+          <div class="split-copy">
+            <p class="eyebrow">Overlay mode</p>
+            <h2>Instant access with a macOS overlay.</h2>
+            <p class="section-subtitle">
+              Gravex Overlay floats above your apps so you can capture requests, see responses, and keep moving without
+              context switching.
+            </p>
+            <ul class="checklist">
+              <li>Borderless, draggable window that stays on top.</li>
+              <li>Global hotkeys to show or hide the overlay instantly.</li>
+              <li>Auto-reconnects while the local server finishes starting.</li>
+              <li>Built-in widget UI so you can chat immediately.</li>
+            </ul>
+            <div class="chip-row">
+              <span>Cmd + Shift + M</span>
+              <span>Cmd + Option + Ctrl + M</span>
+            </div>
+          </div>
+          <div class="split-card">
+            <div class="stack-card">
+              <p class="stack-title">Overlay moments</p>
+              <p class="stack-text">Capture a task, get a response, send it back to your work.</p>
+              <div class="stack-grid">
+                <div>
+                  <h4>Quick capture</h4>
+                  <p>Open the overlay, drop a request, keep your current app focused.</p>
+                </div>
+                <div>
+                  <h4>Live answers</h4>
+                  <p>Streaming responses let you act before the full reply is done.</p>
+                </div>
+                <div>
+                  <h4>Persistent work</h4>
+                  <p>Long tasks continue in the background while you keep working.</p>
+                </div>
+                <div>
+                  <h4>Widget ready</h4>
+                  <p>The overlay loads the same UI your team uses in the studio.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="feature-matrix">
+        <div class="section-head">
+          <p class="eyebrow">Feature matrix</p>
+          <h2>Everything Intelligravex ships, in one place.</h2>
+          <p class="section-subtitle">All features below reflect the current studio, backend, and macOS overlay.</p>
+        </div>
+
+        <div class="card-grid">
+          <article class="card reveal">
+            <h3>Assistant Studio</h3>
+            <ul>
+              <li>Create, configure, and manage multiple assistants.</li>
+              <li>Per-assistant personality, system prompt, and response style.</li>
+              <li>Central dashboard for assistants, chats, and developer settings.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Multi-Model Orchestration</h3>
+            <ul>
+              <li>Main chat model for reasoning and response quality.</li>
+              <li>Voice input and voice output models.</li>
+              <li>Live web search for fresh information.</li>
+              <li>Post-processing model for tool responses.</li>
+              <li>Long-context summary model.</li>
+              <li>Adjustable history window for each assistant.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Real-Time Conversations</h3>
+            <ul>
+              <li>Streamed responses (text and audio) with latency metrics.</li>
+              <li>Live mic test and talk loop built into the UI.</li>
+              <li>Continuous session support (start, stop, new conversation).</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Data Agent (Optional)</h3>
+            <ul>
+              <li>Run each conversation in its own isolated workspace.</li>
+              <li>Long-running tasks persist across turns.</li>
+              <li>Files, logs, and outputs stored per workspace.</li>
+              <li>Multiple concurrent containers for parallel work.</li>
+              <li>Container monitor with status and kill controls.</li>
+              <li>Automatic respawn of the workspace when needed.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Tools and Integrations</h3>
+            <ul>
+              <li>Built-in system tools for metadata and web search.</li>
+              <li>Connect external APIs with structured inputs.</li>
+              <li>Validate outputs and keep responses consistent.</li>
+              <li>Map tool results into durable memory.</li>
+              <li>Deterministic reply templates when needed.</li>
+              <li>Optional post-processing to refine tool results.</li>
+              <li>Only mapped fields are saved into memory.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Response Control</h3>
+            <ul>
+              <li>Short waiting replies while tools run.</li>
+              <li>Deterministic outputs when you need precision.</li>
+              <li>Flexible modes for tool-driven and chat-driven replies.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Context and Memory</h3>
+            <ul>
+              <li>Conversation metadata can personalize prompts and replies.</li>
+              <li>Automatic summarization as sessions grow.</li>
+              <li>Long conversations stay fast while keeping key facts.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Local-First and Secure</h3>
+            <ul>
+              <li>Workspaces, configs, and history stored locally.</li>
+              <li>Provider secrets encrypted at rest.</li>
+              <li>You decide what gets shared externally.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Embeddable Chat Widget</h3>
+            <ul>
+              <li>Public text-chat widget you can embed in websites.</li>
+              <li>Client key support and WebSocket transport.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Git and SSH Tooling</h3>
+            <ul>
+              <li>Secure repo access for Data Agent workflows.</li>
+              <li>Useful for code tasks, automation, and structured work.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Mac Overlay App</h3>
+            <ul>
+              <li>Borderless overlay window that can float above apps.</li>
+              <li>Global hotkeys for instant access.</li>
+              <li>Loads the built-in widget UI from the bundled server.</li>
+              <li>Auto-reconnects while the server starts.</li>
+              <li>Diagnostic logging for troubleshooting.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>First-Time Setup</h3>
+            <ul>
+              <li>OpenAI API key required for voice and chat models.</li>
+              <li>Data Agent is optional and needs Docker.</li>
+              <li>Default Data Agent image can be overridden.</li>
+              <li>All core features work without Docker.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="workflow">
+        <div class="section-head">
+          <p class="eyebrow">Workflow</p>
+          <h2>From request to result, without switching apps.</h2>
+          <p class="section-subtitle">Use the studio for deep configuration and the overlay for fast access.</p>
+        </div>
+        <div class="steps">
+          <article class="step-card">
+            <h3>Design your assistant</h3>
+            <p>Set goals, personality, tools, and response style in the studio.</p>
+          </article>
+          <article class="step-card">
+            <h3>Run tasks in parallel</h3>
+            <p>Let multiple workspaces handle work at the same time when the Data Agent is enabled.</p>
+          </article>
+          <article class="step-card">
+            <h3>Stay in flow</h3>
+            <p>Open the overlay, ask a question, and keep working while tasks run.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="use-cases">
+        <div class="section-head">
+          <p class="eyebrow">Use cases</p>
+          <h2>Built for daily ops, research, and content work.</h2>
+        </div>
+        <div class="use-case-grid">
+          <article class="use-card">
+            <h3>Personal ops</h3>
+            <p>Run data pulls, automate routines, and summarize updates live.</p>
+          </article>
+          <article class="use-card">
+            <h3>Research copilots</h3>
+            <p>Blend web search, tools, and notes into one flow.</p>
+          </article>
+          <article class="use-card">
+            <h3>Automated errands</h3>
+            <p>Turn repetitive tasks into reliable, scripted workflows.</p>
+          </article>
+          <article class="use-card">
+            <h3>Creative workflows</h3>
+            <p>Draft, refine, and produce content with tool-backed context.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="setup">
+        <div class="section-head">
+          <p class="eyebrow">Setup</p>
+          <h2>Install once. Operate locally.</h2>
+          <p class="section-subtitle">Grab the macOS DMG below, then follow the guided onboarding in-app.</p>
+        </div>
+        <div class="cta">
+          <div>
+            <h3>Download Gravex Overlay for macOS</h3>
+            <p>Includes the local server and widget UI for instant overlay access.</p>
+          </div>
+          <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download Overlay DMG</a>
+        </div>
+      </section>
+    </main>
+
+    <div class="modal" id="download-modal" aria-hidden="true">
+      <div class="modal-backdrop" data-close="true"></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="download-title">
+        <div class="modal-head">
+          <h3 id="download-title">If macOS blocks the app</h3>
+          <button class="modal-close" data-close="true" aria-label="Close">×</button>
+        </div>
+        <p class="modal-subtitle">
+          If you see “Apple could not verify” after the download, use the steps below.
+        </p>
+        <ol class="modal-steps">
+          <li>Open Finder and go to Downloads.</li>
+          <li>Right-click GravexOverlay and choose Open.</li>
+          <li>When the warning appears again, click Open.</li>
+        </ol>
+        <p class="modal-subtitle">If macOS says the app is damaged, run this once in Terminal:</p>
+        <div class="modal-command">xattr -dr com.apple.quarantine ~/Downloads/GravexOverlay.app</div>
+        <p class="modal-subtitle">Or: System Settings → Privacy &amp; Security → Open Anyway.</p>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <div>
+        <p class="brand-text">Intelligravex</p>
+        <p class="muted">Local-first assistant studio with a macOS overlay.</p>
+      </div>
+      <div class="footer-actions">
+        <a class="btn ghost" href="#feature-matrix">Features</a>
+        <a class="btn ghost" href="#setup">Download</a>
+      </div>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -355,34 +355,36 @@ export default function WidgetPage() {
           </div>
         ) : (
           <>
-            {isTextMode ? (
-              <div className={textClass}>
-                <div className={`widgetTextReply ${assistantText ? '' : 'empty'}`}>
-                  {assistantText || 'Assistant reply will appear here.'}
+            <div className="widgetCenter">
+              {isTextMode ? (
+                <div className={textClass}>
+                  <div className={`widgetTextReply ${assistantText ? '' : 'empty'}`}>
+                    {assistantText || 'Assistant reply will appear here.'}
+                  </div>
+                  <div className="widgetTextInputRow">
+                    <input
+                      className="widgetTextInput"
+                      value={textInput}
+                      onChange={(e) => setTextInput(e.target.value)}
+                      placeholder={busy ? 'Thinking...' : 'Type a message'}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void sendText()
+                        }
+                      }}
+                    />
+                    <button className="widgetTextSend" onClick={() => void sendText()} disabled={!canSendText || !textInput.trim()}>
+                      Send
+                    </button>
+                  </div>
                 </div>
-                <div className="widgetTextInputRow">
-                  <input
-                    className="widgetTextInput"
-                    value={textInput}
-                    onChange={(e) => setTextInput(e.target.value)}
-                    placeholder={busy ? 'Thinking...' : 'Type a message'}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        void sendText()
-                      }
-                    }}
-                  />
-                  <button className="widgetTextSend" onClick={() => void sendText()} disabled={!canSendText || !textInput.trim()}>
-                    Send
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button className={micClass} onClick={() => void (recording ? stopRecording() : startRecording())} disabled={!canRecord && !recording}>
-                <MicrophoneIcon />
-              </button>
-            )}
+              ) : (
+                <button className={micClass} onClick={() => void (recording ? stopRecording() : startRecording())} disabled={!canRecord && !recording}>
+                  <MicrophoneIcon />
+                </button>
+              )}
+            </div>
             <button className="widgetGear" onClick={() => setMenuOpen((v) => !v)} title="Settings">
               <Cog6ToothIcon />
             </button>
