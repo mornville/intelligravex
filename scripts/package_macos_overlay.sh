@@ -78,6 +78,9 @@ MACOSX_DEPLOYMENT_TARGET=11.0 xcrun --sdk macosx clang \
 rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${ROOT_DIR}/macos/overlay/Info.plist" "${APP_DIR}/Contents/Info.plist"
+if [[ -f "${ROOT_DIR}/macos/overlay/GravexOverlay.icns" ]]; then
+  cp "${ROOT_DIR}/macos/overlay/GravexOverlay.icns" "${APP_DIR}/Contents/Resources/GravexOverlay.icns"
+fi
 cp "${OVERLAY_BIN}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 cp "${SERVER_BIN}" "${APP_DIR}/Contents/Resources/GravexServer"
 chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}" "${APP_DIR}/Contents/Resources/GravexServer"
