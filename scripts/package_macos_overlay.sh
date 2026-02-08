@@ -89,6 +89,11 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "${APP_DIR}"
 fi
 
+# Reset Screen Recording permission for the overlay bundle so macOS prompts again on next launch.
+if command -v tccutil >/dev/null 2>&1; then
+  tccutil reset ScreenCapture com.gravex.overlay || true
+fi
+
 DMG_PATH="${DIST_DIR}/${APP_NAME}.dmg"
 rm -f "${DMG_PATH}"
 hdiutil create -volname "${APP_NAME}" -srcfolder "${APP_DIR}" -ov -format UDZO "${DMG_PATH}"

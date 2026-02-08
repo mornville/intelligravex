@@ -44,6 +44,17 @@ static void LogLine(NSString *line);
 
 @implementation OverlayApp
 
+- (void)requestScreenCaptureAccess {
+  if (@available(macOS 10.15, *)) {
+    BOOL allowed = CGPreflightScreenCaptureAccess();
+    LogLine([NSString stringWithFormat:@"Screen capture preflight: %@", allowed ? @"YES" : @"NO"]);
+    if (!allowed) {
+      BOOL granted = CGRequestScreenCaptureAccess();
+      LogLine([NSString stringWithFormat:@"Screen capture request result: %@", granted ? @"GRANTED" : @"DENIED"]);
+    }
+  }
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   LogLine(@"App did finish launching");
@@ -51,6 +62,7 @@ static void LogLine(NSString *line);
   self.host = @"127.0.0.1";
   self.port = @"8000";
   self.outputBuffer = [NSMutableString string];
+  [self requestScreenCaptureAccess];
   [self setupWindow];
   [self startServer];
   LogLine(@"Registering hotkey");

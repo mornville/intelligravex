@@ -890,7 +890,12 @@ def _screenshot_base_dir() -> Path:
     return Path(tempfile.gettempdir()) / "gravex_screenshots"
 
 
+def _user_screenshot_dir() -> Path:
+    return Path.home() / "Pictures" / "Gravex"
+
+
 def _prepare_screenshot_target(conv: Conversation) -> tuple[str, Path]:
+    logger = logging.getLogger("voicebot.web")
     base = _screenshot_base_dir().resolve()
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
     suffix = secrets.token_hex(3)
@@ -899,7 +904,139 @@ def _prepare_screenshot_target(conv: Conversation) -> tuple[str, Path]:
     if not _is_path_within_root(base, target):
         raise ValueError("Invalid screenshot path")
     target.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("capture_screenshot: target=%s", target)
     return rel_path, target
+
+
+def _copy_screenshot_to_user_dir(source: Path) -> Optional[Path]:
+    logger = logging.getLogger("voicebot.web")
+    try:
+        src = source.resolve()
+    except Exception:
+        src = source
+    if not src.exists() or not src.is_file():
+        return None
+    base = _user_screenshot_dir().resolve()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        logger.exception("capture_screenshot: failed to create user screenshot dir %s", base)
+        return None
+    rel_path: Optional[str] = None
+    try:
+        rel_path = str(src.relative_to(_screenshot_base_dir().resolve()))
+    except Exception:
+        rel_path = None
+    if rel_path:
+        dest = (base / rel_path).resolve()
+        if not _is_path_within_root(base, dest):
+            logger.warning("capture_screenshot: invalid copy dest %s (base %s)", dest, base)
+            return None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        dest = (base / src.name).resolve()
+    try:
+        shutil.copy2(src, dest)
+        return dest
+    except Exception:
+        logger.exception("capture_screenshot: failed to copy %s to %s", src, dest)
+        return None
+
+
+def _maybe_copy_screenshot_from_command(command: str) -> Optional[Path]:
+    if "screencapture" not in command:
+        return None
+    logger = logging.getLogger("voicebot.web")
+    try:
+        parts = shlex.split(command)
+    except Exception:
+        return None
+    if not parts:
+        return None
+    target: Optional[str] = None
+    for part in reversed(parts):
+        if part.startswith("-"):
+            continue
+        target = part
+        break
+    if not target:
+        logger.warning("capture_screenshot: no output target parsed from command=%s", command)
+        return None
+    src = Path(target)
+    if not src.exists():
+        logger.warning("capture_screenshot: target missing %s", src)
+        return None
+    try:
+        size = src.stat().st_size
+        if size <= 0:
+            logger.warning("capture_screenshot: target empty %s", src)
+    except Exception:
+        logger.exception("capture_screenshot: failed to stat %s", src)
+    dest = _copy_screenshot_to_user_dir(src)
+    if dest:
+        logger.info("capture_screenshot: copied to %s", dest)
+    else:
+        logger.warning("capture_screenshot: copy failed for %s", target)
+    return dest
+
+
+def _tool_error_message(tool_result: dict, *, fallback: str) -> str:
+    msg = ""
+    if isinstance(tool_result, dict):
+        err = tool_result.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message") or "").strip()
+        elif isinstance(err, str):
+            msg = err.strip()
+        if not msg:
+            summary_error = tool_result.get("summary_error")
+            if isinstance(summary_error, str):
+                msg = summary_error.strip()
+    return msg or fallback
+
+
+def _get_openai_api_key_global(session: Session) -> str:
+    def _read_openai_key_from_env_file() -> str:
+        # Prefer python-dotenv if available; fall back to a minimal parser.
+        try:
+            from dotenv import dotenv_values
+        except Exception:
+            dotenv_values = None
+        if dotenv_values is not None:
+            try:
+                v = dotenv_values(".env").get("OPENAI_API_KEY") or ""
+                return str(v).strip()
+            except Exception:
+                pass
+        try:
+            with open(".env", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("OPENAI_API_KEY="):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except Exception:
+            pass
+        return ""
+
+    # Prefer env, fall back to the latest stored OpenAI key.
+    key = os.environ.get("OPENAI_API_KEY") or ""
+    if not key:
+        try:
+            settings = Settings()
+        except Exception:
+            settings = None
+        if settings is not None:
+            try:
+                crypto = get_crypto_box(settings.secret_key)
+            except CryptoError:
+                crypto = None
+            if crypto is not None:
+                try:
+                    key = decrypt_provider_key(session, crypto=crypto, provider="openai") or ""
+                except Exception:
+                    key = ""
+    if not key:
+        key = _read_openai_key_from_env_file()
+    return (key or "").strip()
 
 
 def _screencapture_command(target: Path) -> tuple[bool, str]:
@@ -916,7 +1053,7 @@ def _summarize_image_file(
     image_path: Path,
     prompt: str,
 ) -> tuple[bool, str]:
-    api_key = _get_openai_api_key(session)
+    api_key = _get_openai_api_key_global(session)
     if not api_key:
         return False, "OpenAI API key not configured."
     if not image_path.exists() or not image_path.is_file():
@@ -955,7 +1092,7 @@ def _summarize_screenshot(
 ) -> tuple[bool, str, Optional[str]]:
     if not bool(getattr(bot, "enable_data_agent", False)):
         return False, "Data Agent is disabled for this bot.", None
-    api_key = _get_openai_api_key(session)
+    api_key = _get_openai_api_key_global(session)
     if not api_key:
         return False, "OpenAI API key not configured.", None
     if not path:
@@ -999,6 +1136,7 @@ def _execute_host_action(
     *,
     workspace_dir: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[int], str, dict]:
+    logger = logging.getLogger("voicebot.web")
     payload = safe_json_loads(action.payload_json or "{}") or {}
     action_type = str(action.action_type or "").strip()
     stdout = ""
@@ -1006,11 +1144,19 @@ def _execute_host_action(
     exit_code: Optional[int] = None
     error = ""
     result_payload: dict = {}
+    is_screencapture = False
     try:
         if action_type == "run_shell":
             command = str(payload.get("command") or "").strip()
+            is_screencapture = "screencapture" in command
+            if is_screencapture and command:
+                logger.info("capture_screenshot: command=%s", command)
             res = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
             stdout, stderr, exit_code = res.stdout or "", res.stderr or "", res.returncode
+            if exit_code == 0 and is_screencapture:
+                copied = _maybe_copy_screenshot_from_command(command)
+                if copied:
+                    result_payload["saved_user_path"] = str(copied)
         elif action_type == "run_applescript":
             if sys.platform != "darwin":
                 raise RuntimeError("AppleScript is only supported on macOS")
@@ -1024,6 +1170,8 @@ def _execute_host_action(
         ok = exit_code == 0
         if not ok:
             error = stderr or stdout or "Host action failed"
+            if action_type == "run_shell" and is_screencapture:
+                logger.warning("capture_screenshot: screencapture failed exit_code=%s error=%s", exit_code, error)
         return ok, stdout, stderr, exit_code, error, result_payload
     except Exception as exc:
         return False, stdout, stderr, exit_code, str(exc), result_payload
@@ -2627,6 +2775,11 @@ def create_app() -> FastAPI:
                                         except Exception as exc:
                                             tool_result["codex_ok"] = False
                                             tool_result["codex_error"] = str(exc)
+
+                    if tool_name == "capture_screenshot" and tool_failed:
+                        msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
+                        final = f"Screenshot failed: {msg}"
+                        needs_followup_llm = False
 
                     tool_result_msg = add_message_with_metrics(
                         session,
@@ -4899,6 +5052,93 @@ def create_app() -> FastAPI:
                                         tool_failed = not bool(tool_result.get("ok", False))
                                         needs_followup_llm = True
                                         rendered_reply = ""
+                                    elif tool_name == "capture_screenshot":
+                                        if not bool(getattr(bot, "enable_host_actions", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Host actions are disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        elif not bool(getattr(bot, "enable_host_shell", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Shell commands are disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            try:
+                                                rel_path, target = _prepare_screenshot_target(conv)
+                                            except Exception as exc:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {"message": str(exc) or "Invalid screenshot path"},
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                ok_cmd, cmd_or_err = _screencapture_command(target)
+                                                if not ok_cmd:
+                                                    tool_result = {"ok": False, "error": {"message": cmd_or_err}}
+                                                    tool_failed = True
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
+                                                else:
+                                                    action = _create_host_action(
+                                                        session,
+                                                        conv=conv,
+                                                        bot=bot,
+                                                        action_type="run_shell",
+                                                        payload={"command": cmd_or_err},
+                                                    )
+                                                    if _host_action_requires_approval(bot):
+                                                        tool_result = _build_host_action_tool_result(action, ok=True)
+                                                        tool_result["path"] = rel_path
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate:
+                                                            rendered_reply = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            rendered_reply = (
+                                                                "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
+                                                            )
+                                                            needs_followup_llm = False
+                                                    else:
+                                                        if wait_reply:
+                                                            await _send_interim(wait_reply, kind="wait")
+                                                        tool_result = await _execute_host_action_and_update_async(
+                                                            session, action=action
+                                                        )
+                                                        tool_failed = not bool(tool_result.get("ok", False))
+                                                        if tool_failed:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
+                                                        else:
+                                                            ok, summary_text = _summarize_image_file(
+                                                                session,
+                                                                bot=bot,
+                                                                image_path=target,
+                                                                prompt=str(patch.get("prompt") or "").strip(),
+                                                            )
+                                                            if not ok:
+                                                                tool_result["summary_error"] = summary_text
+                                                                tool_failed = True
+                                                                needs_followup_llm = True
+                                                                rendered_reply = ""
+                                                            else:
+                                                                tool_result["summary"] = summary_text
+                                                                tool_result["path"] = rel_path
+                                                                candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                                if candidate:
+                                                                    rendered_reply = candidate
+                                                                    needs_followup_llm = False
+                                                                else:
+                                                                    rendered_reply = summary_text
+                                                                    needs_followup_llm = False
                                     elif tool_name == "summarize_screenshot":
                                         ok, summary_text, rel_path = _summarize_screenshot(
                                             session,
@@ -5423,10 +5663,15 @@ def create_app() -> FastAPI:
                                                             )
                                                         except Exception:
                                                             pass
-                                                if speak:
-                                                    now = time.time()
-                                                    if now < tts_busy_until:
-                                                        await asyncio.sleep(tts_busy_until - now)
+                                    if speak:
+                                        now = time.time()
+                                        if now < tts_busy_until:
+                                            await asyncio.sleep(tts_busy_until - now)
+
+                                    if tool_name == "capture_screenshot" and tool_failed:
+                                        msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
+                                        rendered_reply = f"Screenshot failed: {msg}"
+                                        needs_followup_llm = False
 
                                     add_message_with_metrics(
                                         session,
@@ -6105,6 +6350,93 @@ def create_app() -> FastAPI:
                                         tool_failed = not bool(tool_result.get("ok", False))
                                         needs_followup_llm = True
                                         rendered_reply = ""
+                                    elif tool_name == "capture_screenshot":
+                                        if not bool(getattr(bot2, "enable_host_actions", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Host actions are disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        elif not bool(getattr(bot2, "enable_host_shell", False)):
+                                            tool_result = {
+                                                "ok": False,
+                                                "error": {"message": "Shell commands are disabled for this bot."},
+                                            }
+                                            tool_failed = True
+                                            needs_followup_llm = True
+                                            rendered_reply = ""
+                                        else:
+                                            try:
+                                                rel_path, target = _prepare_screenshot_target(conv)
+                                            except Exception as exc:
+                                                tool_result = {
+                                                    "ok": False,
+                                                    "error": {"message": str(exc) or "Invalid screenshot path"},
+                                                }
+                                                tool_failed = True
+                                                needs_followup_llm = True
+                                                rendered_reply = ""
+                                            else:
+                                                ok_cmd, cmd_or_err = _screencapture_command(target)
+                                                if not ok_cmd:
+                                                    tool_result = {"ok": False, "error": {"message": cmd_or_err}}
+                                                    tool_failed = True
+                                                    needs_followup_llm = True
+                                                    rendered_reply = ""
+                                                else:
+                                                    action = _create_host_action(
+                                                        session,
+                                                        conv=conv,
+                                                        bot=bot2,
+                                                        action_type="run_shell",
+                                                        payload={"command": cmd_or_err},
+                                                    )
+                                                    if _host_action_requires_approval(bot2):
+                                                        tool_result = _build_host_action_tool_result(action, ok=True)
+                                                        tool_result["path"] = rel_path
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate:
+                                                            rendered_reply = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            rendered_reply = (
+                                                                "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
+                                                            )
+                                                            needs_followup_llm = False
+                                                    else:
+                                                        if wait_reply:
+                                                            await _send_interim(wait_reply, kind="wait")
+                                                        tool_result = await _execute_host_action_and_update_async(
+                                                            session, action=action
+                                                        )
+                                                        tool_failed = not bool(tool_result.get("ok", False))
+                                                        if tool_failed:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
+                                                        else:
+                                                            ok, summary_text = _summarize_image_file(
+                                                                session,
+                                                                bot=bot2,
+                                                                image_path=target,
+                                                                prompt=str(patch.get("prompt") or "").strip(),
+                                                            )
+                                                            if not ok:
+                                                                tool_result["summary_error"] = summary_text
+                                                                tool_failed = True
+                                                                needs_followup_llm = True
+                                                                rendered_reply = ""
+                                                            else:
+                                                                tool_result["summary"] = summary_text
+                                                                tool_result["path"] = rel_path
+                                                                candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                                if candidate:
+                                                                    rendered_reply = candidate
+                                                                    needs_followup_llm = False
+                                                                else:
+                                                                    rendered_reply = summary_text
+                                                                    needs_followup_llm = False
                                     elif tool_name == "summarize_screenshot":
                                         ok, summary_text, rel_path = _summarize_screenshot(
                                             session,
@@ -6633,6 +6965,11 @@ def create_app() -> FastAPI:
                                                             )
                                                         except Exception:
                                                             pass
+
+                                    if tool_name == "capture_screenshot" and tool_failed:
+                                        msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
+                                        rendered_reply = f"Screenshot failed: {msg}"
+                                        needs_followup_llm = False
 
                                     add_message_with_metrics(
                                         session,
@@ -8593,6 +8930,11 @@ def create_app() -> FastAPI:
                                                         )
                                                     except Exception:
                                                         pass
+
+                                if tool_name == "capture_screenshot" and tool_failed:
+                                    msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
+                                    final = f"Screenshot failed: {msg}"
+                                    needs_followup_llm = False
 
                                 add_message_with_metrics(
                                     session,
