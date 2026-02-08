@@ -11,8 +11,18 @@ type WidgetStatus = {
   openai_key_configured: boolean
 }
 
+type WidgetMessage = {
+  id: string
+  role: string
+  content: string | null
+  created_at: string
+  sender_name?: string | null
+}
+
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
 type WidgetMode = 'mic' | 'text'
+
+const CONVERSATION_STORAGE_PREFIX = 'igx_widget_conversation_'
 
 function wsBase(): string {
   const u = new URL(BACKEND_URL)
@@ -34,6 +44,31 @@ function b64ToBytes(b64: string): Uint8Array {
   return out
 }
 
+function conversationStorageKey(botId: string): string {
+  return `${CONVERSATION_STORAGE_PREFIX}${botId}`
+}
+
+function readStoredConversation(botId: string): string | null {
+  try {
+    return localStorage.getItem(conversationStorageKey(botId))
+  } catch {
+    return null
+  }
+}
+
+function writeStoredConversation(botId: string, conversationId: string | null) {
+  try {
+    const key = conversationStorageKey(botId)
+    if (conversationId) {
+      localStorage.setItem(key, conversationId)
+    } else {
+      localStorage.removeItem(key)
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
 export default function WidgetPage() {
   const [status, setStatus] = useState<WidgetStatus | null>(null)
   const [statusErr, setStatusErr] = useState<string | null>(null)
@@ -41,6 +76,8 @@ export default function WidgetPage() {
   const [botName, setBotName] = useState<string | null>(null)
   const [stage, setStage] = useState<Stage>('disconnected')
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [messages, setMessages] = useState<WidgetMessage[]>([])
+  const [autoScroll, setAutoScroll] = useState(true)
   const [recording, setRecording] = useState(false)
   const [widgetMode, setWidgetMode] = useState<WidgetMode>('mic')
   const [assistantText, setAssistantText] = useState('')
@@ -58,6 +95,10 @@ export default function WidgetPage() {
   const activeTextReqIdRef = useRef<string | null>(null)
   const interimShownRef = useRef(false)
   const widgetModeRef = useRef<WidgetMode>('mic')
+  const messagesRef = useRef<WidgetMessage[]>([])
+  const lastMessageAtRef = useRef<string | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const resumeAttemptRef = useRef<string | null>(null)
 
   useEffect(() => {
     document.body.classList.add('widgetBody')
@@ -69,6 +110,12 @@ export default function WidgetPage() {
   useEffect(() => {
     widgetModeRef.current = widgetMode
   }, [widgetMode])
+
+  useEffect(() => {
+    messagesRef.current = messages
+    const last = messages[messages.length - 1]
+    lastMessageAtRef.current = last?.created_at || null
+  }, [messages])
 
   useEffect(() => {
     return () => {
@@ -115,7 +162,10 @@ export default function WidgetPage() {
   useEffect(() => {
     if (!botId) return
     setStage('disconnected')
-    setConversationId(null)
+    const storedConversationId = readStoredConversation(botId)
+    setConversationId(storedConversationId)
+    setMessages([])
+    setAssistantText('')
     setErr(null)
     const token = getBasicAuthToken()
     const authQuery = token ? `?auth=${encodeURIComponent(token)}` : ''
@@ -125,7 +175,7 @@ export default function WidgetPage() {
     playerRef.current = new WavQueuePlayer()
     ws.onopen = () => {
       setStage('idle')
-      initConversation()
+      initConversation(storedConversationId)
     }
     ws.onclose = () => {
       setStage('disconnected')
@@ -148,11 +198,14 @@ export default function WidgetPage() {
       }
       if (msg.type === 'conversation') {
         const id = String(msg.conversation_id || msg.id || '')
-        if (id) setConversationId(id)
+        if (id) {
+          setConversationId(id)
+          if (botId) writeStoredConversation(botId, id)
+        }
+        resumeAttemptRef.current = null
         return
       }
       if (msg.type === 'text_delta') {
-        if (widgetModeRef.current !== 'text') return
         const delta = String(msg.delta || '')
         if (!delta) return
         const reqId = String(msg.req_id || '')
@@ -173,7 +226,6 @@ export default function WidgetPage() {
         return
       }
       if (msg.type === 'done') {
-        if (widgetModeRef.current !== 'text') return
         const reqId = String(msg.req_id || '')
         if (activeTextReqIdRef.current && reqId && reqId !== activeTextReqIdRef.current) return
         const text = String(msg.text || '')
@@ -183,6 +235,7 @@ export default function WidgetPage() {
         }
         interimShownRef.current = false
         activeTextReqIdRef.current = null
+        void refreshMessages()
         return
       }
       if (msg.type === 'audio_wav') {
@@ -193,7 +246,15 @@ export default function WidgetPage() {
         return
       }
       if (msg.type === 'error') {
-        setErr(String(msg.error || 'Unknown error'))
+        const errorText = String(msg.error || 'Unknown error')
+        setErr(errorText)
+        if (resumeAttemptRef.current && botId && /conversation/i.test(errorText)) {
+          writeStoredConversation(botId, null)
+          resumeAttemptRef.current = null
+          setConversationId(null)
+          setMessages([])
+          initConversation(null)
+        }
       }
     }
     return () => {
@@ -208,14 +269,61 @@ export default function WidgetPage() {
     }
   }, [botId])
 
-  function initConversation() {
+  function initConversation(preferredConversationId: string | null = null) {
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) return
     const reqId = makeId()
     activeReqIdRef.current = reqId
     const speak = widgetModeRef.current === 'mic'
     if (!speak) setAssistantText('')
-    ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: false, debug: false }))
+    if (preferredConversationId) {
+      resumeAttemptRef.current = preferredConversationId
+    } else {
+      resumeAttemptRef.current = null
+    }
+    ws.send(
+      JSON.stringify({
+        type: 'init',
+        req_id: reqId,
+        speak,
+        test_flag: false,
+        debug: false,
+        conversation_id: preferredConversationId || undefined,
+      }),
+    )
+  }
+
+  async function loadMessages(opts: { reset?: boolean; since?: string | null } = {}) {
+    if (!conversationId) return
+    const params = new URLSearchParams()
+    params.set('order', 'asc')
+    params.set('limit', '200')
+    if (opts.since) params.set('since', opts.since)
+    try {
+      const res = await apiGet<{ messages?: WidgetMessage[] }>(
+        `/api/conversations/${conversationId}/messages?${params.toString()}`,
+      )
+      const incoming = Array.isArray(res?.messages) ? res.messages : []
+      setMessages((prev) => {
+        if (opts.reset) return incoming
+        const seen = new Set(prev.map((m) => m.id))
+        const next = [...prev]
+        for (const msg of incoming) {
+          if (!seen.has(msg.id)) {
+            next.push(msg)
+            seen.add(msg.id)
+          }
+        }
+        return next
+      })
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
+
+  async function refreshMessages() {
+    await loadMessages({ since: lastMessageAtRef.current })
+    setAssistantText('')
   }
 
   async function startRecording() {
@@ -229,7 +337,7 @@ export default function WidgetPage() {
     }
     if (!conversationId) {
       setErr('Connecting...')
-      initConversation()
+      initConversation(botId ? readStoredConversation(botId) : null)
       return
     }
     if (!status?.openai_key_configured) {
@@ -280,6 +388,11 @@ export default function WidgetPage() {
     }
     if (!status?.openai_key_configured) {
       setErr('OpenAI key not configured.')
+      return
+    }
+    if (!conversationId) {
+      setErr('Connecting...')
+      initConversation(botId ? readStoredConversation(botId) : null)
       return
     }
     if (stage !== 'idle') return
@@ -345,15 +458,58 @@ export default function WidgetPage() {
     }
     setErr(null)
     setAssistantText('')
+    setMessages([])
     interimShownRef.current = false
     activeTextReqIdRef.current = null
     setConversationId(null)
-    initConversation()
+    if (botId) writeStoredConversation(botId, null)
+    initConversation(null)
+  }
+
+  useEffect(() => {
+    if (!conversationId) {
+      setMessages([])
+      setAssistantText('')
+      return
+    }
+    setAutoScroll(true)
+    void loadMessages({ reset: true })
+    const interval = window.setInterval(() => {
+      void loadMessages({ since: lastMessageAtRef.current })
+    }, 1500)
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [conversationId])
+
+  useEffect(() => {
+    if (!autoScroll) return
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [messages, assistantText, autoScroll])
+
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 12
+    setAutoScroll(atBottom)
+  }
+
+  function renderMessage(msg: WidgetMessage) {
+    const role = msg.role === 'assistant' ? 'assistant' : 'user'
+    const content = String(msg.content || '').trim()
+    if (!content) return null
+    return (
+      <div key={msg.id} className={`widgetMessage ${role}`}>
+        {content}
+      </div>
+    )
   }
 
   const isTextMode = widgetMode === 'text'
   const canRecord = Boolean(status?.openai_key_configured && conversationId && stage === 'idle')
-  const canSendText = Boolean(status?.openai_key_configured && stage === 'idle')
+  const canSendText = Boolean(status?.openai_key_configured && conversationId && stage === 'idle')
   const busy = stage !== 'idle' && stage !== 'disconnected' && !recording
   const micClass = `widgetMic ${recording ? 'recording' : ''} ${busy ? 'busy' : ''}`
   const textClass = `widgetTextCard ${busy ? 'busy' : ''}`
@@ -370,8 +526,12 @@ export default function WidgetPage() {
             <div className="widgetCenter">
               {isTextMode ? (
                 <div className={textClass}>
-                  <div className={`widgetTextReply ${assistantText ? '' : 'empty'}`}>
-                    {assistantText || 'Assistant reply will appear here.'}
+                  <div className="widgetConversation" onScroll={handleScroll} ref={scrollRef}>
+                    {messages.length === 0 && !assistantText ? (
+                      <div className="widgetEmpty">No messages yet.</div>
+                    ) : null}
+                    {messages.map((msg) => renderMessage(msg))}
+                    {assistantText ? <div className="widgetMessage assistant pending">{assistantText}</div> : null}
                   </div>
                   <div className="widgetTextInputRow">
                     <input
@@ -392,9 +552,22 @@ export default function WidgetPage() {
                   </div>
                 </div>
               ) : (
-                <button className={micClass} onClick={() => void (recording ? stopRecording() : startRecording())} disabled={!canRecord && !recording}>
-                  <MicrophoneIcon />
-                </button>
+                <div className={textClass}>
+                  <div className="widgetConversation" onScroll={handleScroll} ref={scrollRef}>
+                    {messages.length === 0 && !assistantText ? (
+                      <div className="widgetEmpty">No messages yet.</div>
+                    ) : null}
+                    {messages.map((msg) => renderMessage(msg))}
+                    {assistantText ? <div className="widgetMessage assistant pending">{assistantText}</div> : null}
+                  </div>
+                  <button
+                    className={micClass}
+                    onClick={() => void (recording ? stopRecording() : startRecording())}
+                    disabled={!canRecord && !recording}
+                  >
+                    <MicrophoneIcon />
+                  </button>
+                </div>
               )}
             </div>
             <button className="widgetGear" onClick={() => setMenuOpen((v) => !v)} title="Settings">

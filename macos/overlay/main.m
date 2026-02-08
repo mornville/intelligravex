@@ -108,7 +108,9 @@ static void LogLine(NSString *line);
     window.collectionBehavior =
       NSWindowCollectionBehaviorCanJoinAllSpaces |
       NSWindowCollectionBehaviorFullScreenAuxiliary |
-      NSWindowCollectionBehaviorStationary;
+      NSWindowCollectionBehaviorStationary |
+      NSWindowCollectionBehaviorIgnoresCycle;
+    window.hidesOnDeactivate = NO;
 
     [self positionWindow:window];
     LogLine(@"Window positioned");
@@ -127,6 +129,7 @@ static void LogLine(NSString *line);
     LogLine(@"WebView added");
 
     [window makeKeyAndOrderFront:nil];
+    [window orderFrontRegardless];
     self.window = window;
     self.webView = webView;
     [self loadLoadingScreen];
@@ -159,6 +162,13 @@ static void LogLine(NSString *line);
   task.executableURL = [NSURL fileURLWithPath:serverPath];
 
   NSMutableDictionary *env = [NSMutableDictionary dictionaryWithDictionary:[[NSProcessInfo processInfo] environment]];
+  NSString *path = env[@"PATH"] ?: @"";
+  NSString *extraPath = @"/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin";
+  if (path.length > 0) {
+    env[@"PATH"] = [NSString stringWithFormat:@"%@:%@", extraPath, path];
+  } else {
+    env[@"PATH"] = extraPath;
+  }
   env[@"VOICEBOT_OPEN_BROWSER"] = @"0";
   env[@"VOICEBOT_OPEN_PATH"] = @"/widget";
   env[@"VOICEBOT_PROMPT_INITIAL_PORT"] = @"0";
@@ -275,6 +285,7 @@ static void LogLine(NSString *line);
     return;
   }
   [self.window makeKeyAndOrderFront:nil];
+  [self.window orderFrontRegardless];
   [NSApp activateIgnoringOtherApps:YES];
 }
 

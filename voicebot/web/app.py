@@ -2389,46 +2389,36 @@ def create_app() -> FastAPI:
                                         action_type="run_shell",
                                         payload={"command": cmd_or_err},
                                     )
-                                    if _host_action_requires_approval(bot):
-                                        tool_result = _build_host_action_tool_result(action, ok=True)
-                                        tool_result["path"] = rel_path
-                                        candidate = _render_with_meta(next_reply, meta_current).strip()
-                                        if candidate:
-                                            final = candidate
-                                            needs_followup_llm = False
-                                        else:
-                                            final = "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
-                                            needs_followup_llm = False
+                                if _host_action_requires_approval(bot):
+                                    tool_result = _build_host_action_tool_result(action, ok=True)
+                                    tool_result["path"] = rel_path
+                                    needs_followup_llm = True
+                                    final = ""
+                                else:
+                                    tool_result = await _execute_host_action_and_update_async(
+                                        session, action=action
+                                    )
+                                    tool_failed = not bool(tool_result.get("ok", False))
+                                    if tool_failed:
+                                        needs_followup_llm = True
+                                        final = ""
                                     else:
-                                        tool_result = await _execute_host_action_and_update_async(
-                                            session, action=action
+                                        ok, summary_text = _summarize_image_file(
+                                            session,
+                                            bot=bot,
+                                            image_path=target,
+                                            prompt=str(patch.get("prompt") or "").strip(),
                                         )
-                                        tool_failed = not bool(tool_result.get("ok", False))
-                                        if tool_failed:
+                                        if not ok:
+                                            tool_result["summary_error"] = summary_text
+                                            tool_failed = True
                                             needs_followup_llm = True
                                             final = ""
                                         else:
-                                            ok, summary_text = _summarize_image_file(
-                                                session,
-                                                bot=bot,
-                                                image_path=target,
-                                                prompt=str(patch.get("prompt") or "").strip(),
-                                            )
-                                            if not ok:
-                                                tool_result["summary_error"] = summary_text
-                                                tool_failed = True
-                                                needs_followup_llm = True
-                                                final = ""
-                                            else:
-                                                tool_result["summary"] = summary_text
-                                                tool_result["path"] = rel_path
-                                                candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                if candidate:
-                                                    final = candidate
-                                                    needs_followup_llm = False
-                                                else:
-                                                    final = summary_text
-                                                    needs_followup_llm = False
+                                            tool_result["summary"] = summary_text
+                                            tool_result["path"] = rel_path
+                                            needs_followup_llm = True
+                                            final = ""
                     elif tool_name == "summarize_screenshot":
                         ok, summary_text, rel_path = _summarize_screenshot(
                             session,
@@ -2444,13 +2434,8 @@ def create_app() -> FastAPI:
                             final = ""
                         else:
                             tool_result = {"ok": True, "summary": summary_text, "path": rel_path}
-                            candidate = _render_with_meta(next_reply, meta_current).strip()
-                            if candidate:
-                                final = candidate
-                                needs_followup_llm = False
-                            else:
-                                final = summary_text
-                                needs_followup_llm = False
+                            needs_followup_llm = True
+                            final = ""
                     elif tool_name == "request_host_action":
                         if not bool(getattr(bot, "enable_host_actions", False)):
                             tool_result = {"ok": False, "error": {"message": "Host actions are disabled for this bot."}}
@@ -4534,7 +4519,36 @@ def create_app() -> FastAPI:
                         test_flag = bool(payload.get("test_flag", True))
                         debug_mode = bool(payload.get("debug", False))
                         accepting_audio = False
+                        conversation_id_str = str(payload.get("conversation_id") or "").strip()
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "init"})
+                        if conversation_id_str:
+                            try:
+                                with Session(engine) as session:
+                                    bot = get_bot(session, bot_id)
+                                    conv_id = UUID(conversation_id_str)
+                                    conv = get_conversation(session, conv_id)
+                                    if conv.bot_id != bot.id:
+                                        raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
+                            except Exception as exc:
+                                await _ws_send_json(ws, {"type": "error", "req_id": req_id, "error": str(exc)})
+                                await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                                active_req_id = None
+                                conv_id = None
+                                continue
+                            await _ws_send_json(
+                                ws,
+                                {
+                                    "type": "conversation",
+                                    "req_id": req_id,
+                                    "conversation_id": str(conv_id),
+                                    "id": str(conv_id),
+                                },
+                            )
+                            await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
+                            await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
+                            active_req_id = None
+                            accepting_audio = False
+                            continue
                         try:
                             conv_id = await _init_conversation_and_greet(
                                 bot_id=bot_id,
@@ -8930,11 +8944,6 @@ def create_app() -> FastAPI:
                                                         )
                                                     except Exception:
                                                         pass
-
-                                if tool_name == "capture_screenshot" and tool_failed:
-                                    msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
-                                    final = f"Screenshot failed: {msg}"
-                                    needs_followup_llm = False
 
                                 add_message_with_metrics(
                                     session,

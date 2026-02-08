@@ -322,14 +322,21 @@ class ContainerCommandResult:
 
 def _run(cmd: list[str], *, timeout_s: float = 300.0) -> subprocess.CompletedProcess[str]:
     logger.debug("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
-    return subprocess.run(
-        cmd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout_s,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        logger.warning("Command not found: %s", cmd[0] if cmd else "<empty>")
+        return subprocess.CompletedProcess(cmd, returncode=127, stdout="", stderr=str(exc))
+    except Exception as exc:
+        logger.exception("Failed to execute command: %s", " ".join(shlex.quote(x) for x in cmd))
+        return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr=str(exc))
 
 
 def _docker_available() -> bool:
