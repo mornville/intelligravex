@@ -2454,6 +2454,8 @@ def create_app() -> FastAPI:
                         and "followup" not in tool_args
                     ):
                         follow_up = True
+                    if tool_name in {"request_host_action", "capture_screenshot"}:
+                        next_reply = ""
                     raw_args = tool_args.get("args")
                     if isinstance(raw_args, dict):
                         patch = dict(raw_args)
@@ -5280,6 +5282,8 @@ def create_app() -> FastAPI:
                                         and "followup" not in tool_args
                                     ):
                                         follow_up = True
+                                    if tool_name in {"request_host_action", "capture_screenshot"}:
+                                        next_reply = ""
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
@@ -5388,15 +5392,19 @@ def create_app() -> FastAPI:
                                                     if _host_action_requires_approval(bot):
                                                         tool_result = _build_host_action_tool_result(action, ok=True)
                                                         tool_result["path"] = rel_path
-                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                        if candidate:
-                                                            rendered_reply = candidate
-                                                            needs_followup_llm = False
+                                                        if follow_up:
+                                                            rendered_reply = ""
+                                                            needs_followup_llm = True
                                                         else:
-                                                            rendered_reply = (
-                                                                "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
-                                                            )
-                                                            needs_followup_llm = False
+                                                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                            if candidate:
+                                                                rendered_reply = candidate
+                                                                needs_followup_llm = False
+                                                            else:
+                                                                rendered_reply = (
+                                                                    "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
+                                                                )
+                                                                needs_followup_llm = False
                                                     else:
                                                         if wait_reply:
                                                             await _send_interim(wait_reply, kind="wait")
@@ -5422,13 +5430,17 @@ def create_app() -> FastAPI:
                                                             else:
                                                                 tool_result["summary"] = summary_text
                                                                 tool_result["path"] = rel_path
-                                                                candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                                if candidate:
-                                                                    rendered_reply = candidate
-                                                                    needs_followup_llm = False
+                                                                if follow_up:
+                                                                    rendered_reply = ""
+                                                                    needs_followup_llm = True
                                                                 else:
-                                                                    rendered_reply = summary_text
-                                                                    needs_followup_llm = False
+                                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                                    if candidate:
+                                                                        rendered_reply = candidate
+                                                                        needs_followup_llm = False
+                                                                    else:
+                                                                        rendered_reply = summary_text
+                                                                        needs_followup_llm = False
                                     elif tool_name == "summarize_screenshot":
                                         ok, summary_text, rel_path = _summarize_screenshot(
                                             session,
@@ -5487,13 +5499,17 @@ def create_app() -> FastAPI:
                                                     )
                                                     if _host_action_requires_approval(bot):
                                                         tool_result = _build_host_action_tool_result(action, ok=True)
-                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                        if candidate:
-                                                            rendered_reply = candidate
-                                                            needs_followup_llm = False
-                                                        else:
-                                                            needs_followup_llm = True
+                                                        if follow_up:
                                                             rendered_reply = ""
+                                                            needs_followup_llm = True
+                                                        else:
+                                                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                            if candidate:
+                                                                rendered_reply = candidate
+                                                                needs_followup_llm = False
+                                                            else:
+                                                                needs_followup_llm = True
+                                                                rendered_reply = ""
                                                     else:
                                                         if wait_reply:
                                                             await _send_interim(wait_reply, kind="wait")
@@ -6610,6 +6626,14 @@ def create_app() -> FastAPI:
                                     follow_up = _parse_follow_up_flag(tool_args.get("follow_up")) or _parse_follow_up_flag(
                                         tool_args.get("followup")
                                     )
+                                    if (
+                                        tool_name in {"request_host_action", "capture_screenshot"}
+                                        and "follow_up" not in tool_args
+                                        and "followup" not in tool_args
+                                    ):
+                                        follow_up = True
+                                    if tool_name in {"request_host_action", "capture_screenshot"}:
+                                        next_reply = ""
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
@@ -6718,15 +6742,19 @@ def create_app() -> FastAPI:
                                                     if _host_action_requires_approval(bot2):
                                                         tool_result = _build_host_action_tool_result(action, ok=True)
                                                         tool_result["path"] = rel_path
-                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                        if candidate:
-                                                            rendered_reply = candidate
-                                                            needs_followup_llm = False
+                                                        if follow_up:
+                                                            rendered_reply = ""
+                                                            needs_followup_llm = True
                                                         else:
-                                                            rendered_reply = (
-                                                                "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
-                                                            )
-                                                            needs_followup_llm = False
+                                                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                            if candidate:
+                                                                rendered_reply = candidate
+                                                                needs_followup_llm = False
+                                                            else:
+                                                                rendered_reply = (
+                                                                    "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
+                                                                )
+                                                                needs_followup_llm = False
                                                     else:
                                                         if wait_reply:
                                                             await _send_interim(wait_reply, kind="wait")
@@ -6752,13 +6780,17 @@ def create_app() -> FastAPI:
                                                             else:
                                                                 tool_result["summary"] = summary_text
                                                                 tool_result["path"] = rel_path
-                                                                candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                                if candidate:
-                                                                    rendered_reply = candidate
-                                                                    needs_followup_llm = False
+                                                                if follow_up:
+                                                                    rendered_reply = ""
+                                                                    needs_followup_llm = True
                                                                 else:
-                                                                    rendered_reply = summary_text
-                                                                    needs_followup_llm = False
+                                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                                    if candidate:
+                                                                        rendered_reply = candidate
+                                                                        needs_followup_llm = False
+                                                                    else:
+                                                                        rendered_reply = summary_text
+                                                                        needs_followup_llm = False
                                     elif tool_name == "summarize_screenshot":
                                         ok, summary_text, rel_path = _summarize_screenshot(
                                             session,
@@ -6817,13 +6849,17 @@ def create_app() -> FastAPI:
                                                     )
                                                     if _host_action_requires_approval(bot2):
                                                         tool_result = _build_host_action_tool_result(action, ok=True)
-                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                        if candidate:
-                                                            rendered_reply = candidate
-                                                            needs_followup_llm = False
-                                                        else:
-                                                            needs_followup_llm = True
+                                                        if follow_up:
                                                             rendered_reply = ""
+                                                            needs_followup_llm = True
+                                                        else:
+                                                            candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                            if candidate:
+                                                                rendered_reply = candidate
+                                                                needs_followup_llm = False
+                                                            else:
+                                                                needs_followup_llm = True
+                                                                rendered_reply = ""
                                                     else:
                                                         if wait_reply:
                                                             await _send_interim(wait_reply, kind="wait")
@@ -8639,6 +8675,8 @@ def create_app() -> FastAPI:
                                     and "followup" not in tool_args
                                 ):
                                     follow_up = True
+                                if tool_name in {"request_host_action", "capture_screenshot"}:
+                                    next_reply = ""
                                 raw_args = tool_args.get("args")
                                 if isinstance(raw_args, dict):
                                     patch = dict(raw_args)
@@ -8724,15 +8762,19 @@ def create_app() -> FastAPI:
                                                 if _host_action_requires_approval(bot):
                                                     tool_result = _build_host_action_tool_result(action, ok=True)
                                                     tool_result["path"] = rel_path
-                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                    if candidate:
-                                                        final = candidate
-                                                        needs_followup_llm = False
+                                                    if follow_up:
+                                                        final = ""
+                                                        needs_followup_llm = True
                                                     else:
-                                                        final = (
-                                                            "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
-                                                        )
-                                                        needs_followup_llm = False
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate:
+                                                            final = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            final = (
+                                                                "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
+                                                            )
+                                                            needs_followup_llm = False
                                                 else:
                                                     tool_result = await _execute_host_action_and_update_async(
                                                         session, action=action
@@ -8756,13 +8798,17 @@ def create_app() -> FastAPI:
                                                         else:
                                                             tool_result["summary"] = summary_text
                                                             tool_result["path"] = rel_path
-                                                            candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                            if candidate:
-                                                                final = candidate
-                                                                needs_followup_llm = False
+                                                            if follow_up:
+                                                                final = ""
+                                                                needs_followup_llm = True
                                                             else:
-                                                                final = summary_text
-                                                                needs_followup_llm = False
+                                                                candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                                if candidate:
+                                                                    final = candidate
+                                                                    needs_followup_llm = False
+                                                                else:
+                                                                    final = summary_text
+                                                                    needs_followup_llm = False
                                 elif tool_name == "summarize_screenshot":
                                     ok, summary_text, rel_path = _summarize_screenshot(
                                         session,
@@ -8821,13 +8867,17 @@ def create_app() -> FastAPI:
                                                 )
                                                 if _host_action_requires_approval(bot):
                                                     tool_result = _build_host_action_tool_result(action, ok=True)
-                                                    candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                    if candidate:
-                                                        final = candidate
-                                                        needs_followup_llm = False
-                                                    else:
-                                                        needs_followup_llm = True
+                                                    if follow_up:
                                                         final = ""
+                                                        needs_followup_llm = True
+                                                    else:
+                                                        candidate = _render_with_meta(next_reply, meta_current).strip()
+                                                        if candidate:
+                                                            final = candidate
+                                                            needs_followup_llm = False
+                                                        else:
+                                                            needs_followup_llm = True
+                                                            final = ""
                                                 else:
                                                     tool_result = await _execute_host_action_and_update_async(
                                                         session, action=action
