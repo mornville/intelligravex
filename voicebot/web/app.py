@@ -86,6 +86,7 @@ from voicebot.store import (
 from voicebot.tts.openai_tts import OpenAITTS
 from voicebot.utils.tokens import ModelPrice, estimate_cost_usd, estimate_messages_tokens, estimate_text_tokens
 from voicebot.utils.python_postprocess import run_python_postprocessor
+from voicebot.utils.text import SentenceChunker
 
 # Backwards-compatible alias used in legacy tool handlers.
 run_python_postprocess = run_python_postprocessor
@@ -4654,44 +4655,17 @@ def create_app() -> FastAPI:
         except Exception:
             return max(0.5, min(12.0, float(len(wav_bytes)) / float(max(1, sr * 2))))
 
-    def _split_tts_buffer(buf: str, min_words: int) -> tuple[Optional[str], str]:
-        if not buf:
-            return None, buf
-        word_count = 0
-        in_word = False
-        cut_idx: Optional[int] = None
-        for i, ch in enumerate(buf):
-            if ch.isspace():
-                if in_word:
-                    word_count += 1
-                    in_word = False
-                    if word_count >= min_words:
-                        cut_idx = i
-                        break
-            else:
-                if not in_word:
-                    in_word = True
-        if cut_idx is None:
-            return None, buf
-        chunk = buf[:cut_idx].strip()
-        remainder = buf[cut_idx:]
-        return (chunk if chunk else None, remainder)
-
-    def _iter_tts_chunks(delta_q: "queue.Queue[Optional[str]]", min_words: int) -> Generator[str, None, None]:
-        buffer = ""
+    def _iter_tts_chunks(delta_q: "queue.Queue[Optional[str]]") -> Generator[str, None, None]:
+        chunker = SentenceChunker()
         while True:
             d = delta_q.get()
             if d is None:
                 break
             if not d:
                 continue
-            buffer += d
-            while True:
-                chunk, buffer = _split_tts_buffer(buffer, min_words)
-                if not chunk:
-                    break
+            for chunk in chunker.push(d):
                 yield chunk
-        tail = buffer.strip()
+        tail = chunker.flush()
         if tail:
             yield tail
 
@@ -5121,7 +5095,7 @@ def create_app() -> FastAPI:
                                 return
                             try:
                                 synth = tts_synth or _get_tts_synth_fn(bot, openai_api_key)
-                                for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                                for text_to_speak in _iter_tts_chunks(delta_q_tts):
                                     if not text_to_speak:
                                         continue
                                     with metrics_lock:
@@ -6410,7 +6384,7 @@ def create_app() -> FastAPI:
                                 return
                             try:
                                 tts_synth = _get_tts_synth_fn(bot, openai_api_key)
-                                for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                                for text_to_speak in _iter_tts_chunks(delta_q_tts):
                                     if not text_to_speak:
                                         continue
                                     with metrics_lock:
@@ -10664,7 +10638,7 @@ def create_app() -> FastAPI:
                     return
                 try:
                     tts_synth = _get_tts_synth_fn(bot, openai_api_key)
-                    for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                    for text_to_speak in _iter_tts_chunks(delta_q_tts):
                         if not text_to_speak:
                             continue
                         wav, sr = tts_synth(text_to_speak)
@@ -10808,7 +10782,7 @@ def create_app() -> FastAPI:
                     return
                 try:
                     tts_synth = _get_tts_synth_fn(bot, openai_api_key)
-                    for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
+                    for text_to_speak in _iter_tts_chunks(delta_q_tts):
                         if not text_to_speak:
                             continue
                         wav, sr = tts_synth(text_to_speak)
