@@ -520,6 +520,21 @@ def _safe_json_list(raw: str) -> list:
         return []
 
 
+def _parse_follow_up_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in {"1", "true", "yes", "y", "on"}:
+        return True
+    if s in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return False
+
+
 def _slugify(value: str) -> str:
     s = (value or "").strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
@@ -2318,6 +2333,11 @@ def create_app() -> FastAPI:
 
                     next_reply = str(tool_args.get("next_reply") or "").strip()
                     wait_reply = str(tool_args.get("wait_reply") or "").strip()
+                    follow_up = _parse_follow_up_flag(tool_args.get("follow_up")) or _parse_follow_up_flag(
+                        tool_args.get("followup")
+                    )
+                    if tool_name == "request_host_action" and "follow_up" not in tool_args and "followup" not in tool_args:
+                        follow_up = True
                     raw_args = tool_args.get("args")
                     if isinstance(raw_args, dict):
                         patch = dict(raw_args)
@@ -2325,6 +2345,8 @@ def create_app() -> FastAPI:
                         patch = dict(tool_args)
                         patch.pop("next_reply", None)
                         patch.pop("wait_reply", None)
+                        patch.pop("follow_up", None)
+                        patch.pop("followup", None)
                         patch.pop("args", None)
 
                     tool_cfg: IntegrationTool | None = None
@@ -2482,7 +2504,10 @@ def create_app() -> FastAPI:
                                         )
                                         tool_failed = not bool(tool_result.get("ok", False))
                                         candidate = _render_with_meta(next_reply, meta_current).strip()
-                                        if candidate and not tool_failed:
+                                        if follow_up and not tool_failed:
+                                            needs_followup_llm = True
+                                            final = ""
+                                        elif candidate and not tool_failed:
                                             final = candidate
                                             needs_followup_llm = False
                                         else:
@@ -3388,6 +3413,10 @@ def create_app() -> FastAPI:
                     },
                     "command": {"type": "string", "description": "Shell command to run (for run_shell)."},
                     "script": {"type": "string", "description": "AppleScript to run (for run_applescript)."},
+                    "follow_up": {
+                        "type": "boolean",
+                        "description": "If true, force a follow-up assistant reply after the action runs.",
+                    },
                     "next_reply": {
                         "type": "string",
                         "description": "Optional reply to the user after queuing the action.",
@@ -5014,6 +5043,21 @@ def create_app() -> FastAPI:
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
                                     wait_reply = str(tool_args.get("wait_reply") or "").strip() or "Working on it…"
+                                    follow_up = _parse_follow_up_flag(tool_args.get("follow_up")) or _parse_follow_up_flag(
+                                        tool_args.get("followup")
+                                    )
+                                    if (
+                                        tool_name == "request_host_action"
+                                        and "follow_up" not in tool_args
+                                        and "followup" not in tool_args
+                                    ):
+                                        follow_up = True
+                                    if (
+                                        tool_name == "request_host_action"
+                                        and "follow_up" not in tool_args
+                                        and "followup" not in tool_args
+                                    ):
+                                        follow_up = True
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
@@ -5021,6 +5065,8 @@ def create_app() -> FastAPI:
                                         patch = dict(tool_args)
                                         patch.pop("next_reply", None)
                                         patch.pop("wait_reply", None)
+                                        patch.pop("follow_up", None)
+                                        patch.pop("followup", None)
                                         patch.pop("args", None)
 
                                     tool_cfg: IntegrationTool | None = None
@@ -5226,7 +5272,10 @@ def create_app() -> FastAPI:
                                                         )
                                                         tool_failed = not bool(tool_result.get("ok", False))
                                                         candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                        if candidate and not tool_failed:
+                                                        if follow_up and not tool_failed:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
+                                                        elif candidate and not tool_failed:
                                                             rendered_reply = candidate
                                                             needs_followup_llm = False
                                                         else:
@@ -6312,6 +6361,9 @@ def create_app() -> FastAPI:
 
                                     next_reply = str(tool_args.get("next_reply") or "").strip()
                                     wait_reply = str(tool_args.get("wait_reply") or "").strip() or "Working on it…"
+                                    follow_up = _parse_follow_up_flag(tool_args.get("follow_up")) or _parse_follow_up_flag(
+                                        tool_args.get("followup")
+                                    )
                                     raw_args = tool_args.get("args")
                                     if isinstance(raw_args, dict):
                                         patch = dict(raw_args)
@@ -6319,6 +6371,8 @@ def create_app() -> FastAPI:
                                         patch = dict(tool_args)
                                         patch.pop("next_reply", None)
                                         patch.pop("wait_reply", None)
+                                        patch.pop("follow_up", None)
+                                        patch.pop("followup", None)
                                         patch.pop("args", None)
 
                                     tool_cfg: IntegrationTool | None = None
@@ -6524,7 +6578,10 @@ def create_app() -> FastAPI:
                                                         )
                                                         tool_failed = not bool(tool_result.get("ok", False))
                                                         candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                        if candidate and not tool_failed:
+                                                        if follow_up and not tool_failed:
+                                                            needs_followup_llm = True
+                                                            rendered_reply = ""
+                                                        elif candidate and not tool_failed:
                                                             rendered_reply = candidate
                                                             needs_followup_llm = False
                                                         else:
@@ -8309,6 +8366,11 @@ def create_app() -> FastAPI:
 
                                 next_reply = str(tool_args.get("next_reply") or "").strip()
                                 wait_reply = str(tool_args.get("wait_reply") or "").strip()
+                                follow_up = _parse_follow_up_flag(tool_args.get("follow_up")) or _parse_follow_up_flag(
+                                    tool_args.get("followup")
+                                )
+                                if tool_name == "request_host_action" and "follow_up" not in tool_args and "followup" not in tool_args:
+                                    follow_up = True
                                 raw_args = tool_args.get("args")
                                 if isinstance(raw_args, dict):
                                     patch = dict(raw_args)
@@ -8316,6 +8378,8 @@ def create_app() -> FastAPI:
                                     patch = dict(tool_args)
                                     patch.pop("next_reply", None)
                                     patch.pop("wait_reply", None)
+                                    patch.pop("follow_up", None)
+                                    patch.pop("followup", None)
                                     patch.pop("args", None)
 
                                 tool_cfg: IntegrationTool | None = None
@@ -8502,7 +8566,10 @@ def create_app() -> FastAPI:
                                                     )
                                                     tool_failed = not bool(tool_result.get("ok", False))
                                                     candidate = _render_with_meta(next_reply, meta_current).strip()
-                                                    if candidate and not tool_failed:
+                                                    if follow_up and not tool_failed:
+                                                        needs_followup_llm = True
+                                                        final = ""
+                                                    elif candidate and not tool_failed:
                                                         final = candidate
                                                         needs_followup_llm = False
                                                     else:
