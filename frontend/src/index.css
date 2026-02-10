@@ -429,6 +429,129 @@ a {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 14px;
 }
+.featureShowcase {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+.featureLogoRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.featureLogo {
+  --accent: rgba(129, 140, 248, 0.8);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: inherit;
+  cursor: pointer;
+  transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  animation: float 7s ease-in-out infinite;
+}
+.featureLogo:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.35);
+}
+.featureLogo.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 18px 30px rgba(15, 23, 42, 0.35);
+  transform: translateY(-2px);
+}
+.featureLogoIcon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #0b0f16;
+  background: var(--accent);
+  box-shadow: 0 8px 16px rgba(10, 15, 28, 0.4);
+}
+.featureLogoIcon svg {
+  width: 16px;
+  height: 16px;
+}
+.featureLogoLabel {
+  font-size: 13px;
+  font-weight: 600;
+}
+.featurePanel {
+  --accent: rgba(129, 140, 248, 0.8);
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(140deg, rgba(20, 23, 34, 0.9), rgba(10, 12, 18, 0.85));
+  padding: 18px 20px;
+  display: grid;
+  gap: 12px;
+  animation: panelIn 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.featurePanel::before {
+  content: '';
+  position: absolute;
+  inset: -40% 30% auto -20%;
+  height: 180%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 45%, transparent) 0%, transparent 60%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.featurePanelTop {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 14px;
+  align-items: center;
+}
+.featurePanelTop h3 {
+  margin: 0 0 6px;
+}
+.featurePanelTop p {
+  margin: 0;
+  color: rgba(231, 233, 238, 0.78);
+}
+.featurePanelIcon {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--accent) 25%, rgba(15, 18, 26, 1));
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.1));
+  box-shadow: 0 10px 24px rgba(10, 15, 28, 0.45);
+}
+.featurePanelIcon svg {
+  width: 22px;
+  height: 22px;
+  color: color-mix(in srgb, var(--accent) 80%, white);
+}
+.featurePanelTags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.featurePanelTags span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, rgba(255, 255, 255, 0.2));
+  color: color-mix(in srgb, var(--accent) 70%, rgba(231, 233, 238, 0.9));
+  background: rgba(12, 15, 22, 0.5);
+}
+.featurePanelList {
+  margin: 0;
+  padding-left: 18px;
+  color: rgba(231, 233, 238, 0.78);
+  display: grid;
+  gap: 6px;
+}
 .featureCard {
   padding: 16px;
   border-radius: 16px;

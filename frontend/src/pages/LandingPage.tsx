@@ -7,7 +7,13 @@ import slide3 from '../assets/landing/landing-3.png'
 import slide4 from '../assets/landing/landing-4.png'
 import {
   ArrowRightIcon,
+  AdjustmentsHorizontalIcon,
+  CameraIcon,
+  ChatBubbleBottomCenterTextIcon,
+  CommandLineIcon,
+  ComputerDesktopIcon,
   CpuChipIcon,
+  DeviceTabletIcon,
   GlobeAltIcon,
   SparklesIcon,
   ShieldCheckIcon,
@@ -328,18 +334,38 @@ export default function LandingPage() {
     },
     {
       icon: <CubeTransparentIcon aria-hidden="true" />,
-      title: 'Tool orchestration',
+      title: 'HTTP tools + integrations',
       body: 'Define tool schemas, map responses, and chain reliable flows.',
     },
     {
-      icon: <BoltIcon aria-hidden="true" />,
-      title: 'Parallel Data Agent runtime',
-      body: 'Spin up a container per conversation with a persistent workspace.',
+      icon: <CommandLineIcon aria-hidden="true" />,
+      title: 'Host actions',
+      body: 'Run local shell commands or AppleScript to get real work done.',
+    },
+    {
+      icon: <CameraIcon aria-hidden="true" />,
+      title: 'Screen capture + vision',
+      body: 'Capture the screen and summarize what’s happening.',
     },
     {
       icon: <SparklesIcon aria-hidden="true" />,
-      title: 'Scripted automations',
-      body: 'Use scripts to post‑process large tool responses and save outputs to the workspace.',
+      title: 'Metadata templating',
+      body: 'Use variables in prompts and replies for dynamic, personalized workflows.',
+    },
+    {
+      icon: <AdjustmentsHorizontalIcon aria-hidden="true" />,
+      title: 'Multi‑model stack',
+      body: 'Tune LLM, ASR, TTS, web search, Codex, and summary models per assistant.',
+    },
+    {
+      icon: <ChatBubbleBottomCenterTextIcon aria-hidden="true" />,
+      title: 'Embeddable widget',
+      body: 'Drop a public chat widget anywhere with client keys and WebSocket transport.',
+    },
+    {
+      icon: <BoltIcon aria-hidden="true" />,
+      title: 'Optional Data Agent',
+      body: 'Run long tasks in a Docker container with a persistent workspace.',
     },
     {
       icon: <ShieldCheckIcon aria-hidden="true" />,
@@ -348,10 +374,135 @@ export default function LandingPage() {
     },
     {
       icon: <CodeBracketSquareIcon aria-hidden="true" />,
-      title: 'Git + SSH tooling',
-      body: 'Connect repos securely for data‑agent workflows.',
+      title: 'Codex post‑processing',
+      body: 'Extract structured outputs or transform results after tool calls.',
+    },
+    {
+      icon: <DeviceTabletIcon aria-hidden="true" />,
+      title: 'Cross‑platform packaging',
+      body: 'Ship to macOS, Windows, and Linux with one app.',
     },
   ]
+  const featureShowcase = [
+    {
+      title: 'Host actions',
+      short: 'Host actions',
+      body: 'Queue local shell or AppleScript tasks for real system work.',
+      bullets: ['Great for file ops, settings, and app automation.', 'Approval can be enabled per assistant.'],
+      icon: <CommandLineIcon aria-hidden="true" />,
+      accent: 'rgba(244, 114, 182, 0.9)',
+      tags: ['Shell', 'AppleScript'],
+    },
+    {
+      title: 'Screen capture + vision',
+      short: 'Screen capture',
+      body: 'Capture the screen on demand and summarize what’s happening.',
+      bullets: ['Perfect for walkthroughs, debugging, and quick audits.', 'Use vision summaries inside workflows.'],
+      icon: <CameraIcon aria-hidden="true" />,
+      accent: 'rgba(56, 189, 248, 0.9)',
+      tags: ['Vision', 'Context'],
+    },
+    {
+      title: 'Live web search',
+      short: 'Web search',
+      body: 'Fetch fresh sources with searchable citations.',
+      bullets: ['Ground answers in current info.', 'Great for research and monitoring.'],
+      icon: <GlobeAltIcon aria-hidden="true" />,
+      accent: 'rgba(14, 165, 233, 0.9)',
+      tags: ['Sources', 'Citations'],
+    },
+    {
+      title: 'HTTP + integration tools',
+      short: 'HTTP tools',
+      body: 'Call external APIs with schemas and mapped outputs.',
+      bullets: ['Validate responses before they hit the model.', 'Map fields into metadata automatically.'],
+      icon: <CubeTransparentIcon aria-hidden="true" />,
+      accent: 'rgba(167, 139, 250, 0.9)',
+      tags: ['Schemas', 'Mapping'],
+    },
+    {
+      title: 'Metadata templating',
+      short: 'Templating',
+      body: 'Use variables in prompts and replies for dynamic flows.',
+      bullets: ['Personalize responses instantly.', 'Store user context across turns.'],
+      icon: <SparklesIcon aria-hidden="true" />,
+      accent: 'rgba(250, 204, 21, 0.9)',
+      tags: ['Dynamic', 'Personalized'],
+    },
+    {
+      title: 'Multi‑model stack',
+      short: 'Multi‑model',
+      body: 'Tune LLM, ASR, TTS, web search, Codex, and summaries.',
+      bullets: ['Mix models per assistant.', 'Optimize speed and cost.'],
+      icon: <AdjustmentsHorizontalIcon aria-hidden="true" />,
+      accent: 'rgba(94, 234, 212, 0.9)',
+      tags: ['LLM', 'ASR', 'TTS'],
+    },
+    {
+      title: 'Embeddable widget',
+      short: 'Widget',
+      body: 'Embed a live chat or mic experience on any site.',
+      bullets: ['Client keys + WebSocket transport.', 'Customizable experience per assistant.'],
+      icon: <ChatBubbleBottomCenterTextIcon aria-hidden="true" />,
+      accent: 'rgba(59, 130, 246, 0.9)',
+      tags: ['Embed', 'Web'],
+    },
+    {
+      title: 'Optional Data Agent',
+      short: 'Data Agent',
+      body: 'Run long tasks in Docker with a persistent workspace.',
+      bullets: ['Parallel containers per conversation.', 'Scripted post‑processing available.'],
+      icon: <BoltIcon aria-hidden="true" />,
+      accent: 'rgba(129, 140, 248, 0.9)',
+      tags: ['Docker', 'Workspace'],
+    },
+    {
+      title: 'Codex post‑processing',
+      short: 'Codex',
+      body: 'Structured extraction and transformations after tool calls.',
+      bullets: ['Great for large or messy responses.', 'Return clean, user‑ready output.'],
+      icon: <CodeBracketSquareIcon aria-hidden="true" />,
+      accent: 'rgba(52, 211, 153, 0.9)',
+      tags: ['Post‑process', 'Structured'],
+    },
+    {
+      title: 'Mic overlay mode',
+      short: 'Mic overlay',
+      body: 'A floating mic overlay for fast voice workflows.',
+      bullets: ['Start/stop sessions instantly.', 'Perfect for hands‑free tasks.'],
+      icon: <DeviceTabletIcon aria-hidden="true" />,
+      accent: 'rgba(249, 115, 22, 0.9)',
+      tags: ['Voice', 'Overlay'],
+    },
+    {
+      title: 'Local‑first storage',
+      short: 'Local‑first',
+      body: 'Keep configs, workspaces, and context on your device.',
+      bullets: ['Share only what you choose.', 'Works offline for local tasks.'],
+      icon: <ShieldCheckIcon aria-hidden="true" />,
+      accent: 'rgba(74, 222, 128, 0.9)',
+      tags: ['Privacy', 'Control'],
+    },
+    {
+      title: 'Cross‑platform app',
+      short: 'Cross‑platform',
+      body: 'Ship one app across macOS, Windows, and Linux.',
+      bullets: ['Consistent experience everywhere.', 'Built for teams and demos.'],
+      icon: <ComputerDesktopIcon aria-hidden="true" />,
+      accent: 'rgba(196, 181, 253, 0.9)',
+      tags: ['macOS', 'Windows', 'Linux'],
+    },
+  ]
+  const [featureIndex, setFeatureIndex] = useState(0)
+  const [featurePaused, setFeaturePaused] = useState(false)
+  const activeFeature = featureShowcase[featureIndex]
+  useEffect(() => {
+    if (featurePaused) return
+    const id = window.setInterval(() => {
+      setFeatureIndex((i) => (i + 1) % featureShowcase.length)
+    }, 5200)
+    return () => window.clearInterval(id)
+  }, [featurePaused, featureShowcase.length])
   const slides = [
     {
       src: slide1,
@@ -478,6 +629,56 @@ export default function LandingPage() {
               <p>{cap.body}</p>
             </div>
           ))}
+        </div>
+        <div
+          className="featureShowcase"
+          onMouseEnter={() => setFeaturePaused(true)}
+          onMouseLeave={() => setFeaturePaused(false)}
+        >
+          <div className="featureLogoRow">
+            {featureShowcase.map((feature, idx) => (
+              <button
+                key={feature.title}
+                type="button"
+                className={`featureLogo ${idx === featureIndex ? 'active' : ''}`}
+                style={
+                  {
+                    '--accent': feature.accent,
+                    animationDelay: `${idx * 120}ms`,
+                  } as React.CSSProperties
+                }
+                onClick={() => setFeatureIndex(idx)}
+                onFocus={() => setFeatureIndex(idx)}
+                aria-pressed={idx === featureIndex}
+              >
+                <span className="featureLogoIcon">{feature.icon}</span>
+                <span className="featureLogoLabel">{feature.short}</span>
+              </button>
+            ))}
+          </div>
+          <div
+            key={activeFeature.title}
+            className="featurePanel"
+            style={{ '--accent': activeFeature.accent } as React.CSSProperties}
+          >
+            <div className="featurePanelTop">
+              <div className="featurePanelIcon">{activeFeature.icon}</div>
+              <div>
+                <h3>{activeFeature.title}</h3>
+                <p>{activeFeature.body}</p>
+              </div>
+            </div>
+            <div className="featurePanelTags">
+              {activeFeature.tags.map((tag) => (
+                <span key={tag}>{tag}</span>
+              ))}
+            </div>
+            <ul className="featurePanelList">
+              {activeFeature.bullets.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
         </div>
       </section>
 

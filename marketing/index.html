@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Intelligravex | Gravex Overlay</title>
+    <title>Intelligravex | GravexStudio</title>
     <meta
       name="description"
-      content="Intelligravex is a local-first assistant studio with a macOS overlay for real-time, tool-driven conversations, persistent workspaces, and embeddable widgets."
+      content="Intelligravex is a local-first assistant studio with voice, tools, host actions, optional workspaces, and an overlay mode for fast access."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -26,24 +26,25 @@
         </div>
         <div class="nav-actions">
           <a class="btn ghost" href="#feature-matrix">All features</a>
-          <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download Overlay DMG</a>
+          <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download macOS app</a>
         </div>
       </nav>
 
       <div class="hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">Gravex Overlay</p>
-          <h1>Summon your assistant anywhere. Keep the full studio local.</h1>
+          <p class="eyebrow">GravexStudio</p>
+          <h1>One studio. Many assistants. Built for real work.</h1>
           <p class="hero-subtitle">
-            Intelligravex pairs a local-first assistant studio with a macOS overlay so you can talk, search, and run tasks
-            without leaving your workflow.
+            Intelligravex keeps everything local while giving you voice, tools, host actions, and an overlay mode for fast
+            access.
           </p>
           <div class="hero-actions">
-            <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download Overlay DMG</a>
-            <a class="btn ghost" href="#setup">First-time setup</a>
+            <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download macOS app</a>
+            <a class="btn ghost" href="#feature-showcase">Explore features</a>
           </div>
           <div class="hero-chips">
-            <span>macOS Overlay DMG</span>
+            <span>Overlay mode</span>
+            <span>Host actions</span>
             <span>Local-first by design</span>
             <span>Embeddable widget</span>
           </div>
@@ -63,16 +64,16 @@
                 <p class="mini-text">Stream text and audio with latency metrics.</p>
               </div>
               <div class="mini">
-                <p class="mini-title">Multi-model stack</p>
-                <p class="mini-text">Chat reasoning, voice input, voice output, and search.</p>
+                <p class="mini-title">Host actions</p>
+                <p class="mini-text">Run local shell or AppleScript tasks on demand.</p>
               </div>
               <div class="mini">
-                <p class="mini-title">Data Agent</p>
-                <p class="mini-text">One workspace per conversation, persistent and isolated.</p>
+                <p class="mini-title">Screen capture</p>
+                <p class="mini-text">Capture the screen and summarize what is happening.</p>
               </div>
               <div class="mini">
-                <p class="mini-title">Mac overlay</p>
-                <p class="mini-text">Global hotkeys and an always-on-top widget.</p>
+                <p class="mini-title">Overlay mode</p>
+                <p class="mini-text">Global hotkeys and an always-on-top mic widget.</p>
               </div>
             </div>
           </div>
@@ -103,14 +104,197 @@
         </div>
       </section>
 
-      <section class="section overlay-section" id="overlay">
+      <section class="section feature-showcase" id="feature-showcase">
+        <div class="section-head">
+          <p class="eyebrow">Feature spotlight</p>
+          <h2>Built-in capabilities that stand out in demos.</h2>
+          <p class="section-subtitle">Tap a logo to explore, or just let it cycle.</p>
+        </div>
+        <div class="feature-showcase-grid">
+          <div class="feature-logo-row" data-feature-logos>
+            <button
+              class="feature-logo active"
+              data-feature
+              data-title="Host actions"
+              data-body="Queue local shell or AppleScript tasks to get real work done."
+              data-tags="Shell,AppleScript"
+              data-bullets="Great for file ops and app automation.|Approval can be enabled per assistant."
+              data-accent="#ff7a78"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 6l6 6-6 6" />
+                  <path d="M12 18h8" />
+                </svg>
+              </span>
+              <span class="logo-label">Host actions</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Screen capture + vision"
+              data-body="Capture the screen and summarize what is happening."
+              data-tags="Vision,Context"
+              data-bullets="Perfect for walkthroughs and QA.|Use vision summaries inside workflows."
+              data-accent="#64f0ff"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="4" y="7" width="16" height="10" rx="2" />
+                  <circle cx="12" cy="12" r="2.5" />
+                  <path d="M8 7l2-2h4l2 2" />
+                </svg>
+              </span>
+              <span class="logo-label">Screen capture</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Live web search"
+              data-body="Fetch fresh sources with searchable citations."
+              data-tags="Sources,Citations"
+              data-bullets="Great for research and monitoring.|Keep answers grounded."
+              data-accent="#7dd3fc"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="6" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+              </span>
+              <span class="logo-label">Web search</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="HTTP + integration tools"
+              data-body="Call external APIs with schemas and mapped outputs."
+              data-tags="Schemas,Mapping"
+              data-bullets="Validate responses before they reach the model.|Map fields into metadata automatically."
+              data-accent="#c4b5fd"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 7h16" />
+                  <path d="M4 12h16" />
+                  <path d="M4 17h16" />
+                </svg>
+              </span>
+              <span class="logo-label">HTTP tools</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Metadata templating"
+              data-body="Use variables in prompts and replies for dynamic flows."
+              data-tags="Dynamic,Personalized"
+              data-bullets="Personalize responses instantly.|Store user context across turns."
+              data-accent="#f2c94c"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 8l-3 4 3 4" />
+                  <path d="M17 8l3 4-3 4" />
+                  <path d="M10 6l4 12" />
+                </svg>
+              </span>
+              <span class="logo-label">Templating</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Multi-model stack"
+              data-body="Tune LLM, ASR, TTS, web search, Codex, and summaries."
+              data-tags="LLM,ASR,TTS"
+              data-bullets="Mix models per assistant.|Optimize speed and cost."
+              data-accent="#7ef29a"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="4" y="4" width="6" height="6" rx="1" />
+                  <rect x="14" y="4" width="6" height="6" rx="1" />
+                  <rect x="4" y="14" width="6" height="6" rx="1" />
+                  <rect x="14" y="14" width="6" height="6" rx="1" />
+                </svg>
+              </span>
+              <span class="logo-label">Multi-model</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Embeddable widget"
+              data-body="Embed a live chat or mic experience on any site."
+              data-tags="Embed,Web"
+              data-bullets="Client keys + WebSocket transport.|Customize per assistant."
+              data-accent="#60a5fa"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 8h10" />
+                  <path d="M7 12h6" />
+                  <path d="M5 5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />
+                </svg>
+              </span>
+              <span class="logo-label">Widget</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Optional Data Agent"
+              data-body="Run long tasks in Docker with a persistent workspace."
+              data-tags="Docker,Workspace"
+              data-bullets="Parallel containers per conversation.|Scripted post-processing available."
+              data-accent="#9a8cff"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="7" width="18" height="10" rx="2" />
+                  <path d="M7 7V5h10v2" />
+                </svg>
+              </span>
+              <span class="logo-label">Data Agent</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Mic overlay mode"
+              data-body="A floating mic overlay for fast voice workflows."
+              data-tags="Voice,Overlay"
+              data-bullets="Start and stop sessions instantly.|Stay in flow while tasks run."
+              data-accent="#f9a866"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="3" width="6" height="10" rx="3" />
+                  <path d="M6 11a6 6 0 0 0 12 0" />
+                  <path d="M12 17v4" />
+                </svg>
+              </span>
+              <span class="logo-label">Mic overlay</span>
+            </button>
+          </div>
+          <div class="feature-panel" data-feature-panel>
+            <div class="feature-panel-top">
+              <div class="feature-panel-icon" data-feature-icon></div>
+              <div>
+                <h3 data-feature-title>Host actions</h3>
+                <p data-feature-body>Queue local shell or AppleScript tasks to get real work done.</p>
+              </div>
+            </div>
+            <div class="feature-panel-tags" data-feature-tags></div>
+            <ul class="feature-panel-list" data-feature-bullets></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="section overlay-section" id="overlay-mode">
         <div class="split">
           <div class="split-copy">
             <p class="eyebrow">Overlay mode</p>
-            <h2>Instant access with a macOS overlay.</h2>
+            <h2>Instant access with a floating overlay.</h2>
             <p class="section-subtitle">
-              Gravex Overlay floats above your apps so you can capture requests, see responses, and keep moving without
-              context switching.
+              The overlay is a feature of the studio. It floats above your apps so you can capture requests, see
+              responses, and keep moving without context switching.
             </p>
             <ul class="checklist">
               <li>Borderless, draggable window that stays on top.</li>
@@ -154,7 +338,7 @@
         <div class="section-head">
           <p class="eyebrow">Feature matrix</p>
           <h2>Everything Intelligravex ships, in one place.</h2>
-          <p class="section-subtitle">All features below reflect the current studio, backend, and macOS overlay.</p>
+          <p class="section-subtitle">All features below reflect the current studio and built-in overlay mode.</p>
         </div>
 
         <div class="card-grid">
@@ -214,11 +398,11 @@
           </article>
 
           <article class="card reveal">
-            <h3>Response Control</h3>
+            <h3>Host Actions + Screen Capture</h3>
             <ul>
-              <li>Short waiting replies while tools run.</li>
-              <li>Deterministic outputs when you need precision.</li>
-              <li>Flexible modes for tool-driven and chat-driven replies.</li>
+              <li>Run local shell commands or AppleScript on demand.</li>
+              <li>Screen capture with vision summaries.</li>
+              <li>Approval gates available per assistant.</li>
             </ul>
           </article>
 
@@ -257,7 +441,7 @@
           </article>
 
           <article class="card reveal">
-            <h3>Mac Overlay App</h3>
+            <h3>Overlay Mode (Feature)</h3>
             <ul>
               <li>Borderless overlay window that can float above apps.</li>
               <li>Global hotkeys for instant access.</li>
@@ -283,7 +467,7 @@
         <div class="section-head">
           <p class="eyebrow">Workflow</p>
           <h2>From request to result, without switching apps.</h2>
-          <p class="section-subtitle">Use the studio for deep configuration and the overlay for fast access.</p>
+          <p class="section-subtitle">Use the studio for deep configuration and overlay mode for fast access.</p>
         </div>
         <div class="steps">
           <article class="step-card">
@@ -330,14 +514,14 @@
         <div class="section-head">
           <p class="eyebrow">Setup</p>
           <h2>Install once. Operate locally.</h2>
-          <p class="section-subtitle">Grab the macOS DMG below, then follow the guided onboarding in-app.</p>
+          <p class="section-subtitle">Grab the macOS app below, then follow the guided onboarding in-app.</p>
         </div>
         <div class="cta">
           <div>
-            <h3>Download Gravex Overlay for macOS</h3>
-            <p>Includes the local server and widget UI for instant overlay access.</p>
+            <h3>Download the Intelligravex macOS app</h3>
+            <p>Includes the studio, overlay mode, and the widget UI.</p>
           </div>
-          <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download Overlay DMG</a>
+          <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download macOS app</a>
         </div>
       </section>
     </main>
@@ -354,7 +538,7 @@
         </p>
         <ol class="modal-steps">
           <li>Open Finder and go to Downloads.</li>
-          <li>Right-click GravexOverlay and choose Open.</li>
+          <li>Right-click the Intelligravex app (GravexOverlay) and choose Open.</li>
           <li>When the warning appears again, click Open.</li>
         </ol>
         <p class="modal-subtitle">If macOS says the app is damaged, run this once in Terminal:</p>
@@ -366,7 +550,7 @@
     <footer class="footer">
       <div>
         <p class="brand-text">Intelligravex</p>
-        <p class="muted">Local-first assistant studio with a macOS overlay.</p>
+        <p class="muted">Local-first assistant studio with an overlay mode.</p>
       </div>
       <div class="footer-actions">
         <a class="btn ghost" href="#feature-matrix">Features</a>
