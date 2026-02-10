@@ -499,6 +499,14 @@ export default function WidgetPage() {
     setAutoScroll(atBottom)
   }
 
+  function handleClipboardShortcut(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!(e.metaKey || e.ctrlKey)) return
+    const key = e.key.toLowerCase()
+    if (key === 'c' || key === 'v' || key === 'x' || key === 'a' || key === 'z' || key === 'y') {
+      e.stopPropagation()
+    }
+  }
+
   function renderMessage(msg: WidgetMessage) {
     const role = msg.role === 'assistant' ? 'assistant' : 'user'
     const content = String(msg.content || '').trim()
@@ -517,6 +525,7 @@ export default function WidgetPage() {
   const busy = stage !== 'idle' && stage !== 'disconnected' && !recording
   const micClass = `widgetMic ${recording ? 'recording' : ''} ${busy ? 'busy' : ''}`
   const textClass = `widgetTextCard ${busy ? 'busy' : ''}`
+  const micCardClass = `${textClass} widgetMicOnly`
 
   return (
     <div className="widgetRoot">
@@ -542,6 +551,10 @@ export default function WidgetPage() {
                       className="widgetTextInput"
                       value={textInput}
                       onChange={(e) => setTextInput(e.target.value)}
+                      onKeyDownCapture={handleClipboardShortcut}
+                      onCopy={(e) => e.stopPropagation()}
+                      onCut={(e) => e.stopPropagation()}
+                      onPaste={(e) => e.stopPropagation()}
                       placeholder={busy ? 'Thinking...' : 'Type a message'}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
@@ -556,14 +569,7 @@ export default function WidgetPage() {
                   </div>
                 </div>
               ) : (
-                <div className={textClass}>
-                  <div className="widgetConversation" onScroll={handleScroll} ref={scrollRef}>
-                    {messages.length === 0 && !assistantText ? (
-                      <div className="widgetEmpty">No messages yet.</div>
-                    ) : null}
-                    {messages.map((msg) => renderMessage(msg))}
-                    {assistantText ? <div className="widgetMessage assistant pending">{assistantText}</div> : null}
-                  </div>
+                <div className={micCardClass}>
                   <button
                     className={micClass}
                     onClick={() => void (recording ? stopRecording() : startRecording())}

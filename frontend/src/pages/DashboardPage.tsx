@@ -161,6 +161,8 @@ export default function DashboardPage() {
   const selectionRef = useRef<{ type: 'assistant' | 'group'; groupId: string | null; convId: string } | null>(null)
   const [chatCache, setChatCache] = useState<Record<string, ChatCacheEntry>>({})
   const bcRef = useRef<BroadcastChannel | null>(null)
+  const reloadListsInFlight = useRef(false)
+  const hostActionsInFlight = useRef(false)
 
   const [workspaceStatus, setWorkspaceStatus] = useState<DataAgentStatus | null>(null)
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
@@ -814,6 +816,8 @@ export default function DashboardPage() {
   const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
   async function reloadLists() {
+    if (reloadListsInFlight.current) return
+    reloadListsInFlight.current = true
     try {
       const [b, g, c] = await Promise.all([
         apiGet<{ items: Bot[] }>('/api/bots'),
@@ -876,6 +880,8 @@ export default function DashboardPage() {
       setUnseenByConversationId(nextUnseen)
     } catch {
       // ignore
+    } finally {
+      reloadListsInFlight.current = false
     }
   }
 
@@ -921,6 +927,8 @@ export default function DashboardPage() {
   async function loadHostActions(convId?: string) {
     const id = convId || activeConversationId
     if (!id) return
+    if (hostActionsInFlight.current) return
+    hostActionsInFlight.current = true
     setHostActionsLoading(true)
     setHostActionsErr(null)
     try {
@@ -943,6 +951,7 @@ export default function DashboardPage() {
       setHostActionsErr(String(e?.message || e))
     } finally {
       setHostActionsLoading(false)
+      hostActionsInFlight.current = false
     }
   }
 

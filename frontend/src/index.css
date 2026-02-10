@@ -2585,9 +2585,10 @@ label {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  transform: translateY(-6px);
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 12px;
+  transform: none;
 }
 
 .widgetTextCard {
@@ -2602,6 +2603,12 @@ label {
   grid-template-rows: 1fr auto;
   gap: 8px;
   box-shadow: 0 16px 28px rgba(2, 6, 23, 0.55);
+}
+
+.widgetTextCard.widgetMicOnly {
+  grid-template-rows: 1fr;
+  min-height: 180px;
+  place-items: center;
 }
 
 .widgetTextCard.busy {
