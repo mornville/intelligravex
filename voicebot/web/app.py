@@ -2336,7 +2336,11 @@ def create_app() -> FastAPI:
                     follow_up = _parse_follow_up_flag(tool_args.get("follow_up")) or _parse_follow_up_flag(
                         tool_args.get("followup")
                     )
-                    if tool_name == "request_host_action" and "follow_up" not in tool_args and "followup" not in tool_args:
+                    if (
+                        tool_name in {"request_host_action", "capture_screenshot"}
+                        and "follow_up" not in tool_args
+                        and "followup" not in tool_args
+                    ):
                         follow_up = True
                     raw_args = tool_args.get("args")
                     if isinstance(raw_args, dict):
@@ -5026,13 +5030,15 @@ def create_app() -> FastAPI:
                                             "arguments_json": tc.arguments_json,
                                         },
                                     )
+                                    tool_parse_error = False
                                     try:
                                         tool_args = json.loads(tc.arguments_json or "{}")
                                         if not isinstance(tool_args, dict):
                                             raise ValueError("tool args must be an object")
                                     except Exception as exc:
-                                        tool_error = str(exc)
-                                        break
+                                        tool_parse_error = True
+                                        tool_error = str(exc) or "Invalid tool args"
+                                        tool_args = {}
 
                                     add_message_with_metrics(
                                         session,
@@ -5047,13 +5053,7 @@ def create_app() -> FastAPI:
                                         tool_args.get("followup")
                                     )
                                     if (
-                                        tool_name == "request_host_action"
-                                        and "follow_up" not in tool_args
-                                        and "followup" not in tool_args
-                                    ):
-                                        follow_up = True
-                                    if (
-                                        tool_name == "request_host_action"
+                                        tool_name in {"request_host_action", "capture_screenshot"}
                                         and "follow_up" not in tool_args
                                         and "followup" not in tool_args
                                     ):
@@ -5072,7 +5072,15 @@ def create_app() -> FastAPI:
                                     tool_cfg: IntegrationTool | None = None
                                     response_json: Any | None = None
 
-                                    if tool_name in disabled_tools:
+                                    if tool_parse_error:
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": tool_error, "status_code": 500},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
+                                    elif tool_name in disabled_tools:
                                         tool_result = {
                                             "ok": False,
                                             "error": {"message": f"Tool '{tool_name}' is disabled for this bot."},
@@ -5750,8 +5758,6 @@ def create_app() -> FastAPI:
                                         {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
                                     )
 
-                                    if tool_error:
-                                        break
                                     if tool_failed:
                                         break
 
@@ -5799,7 +5805,7 @@ def create_app() -> FastAPI:
 
                             # If static reply is missing/empty for an integration tool, ask the LLM again
                             # with tool call + tool result already persisted in history.
-                            if needs_followup_llm and not tool_error and conv_id is not None:
+                            if needs_followup_llm and conv_id is not None:
                                 await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                                 with Session(engine) as session:
                                     followup_bot = get_bot(session, bot_id)
@@ -6344,13 +6350,15 @@ def create_app() -> FastAPI:
                                             "arguments_json": tc.arguments_json,
                                         },
                                     )
+                                    tool_parse_error = False
                                     try:
                                         tool_args = json.loads(tc.arguments_json or "{}")
                                         if not isinstance(tool_args, dict):
                                             raise ValueError("tool args must be an object")
                                     except Exception as exc:
-                                        tool_error = str(exc)
-                                        break
+                                        tool_parse_error = True
+                                        tool_error = str(exc) or "Invalid tool args"
+                                        tool_args = {}
 
                                     add_message_with_metrics(
                                         session,
@@ -6378,7 +6386,15 @@ def create_app() -> FastAPI:
                                     tool_cfg: IntegrationTool | None = None
                                     response_json: Any | None = None
 
-                                    if tool_name in disabled_tools:
+                                    if tool_parse_error:
+                                        tool_result = {
+                                            "ok": False,
+                                            "error": {"message": tool_error, "status_code": 500},
+                                        }
+                                        tool_failed = True
+                                        needs_followup_llm = True
+                                        rendered_reply = ""
+                                    elif tool_name in disabled_tools:
                                         tool_result = {
                                             "ok": False,
                                             "error": {"message": f"Tool '{tool_name}' is disabled for this bot."},
@@ -7056,8 +7072,6 @@ def create_app() -> FastAPI:
                                         {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
                                     )
 
-                                    if tool_error:
-                                        break
                                     if tool_failed:
                                         break
 
@@ -7084,7 +7098,7 @@ def create_app() -> FastAPI:
 
                             # If static reply is missing/empty for an integration tool, ask the LLM again
                             # with tool call + tool result already persisted in history.
-                            if needs_followup_llm and not tool_error and conv_id is not None:
+                            if needs_followup_llm and conv_id is not None:
                                 await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                                 with Session(engine) as session:
                                     bot2 = get_bot(session, bot_id)
@@ -8369,7 +8383,11 @@ def create_app() -> FastAPI:
                                 follow_up = _parse_follow_up_flag(tool_args.get("follow_up")) or _parse_follow_up_flag(
                                     tool_args.get("followup")
                                 )
-                                if tool_name == "request_host_action" and "follow_up" not in tool_args and "followup" not in tool_args:
+                                if (
+                                    tool_name in {"request_host_action", "capture_screenshot"}
+                                    and "follow_up" not in tool_args
+                                    and "followup" not in tool_args
+                                ):
                                     follow_up = True
                                 raw_args = tool_args.get("args")
                                 if isinstance(raw_args, dict):
