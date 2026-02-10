@@ -17,7 +17,7 @@ class SentenceChunker:
     """
 
     buffer: str = ""
-    min_chars: int = 40
+    min_chars: int = 55
     max_chars: int = 180
 
     def push(self, delta: str) -> Generator[str, None, None]:
@@ -37,11 +37,7 @@ class SentenceChunker:
         return chunk
 
     def _find_cut(self, text: str) -> Optional[int]:
-        # Cut at the end of a sentence (punctuation + whitespace), or at a newline.
-        nl = text.find("\n")
-        if nl != -1:
-            return nl + 1
-
+        # Cut at the end of a sentence (punctuation + whitespace).
         m = _SENTENCE_END_RE.search(text)
         if not m:
             # If we don't have a complete sentence yet, cut a smaller chunk to reduce time-to-first-audio.
