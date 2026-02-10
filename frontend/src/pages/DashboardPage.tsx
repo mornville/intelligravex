@@ -166,6 +166,39 @@ export default function DashboardPage() {
   const [hostActionsLoading, setHostActionsLoading] = useState(false)
   const [hostActionApprovals, setHostActionApprovals] = useState<Record<string, boolean>>({})
 
+  function isNotFoundError(e: any) {
+    return String(e?.message || e).includes('HTTP 404')
+  }
+
+  function clearAssistantConversation() {
+    setAssistantConversationId(null)
+    setSelectedConversationId('')
+    setBotConversations([])
+  }
+
+  function clearGroupConversation() {
+    setSelectedGroupId(null)
+    setGroupDetail(null)
+    setGroupMessages([])
+    setGroupHasMore(true)
+    setGroupOldestCursor(null)
+  }
+
+  function clearActiveConversationState() {
+    setWorkspaceStatus(null)
+    setWorkspaceErr(null)
+    setFiles(null)
+    setFilesErr(null)
+    setHostActions([])
+    setHostActionsErr(null)
+    setHostActionApprovals({})
+    if (selectedType === 'group') {
+      clearGroupConversation()
+    } else {
+      clearAssistantConversation()
+    }
+  }
+
   useEffect(() => {
     void (async () => {
       setLoading(true)
@@ -705,6 +738,10 @@ export default function DashboardPage() {
         const s = await apiGet<DataAgentStatus>(`/api/conversations/${convId}/data-agent`)
         setWorkspaceStatus(s)
       } catch (e: any) {
+        if (isNotFoundError(e) && convId === (selectedType === 'group' ? selectedGroupId : assistantConversationId)) {
+          clearActiveConversationState()
+          return
+        }
         setWorkspaceErr(String(e?.message || e))
       }
     })()
@@ -720,6 +757,10 @@ export default function DashboardPage() {
         const f = await apiGet<ConversationFiles>(`/api/conversations/${convId}/files?path=`)
         setFiles(f)
       } catch (e: any) {
+        if (isNotFoundError(e) && convId === (selectedType === 'group' ? selectedGroupId : assistantConversationId)) {
+          clearActiveConversationState()
+          return
+        }
         setFilesErr(String(e?.message || e))
       } finally {
         setFilesLoading(false)
@@ -771,6 +812,17 @@ export default function DashboardPage() {
       setBots(b.items)
       setGroups(g.items)
       setConversations(c.items)
+      if (selectedBotId && !b.items.some((bot) => bot.id === selectedBotId)) {
+        clearAssistantConversation()
+        setSelectedBotId(b.items[0]?.id || null)
+      }
+      if (selectedGroupId && !g.items.some((group) => group.id === selectedGroupId)) {
+        if (selectedType === 'group') {
+          clearGroupConversation()
+        } else {
+          setSelectedGroupId(null)
+        }
+      }
       const sel = selectionRef.current
       const active = sel?.type === 'group' ? sel?.groupId : sel?.convId
       const nextUpdated: Record<string, string> = { ...lastUpdatedRef.current }
@@ -873,6 +925,10 @@ export default function DashboardPage() {
         return next
       })
     } catch (e: any) {
+      if (isNotFoundError(e) && id === activeConversationId) {
+        clearActiveConversationState()
+        return
+      }
       setHostActionsErr(String(e?.message || e))
     } finally {
       setHostActionsLoading(false)
@@ -959,6 +1015,9 @@ export default function DashboardPage() {
     if (!ok) return
     try {
       await apiDelete(`/api/bots/${selectedBotId}`)
+      if (selectedType === 'assistant') {
+        clearAssistantConversation()
+      }
       await reloadLists()
       const next = bots.filter((b) => b.id !== selectedBotId)[0]
       setSelectedBotId(next?.id || null)

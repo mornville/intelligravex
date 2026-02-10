@@ -89,6 +89,20 @@ export default function GroupConversationPage() {
   const [filesErr, setFilesErr] = useState<string | null>(null)
   const [filesLoading, setFilesLoading] = useState(false)
 
+  function isNotFoundError(e: any) {
+    return String(e?.message || e).includes('HTTP 404')
+  }
+
+  function clearConversationState() {
+    setAgentStatus(null)
+    setAgentErr(null)
+    setFiles(null)
+    setFilesErr(null)
+    setMessages([])
+    setHasMore(true)
+    setOldestCursor(null)
+  }
+
   function wsBase() {
     try {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -205,6 +219,10 @@ export default function GroupConversationPage() {
         const s = await apiGet<DataAgentStatus>(`/api/conversations/${groupId}/data-agent`)
         setAgentStatus(s)
       } catch (e: any) {
+        if (isNotFoundError(e)) {
+          clearConversationState()
+          return
+        }
         setAgentErr(String(e?.message || e))
       }
     })()
@@ -219,6 +237,10 @@ export default function GroupConversationPage() {
         const f = await apiGet<ConversationFiles>(`/api/conversations/${groupId}/files?path=`)
         setFiles(f)
       } catch (e: any) {
+        if (isNotFoundError(e)) {
+          clearConversationState()
+          return
+        }
         setFilesErr(String(e?.message || e))
       } finally {
         setFilesLoading(false)
