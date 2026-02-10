@@ -130,6 +130,8 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
     setPreferredRepoSourcePath(repoSource)
   }, [bot?.data_agent_auth_json])
 
+  const llmProvider = bot?.llm_provider || 'openai'
+
   async function save(patch: Record<string, unknown>) {
     if (!botId) return
     setSaving(true)
@@ -142,6 +144,12 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
     } finally {
       setSaving(false)
     }
+  }
+
+  function llmModels(provider: string, fallback: string): string[] {
+    const base = provider === 'openrouter' ? options?.openrouter_models || [] : options?.openai_models || []
+    if (!base.length) return [fallback]
+    return base.includes(fallback) ? base : [fallback, ...base]
   }
 
   async function saveGitSshKeyPath() {
@@ -383,9 +391,27 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
                   <input value={bot.name} onChange={(e) => setBot((p) => (p ? { ...p, name: e.target.value } : p))} />
                 </div>
                 <div className="formRow">
-                  <label>OpenAI model</label>
+                  <label>Provider</label>
+                  <SelectField
+                    value={llmProvider}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      const models = llmModels(next, bot.openai_model)
+                      const nextModel = models.includes(bot.openai_model) ? bot.openai_model : models[0] || bot.openai_model
+                      void save({ llm_provider: next, openai_model: nextModel })
+                    }}
+                  >
+                    {(options?.llm_providers || ['openai', 'openrouter']).map((p) => (
+                      <option value={p} key={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </SelectField>
+                </div>
+                <div className="formRow">
+                  <label>LLM model</label>
                   <SelectField value={bot.openai_model} onChange={(e) => void save({ openai_model: e.target.value })}>
-                    {(options?.openai_models || [bot.openai_model]).map((m) => (
+                    {llmModels(llmProvider, bot.openai_model).map((m) => (
                       <option value={m} key={m}>
                         {m}
                       </option>
@@ -394,22 +420,24 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
                 </div>
                 <details className="accordion" style={{ marginTop: 10 }}>
                   <summary>Advanced models</summary>
+                  {llmProvider === 'openai' ? (
+                    <div className="formRow">
+                      <label>Web search model</label>
+                      <SelectField
+                        value={bot.web_search_model || bot.openai_model}
+                        onChange={(e) => void save({ web_search_model: e.target.value })}
+                      >
+                        {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
+                          <option value={m} key={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </SelectField>
+                      <div className="muted">Used for web_search filtering + summarization.</div>
+                    </div>
+                  ) : null}
                   <div className="formRow">
-                    <label>Web search model</label>
-                    <SelectField
-                      value={bot.web_search_model || bot.openai_model}
-                      onChange={(e) => void save({ web_search_model: e.target.value })}
-                    >
-                      {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
-                        <option value={m} key={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </SelectField>
-                    <div className="muted">Used for web_search filtering + summarization.</div>
-                  </div>
-                  <div className="formRow">
-                    <label>Codex model</label>
+                    <label>Codex model (OpenAI)</label>
                     <SelectField
                       value={bot.codex_model || 'gpt-5.1-codex-mini'}
                       onChange={(e) => void save({ codex_model: e.target.value })}
@@ -428,7 +456,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
                       value={bot.summary_model || 'gpt-5-nano'}
                       onChange={(e) => void save({ summary_model: e.target.value })}
                     >
-                      {(options?.openai_models || [bot.summary_model || 'gpt-5-nano']).map((m) => (
+                      {llmModels(llmProvider, bot.summary_model || 'gpt-5-nano').map((m) => (
                         <option value={m} key={m}>
                           {m}
                         </option>

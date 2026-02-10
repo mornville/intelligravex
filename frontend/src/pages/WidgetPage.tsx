@@ -9,6 +9,8 @@ import { Cog6ToothIcon, MicrophoneIcon } from '@heroicons/react/24/solid'
 
 type WidgetStatus = {
   openai_key_configured: boolean
+  openrouter_key_configured?: boolean
+  llm_key_configured?: boolean
 }
 
 type WidgetMessage = {
@@ -341,7 +343,7 @@ export default function WidgetPage() {
       return
     }
     if (!status?.openai_key_configured) {
-      setErr('OpenAI key not configured.')
+      setErr('OpenAI key not configured (required for voice).')
       return
     }
     if (stage !== 'idle') return
@@ -386,8 +388,9 @@ export default function WidgetPage() {
       setErr('WebSocket not connected')
       return
     }
-    if (!status?.openai_key_configured) {
-      setErr('OpenAI key not configured.')
+    const llmReady = Boolean(status?.llm_key_configured ?? status?.openai_key_configured)
+    if (!llmReady) {
+      setErr('LLM key not configured.')
       return
     }
     if (!conversationId) {
@@ -508,8 +511,9 @@ export default function WidgetPage() {
   }
 
   const isTextMode = widgetMode === 'text'
+  const llmReady = Boolean(status?.llm_key_configured ?? status?.openai_key_configured)
   const canRecord = Boolean(status?.openai_key_configured && conversationId && stage === 'idle')
-  const canSendText = Boolean(status?.openai_key_configured && conversationId && stage === 'idle')
+  const canSendText = Boolean(llmReady && conversationId && stage === 'idle')
   const busy = stage !== 'idle' && stage !== 'disconnected' && !recording
   const micClass = `widgetMic ${recording ? 'recording' : ''} ${busy ? 'busy' : ''}`
   const textClass = `widgetTextCard ${busy ? 'busy' : ''}`
@@ -597,9 +601,13 @@ export default function WidgetPage() {
                 {botName ? <div className="widgetMenuHint">Assistant: {botName}</div> : null}
               </div>
             ) : null}
-            {!status?.openai_key_configured ? (
-              <div className="widgetHint">Open dashboard to add your OpenAI key.</div>
-            ) : null}
+            {isTextMode ? (
+              !llmReady ? <div className="widgetHint">Open dashboard to add an LLM key.</div> : null
+            ) : (
+              !status?.openai_key_configured ? (
+                <div className="widgetHint">Open dashboard to add your OpenAI key for voice.</div>
+              ) : null
+            )}
             {statusErr ? <div className="widgetError">{statusErr}</div> : null}
             {err ? <div className="widgetError">{err}</div> : null}
           </>

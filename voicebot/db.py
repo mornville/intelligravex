@@ -109,6 +109,7 @@ def _apply_light_migrations(engine) -> None:
 
         add_bot_col("start_message_mode", "TEXT NOT NULL DEFAULT 'llm'")
         add_bot_col("start_message_text", "TEXT NOT NULL DEFAULT ''")
+        add_bot_col("llm_provider", "TEXT NOT NULL DEFAULT 'openai'")
         add_bot_col("openai_asr_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini-transcribe'")
         add_bot_col("openai_tts_model", "TEXT NOT NULL DEFAULT 'gpt-4o-mini-tts'")
         add_bot_col("openai_tts_voice", "TEXT NOT NULL DEFAULT 'alloy'")

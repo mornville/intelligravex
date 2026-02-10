@@ -6,12 +6,15 @@ import type { ApiKey, ClientKey, GitTokenInfo } from '../types'
 import { fmtIso } from '../utils/format'
 
 export default function KeysPage() {
-  const [keys, setKeys] = useState<ApiKey[]>([])
+  const [openaiKeys, setOpenaiKeys] = useState<ApiKey[]>([])
+  const [openrouterKeys, setOpenrouterKeys] = useState<ApiKey[]>([])
   const [clientKeys, setClientKeys] = useState<ClientKey[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
-  const [form, setForm] = useState({ name: '', secret: '' })
+  const [creatingOpenai, setCreatingOpenai] = useState(false)
+  const [creatingOpenrouter, setCreatingOpenrouter] = useState(false)
+  const [openaiForm, setOpenaiForm] = useState({ name: '', secret: '' })
+  const [openrouterForm, setOpenrouterForm] = useState({ name: '', secret: '' })
   const [creatingClient, setCreatingClient] = useState(false)
   const [clientForm, setClientForm] = useState({ name: '', allowed_origins: '' })
   const [newClientSecret, setNewClientSecret] = useState<string | null>(null)
@@ -23,11 +26,13 @@ export default function KeysPage() {
     setLoading(true)
     setErr(null)
     try {
-      const [r, c] = await Promise.all([
+      const [oai, orr, c] = await Promise.all([
         apiGet<{ items: ApiKey[] }>('/api/keys?provider=openai'),
+        apiGet<{ items: ApiKey[] }>('/api/keys?provider=openrouter'),
         apiGet<{ items: ClientKey[] }>('/api/client-keys'),
       ])
-      setKeys(r.items)
+      setOpenaiKeys(oai.items)
+      setOpenrouterKeys(orr.items)
       setClientKeys(c.items)
     } catch (e: any) {
       setErr(String(e?.message || e))
@@ -50,18 +55,41 @@ export default function KeysPage() {
     void loadGitStatus()
   }, [])
 
-  async function onCreate() {
-    if (!form.name.trim() || !form.secret.trim()) return
-    setCreating(true)
+  async function onCreateOpenAI() {
+    if (!openaiForm.name.trim() || !openaiForm.secret.trim()) return
+    setCreatingOpenai(true)
     setErr(null)
     try {
-      await apiPost<ApiKey>('/api/keys', { provider: 'openai', name: form.name.trim(), secret: form.secret.trim() })
-      setForm({ name: '', secret: '' })
+      await apiPost<ApiKey>('/api/keys', {
+        provider: 'openai',
+        name: openaiForm.name.trim(),
+        secret: openaiForm.secret.trim(),
+      })
+      setOpenaiForm({ name: '', secret: '' })
       await reload()
     } catch (e: any) {
       setErr(String(e?.message || e))
     } finally {
-      setCreating(false)
+      setCreatingOpenai(false)
+    }
+  }
+
+  async function onCreateOpenRouter() {
+    if (!openrouterForm.name.trim() || !openrouterForm.secret.trim()) return
+    setCreatingOpenrouter(true)
+    setErr(null)
+    try {
+      await apiPost<ApiKey>('/api/keys', {
+        provider: 'openrouter',
+        name: openrouterForm.name.trim(),
+        secret: openrouterForm.secret.trim(),
+      })
+      setOpenrouterForm({ name: '', secret: '' })
+      await reload()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    } finally {
+      setCreatingOpenrouter(false)
     }
   }
 
@@ -140,13 +168,17 @@ export default function KeysPage() {
           <div className="cardTitle">Add OpenAI key (global)</div>
           <div className="formRow">
             <label>Name</label>
-            <input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} placeholder="e.g. Personal" />
+            <input
+              value={openaiForm.name}
+              onChange={(e) => setOpenaiForm((p) => ({ ...p, name: e.target.value }))}
+              placeholder="e.g. Personal"
+            />
           </div>
           <div className="formRow">
             <label>Secret</label>
             <input
-              value={form.secret}
-              onChange={(e) => setForm((p) => ({ ...p, secret: e.target.value }))}
+              value={openaiForm.secret}
+              onChange={(e) => setOpenaiForm((p) => ({ ...p, secret: e.target.value }))}
               placeholder="sk-..."
               type="password"
               autoComplete="off"
@@ -154,8 +186,12 @@ export default function KeysPage() {
             <div className="muted">Stored encrypted at rest on this device.</div>
           </div>
           <div className="row">
-            <button className="btn primary" onClick={onCreate} disabled={creating || !form.name.trim() || !form.secret.trim()}>
-              {creating ? 'Saving…' : 'Save key'}
+            <button
+              className="btn primary"
+              onClick={onCreateOpenAI}
+              disabled={creatingOpenai || !openaiForm.name.trim() || !openaiForm.secret.trim()}
+            >
+              {creatingOpenai ? 'Saving…' : 'Save key'}
             </button>
           </div>
         </section>
@@ -173,7 +209,7 @@ export default function KeysPage() {
             <div className="muted">
               <LoadingSpinner />
             </div>
-          ) : keys.length === 0 ? (
+          ) : openaiKeys.length === 0 ? (
             <div className="muted">No keys yet.</div>
           ) : (
             <table className="table">
@@ -186,7 +222,86 @@ export default function KeysPage() {
                 </tr>
               </thead>
               <tbody>
-                {keys.map((k) => (
+                {openaiKeys.map((k) => (
+                  <tr key={k.id}>
+                    <td>{k.name}</td>
+                    <td className="mono">{k.hint}</td>
+                    <td>{fmtIso(k.created_at)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button className="btn iconBtn danger" onClick={() => void onDelete(k)} aria-label="Delete key" title="Delete key">
+                        <TrashIcon aria-hidden="true" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      </div>
+
+      <div style={{ height: 16 }} />
+
+      <div className="grid2">
+        <section className="card">
+          <div className="cardTitle">Add OpenRouter key (global)</div>
+          <div className="formRow">
+            <label>Name</label>
+            <input
+              value={openrouterForm.name}
+              onChange={(e) => setOpenrouterForm((p) => ({ ...p, name: e.target.value }))}
+              placeholder="e.g. Team"
+            />
+          </div>
+          <div className="formRow">
+            <label>Secret</label>
+            <input
+              value={openrouterForm.secret}
+              onChange={(e) => setOpenrouterForm((p) => ({ ...p, secret: e.target.value }))}
+              placeholder="sk-or-..."
+              type="password"
+              autoComplete="off"
+            />
+            <div className="muted">Stored encrypted at rest on this device.</div>
+          </div>
+          <div className="row">
+            <button
+              className="btn primary"
+              onClick={onCreateOpenRouter}
+              disabled={creatingOpenrouter || !openrouterForm.name.trim() || !openrouterForm.secret.trim()}
+            >
+              {creatingOpenrouter ? 'Saving…' : 'Save key'}
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <div style={{ height: 16 }} />
+
+      <div className="grid2">
+        <section className="card">
+          <div className="cardTitle">OpenRouter keys</div>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            The most recently added OpenRouter key is used for OpenRouter bots.
+          </div>
+          {loading ? (
+            <div className="muted">
+              <LoadingSpinner />
+            </div>
+          ) : openrouterKeys.length === 0 ? (
+            <div className="muted">No keys yet.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Hint</th>
+                  <th>Created</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {openrouterKeys.map((k) => (
                   <tr key={k.id}>
                     <td>{k.name}</td>
                     <td className="mono">{k.hint}</td>

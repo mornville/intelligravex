@@ -21,8 +21,15 @@ export default function BotsPage() {
     [],
   )
 
+  function llmModels(provider: string, o: Options | null, fallback: string): string[] {
+    const base = provider === 'openrouter' ? o?.openrouter_models || [] : o?.openai_models || []
+    if (!base.length) return [fallback]
+    return base.includes(fallback) ? base : [fallback, ...base]
+  }
+
   const [newBot, setNewBot] = useState({
     name: '',
+    llm_provider: 'openai',
     openai_model: 'o4-mini',
     openai_asr_model: 'gpt-4o-mini-transcribe',
     web_search_model: 'gpt-4o-mini',
@@ -48,7 +55,11 @@ export default function BotsPage() {
       setOptions(o)
       setNewBot((p) => ({
         ...p,
-        openai_model: o.openai_models.includes(p.openai_model) ? p.openai_model : o.openai_models[0] || p.openai_model,
+        openai_model: (() => {
+          const provider = p.llm_provider || 'openai'
+          const models = llmModels(provider, o, p.openai_model)
+          return models.includes(p.openai_model) ? p.openai_model : models[0] || p.openai_model
+        })(),
         openai_asr_model: o.openai_asr_models?.includes(p.openai_asr_model)
           ? p.openai_asr_model
           : o.openai_asr_models?.[0] || p.openai_asr_model,
@@ -129,7 +140,7 @@ export default function BotsPage() {
               <div className="assistantHeader">
                 <div>
                   <div className="assistantName">{b.name}</div>
-                  <div className="muted">Model: {b.openai_model}</div>
+                  <div className="muted">Model: {b.openai_model} · {(b.llm_provider || 'openai')}</div>
                 </div>
                 <button
                   className="btn iconBtn danger"
@@ -198,9 +209,30 @@ export default function BotsPage() {
                 />
               </div>
               <div className="formRow">
-                <label>OpenAI model</label>
+                <label>Provider</label>
+                <SelectField
+                  value={newBot.llm_provider}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    const models = llmModels(next, options, newBot.openai_model)
+                    setNewBot((p) => ({
+                      ...p,
+                      llm_provider: next,
+                      openai_model: models.includes(p.openai_model) ? p.openai_model : models[0] || p.openai_model,
+                    }))
+                  }}
+                >
+                  {(options?.llm_providers || ['openai', 'openrouter']).map((p) => (
+                    <option value={p} key={p}>
+                      {p}
+                    </option>
+                  ))}
+                </SelectField>
+              </div>
+              <div className="formRow">
+                <label>LLM model</label>
                 <SelectField value={newBot.openai_model} onChange={(e) => setNewBot((p) => ({ ...p, openai_model: e.target.value }))}>
-                  {(options?.openai_models || ['gpt-4o']).map((m) => (
+                  {llmModels(newBot.llm_provider, options, newBot.openai_model).map((m) => (
                     <option value={m} key={m}>
                       {m}
                     </option>

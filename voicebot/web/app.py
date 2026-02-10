@@ -46,6 +46,7 @@ from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall, CitationEvent
+from voicebot.llm.openrouter_llm import OpenRouterLLM
 from voicebot.models import AppSetting, Bot, Conversation, ConversationMessage, HostAction
 from voicebot.store import (
     create_bot,
@@ -1067,28 +1068,32 @@ def _tool_error_message(tool_result: dict, *, fallback: str) -> str:
     return msg or fallback
 
 
-def _get_openai_api_key_global(session: Session) -> str:
-    def _read_openai_key_from_env_file() -> str:
-        # Prefer python-dotenv if available; fall back to a minimal parser.
+def _read_key_from_env_file(env_key: str) -> str:
+    # Prefer python-dotenv if available; fall back to a minimal parser.
+    env_key = str(env_key or "").strip()
+    if not env_key:
+        return ""
+    try:
+        from dotenv import dotenv_values
+    except Exception:
+        dotenv_values = None
+    if dotenv_values is not None:
         try:
-            from dotenv import dotenv_values
-        except Exception:
-            dotenv_values = None
-        if dotenv_values is not None:
-            try:
-                v = dotenv_values(".env").get("OPENAI_API_KEY") or ""
-                return str(v).strip()
-            except Exception:
-                pass
-        try:
-            with open(".env", "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("OPENAI_API_KEY="):
-                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+            v = dotenv_values(".env").get(env_key) or ""
+            return str(v).strip()
         except Exception:
             pass
-        return ""
+    try:
+        with open(".env", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(f"{env_key}="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
 
+
+def _get_openai_api_key_global(session: Session) -> str:
     # Prefer env, fall back to the latest stored OpenAI key.
     key = os.environ.get("OPENAI_API_KEY") or ""
     if not key:
@@ -1107,7 +1112,7 @@ def _get_openai_api_key_global(session: Session) -> str:
                 except Exception:
                     key = ""
     if not key:
-        key = _read_openai_key_from_env_file()
+        key = _read_key_from_env_file("OPENAI_API_KEY")
     return (key or "").strip()
 
 
@@ -1444,6 +1449,7 @@ class OpenDashboardRequest(BaseModel):
 
 class BotCreateRequest(BaseModel):
     name: str
+    llm_provider: str = "openai"
     openai_model: str = "o4-mini"
     openai_asr_model: str = "gpt-4o-mini-transcribe"
     web_search_model: Optional[str] = None
@@ -1471,6 +1477,7 @@ class BotCreateRequest(BaseModel):
 
 class BotUpdateRequest(BaseModel):
     name: Optional[str] = None
+    llm_provider: Optional[str] = None
     openai_model: Optional[str] = None
     openai_asr_model: Optional[str] = None
     web_search_model: Optional[str] = None
@@ -1809,6 +1816,7 @@ def create_app() -> FastAPI:
     # Best-effort: keep the model dropdown up-to-date by periodically fetching available models
     # from the OpenAI API, if a key is configured in the environment.
     openai_models_cache: dict[str, Any] = {"ts": 0.0, "models": []}
+    openrouter_models_cache: dict[str, Any] = {"ts": 0.0, "models": [], "pricing": {}}
 
     def get_session() -> Generator[Session, None, None]:
         with Session(engine) as s:
@@ -2077,7 +2085,7 @@ def create_app() -> FastAPI:
         session: Session,
         bot: Bot,
         conversation_id: Optional[UUID],
-        api_key: Optional[str],
+        llm_api_key: Optional[str],
         status_cb: Optional[Callable[[str], None]] = None,
     ) -> list[Message]:
         """
@@ -2166,7 +2174,7 @@ def create_app() -> FastAPI:
         elif len(new_old_msgs) >= SUMMARY_BATCH_MIN_MESSAGES:
             should_summarize = True
 
-        if should_summarize and api_key:
+        if should_summarize and llm_api_key:
             if status_cb:
                 status_cb("summarizing")
             chunk = "\n".join(_format_for_summary(m) for m in new_old_msgs)
@@ -2174,7 +2182,7 @@ def create_app() -> FastAPI:
             chunk = chunk[:24000]
 
             summary_model = (getattr(bot, "summary_model", "") or "gpt-5-nano").strip() or "gpt-5-nano"
-            summarizer = OpenAILLM(model=summary_model, api_key=api_key)
+            summarizer = _build_llm_client(bot=bot, api_key=llm_api_key, model_override=summary_model)
             summary_prompt = (
                 "You are a conversation summarizer.\n"
                 "Return STRICT JSON with keys: summary, pinned_facts, open_tasks.\n"
@@ -2299,7 +2307,7 @@ def create_app() -> FastAPI:
         *,
         bot_id: UUID,
         conversation_id: Optional[UUID],
-        api_key: Optional[str],
+        llm_api_key: Optional[str],
         status_cb: Optional[Callable[[str], None]] = None,
     ) -> list[Message]:
         # NOTE: SQLModel sessions are not thread-safe; callers can use this via asyncio.to_thread().
@@ -2309,7 +2317,7 @@ def create_app() -> FastAPI:
                 session=session,
                 bot=bot,
                 conversation_id=conversation_id,
-                api_key=api_key,
+                llm_api_key=llm_api_key,
                 status_cb=status_cb,
             )
 
@@ -2317,14 +2325,14 @@ def create_app() -> FastAPI:
         *,
         bot_id: UUID,
         conversation_id: Optional[UUID],
-        api_key: Optional[str],
+        llm_api_key: Optional[str],
         status_cb: Optional[Callable[[str], None]] = None,
     ) -> list[Message]:
         return await asyncio.to_thread(
             _build_history_budgeted_threadsafe,
             bot_id=bot_id,
             conversation_id=conversation_id,
-            api_key=api_key,
+            llm_api_key=llm_api_key,
             status_cb=status_cb,
         )
 
@@ -2360,17 +2368,14 @@ def create_app() -> FastAPI:
         with Session(engine) as session:
             bot = get_bot(session, bot_id)
             conv = get_conversation(session, conversation_id)
-            api_key = _get_openai_api_key_for_bot(session, bot=bot)
-            if not api_key:
-                raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+            provider, api_key, llm = _require_llm_client(session, bot=bot)
             history = await _build_history_budgeted_async(
                 bot_id=bot.id,
                 conversation_id=conversation_id,
-                api_key=api_key,
+                llm_api_key=api_key,
                 status_cb=None,
             )
             tools_defs = _build_tools_for_bot(session, bot.id)
-            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
 
         t0 = time.time()
         first_token_ts: Optional[float] = None
@@ -2960,7 +2965,7 @@ def create_app() -> FastAPI:
                     followup_history = await _build_history_budgeted_async(
                         bot_id=bot.id,
                         conversation_id=conversation_id,
-                        api_key=api_key,
+                        llm_api_key=api_key,
                         status_cb=None,
                     )
                     followup_history.append(
@@ -2991,12 +2996,16 @@ def create_app() -> FastAPI:
             if bool(conv.is_group):
                 rendered_reply = _sanitize_group_reply(rendered_reply, conv, bot_id)
 
-        in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-            bot=bot, history=history, assistant_text=rendered_reply
-        )
         payload = None
         suppress_reply = "<no_reply>" in rendered_reply.lower()
         with Session(engine) as session:
+            in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                session=session,
+                bot=bot,
+                provider=provider,
+                history=history,
+                assistant_text=rendered_reply,
+            )
             conv = get_conversation(session, conversation_id)
             assistant_msg = None
             if suppress_reply:
@@ -3100,28 +3109,16 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
-    def _get_openai_api_key(session: Session) -> str:
-        def _read_openai_key_from_env_file() -> str:
-            # Prefer python-dotenv if available; fall back to a minimal parser.
-            try:
-                from dotenv import dotenv_values
-            except Exception:
-                dotenv_values = None
-            if dotenv_values is not None:
-                try:
-                    v = dotenv_values(".env").get("OPENAI_API_KEY") or ""
-                    return str(v).strip()
-                except Exception:
-                    pass
-            try:
-                with open(".env", "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.startswith("OPENAI_API_KEY="):
-                            return line.split("=", 1)[1].strip().strip('"').strip("'")
-            except Exception:
-                pass
-            return ""
+    def _normalize_llm_provider(provider: str) -> str:
+        p = (provider or "").strip().lower()
+        if p in ("openai", "openrouter"):
+            return p
+        return "openai"
 
+    def _provider_display_name(provider: str) -> str:
+        return "OpenRouter" if provider == "openrouter" else "OpenAI"
+
+    def _get_openai_api_key(session: Session) -> str:
         # Prefer env, fall back to the latest stored OpenAI key.
         key = os.environ.get("OPENAI_API_KEY") or ""
         if not key:
@@ -3135,12 +3132,72 @@ def create_app() -> FastAPI:
                 except Exception:
                     key = ""
         if not key:
-            key = _read_openai_key_from_env_file()
+            key = _read_key_from_env_file("OPENAI_API_KEY")
         return (key or "").strip()
 
     def _get_openai_api_key_for_bot(session: Session, *, bot: Bot) -> str:
         _ = bot
         return _get_openai_api_key(session)
+
+    def _get_openrouter_api_key(session: Session) -> str:
+        key = os.environ.get("OPENROUTER_API_KEY") or ""
+        if not key:
+            try:
+                crypto = require_crypto()
+            except Exception:
+                crypto = None
+            if crypto is not None:
+                try:
+                    key = decrypt_provider_key(session, crypto=crypto, provider="openrouter") or ""
+                except Exception:
+                    key = ""
+        if not key:
+            key = _read_key_from_env_file("OPENROUTER_API_KEY")
+        return (key or "").strip()
+
+    def _get_openrouter_api_key_for_bot(session: Session, *, bot: Bot) -> str:
+        _ = bot
+        return _get_openrouter_api_key(session)
+
+    def _llm_provider_for_bot(bot: Bot) -> str:
+        return _normalize_llm_provider(getattr(bot, "llm_provider", "") or "openai")
+
+    def _get_llm_api_key_for_bot(session: Session, *, bot: Bot) -> tuple[str, str]:
+        provider = _llm_provider_for_bot(bot)
+        if provider == "openrouter":
+            return provider, _get_openrouter_api_key_for_bot(session, bot=bot)
+        return provider, _get_openai_api_key_for_bot(session, bot=bot)
+
+    def _build_llm_client(*, bot: Bot, api_key: str, model_override: Optional[str] = None):
+        provider = _llm_provider_for_bot(bot)
+        model = (model_override or getattr(bot, "openai_model", "") or "o4-mini").strip() or "o4-mini"
+        if provider == "openrouter":
+            base_url = (os.environ.get("OPENROUTER_BASE_URL") or "").strip() or None
+            referer = (os.environ.get("OPENROUTER_REFERER") or "").strip() or None
+            title = (os.environ.get("OPENROUTER_TITLE") or "").strip() or None
+            return OpenRouterLLM(
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                referer=referer,
+                title=title,
+            )
+        return OpenAILLM(model=model, api_key=api_key)
+
+    def _require_llm_client(
+        session: Session,
+        *,
+        bot: Bot,
+        model_override: Optional[str] = None,
+    ) -> tuple[str, str, Any]:
+        provider, api_key = _get_llm_api_key_for_bot(session, bot=bot)
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No {_provider_display_name(provider)} key configured for this bot.",
+            )
+        llm = _build_llm_client(bot=bot, api_key=api_key, model_override=model_override)
+        return provider, api_key, llm
 
     def _normalize_git_provider(provider: str) -> str:
         p = (provider or "").strip().lower()
@@ -3561,9 +3618,10 @@ def create_app() -> FastAPI:
         # `set_metadata` to the model to avoid duplicate tools that do the same thing.
         tools = [
             _set_metadata_tool_def(),
-            _web_search_tool_def(),
             _http_request_tool_def(),
         ]
+        if _llm_provider_for_bot(bot) == "openai":
+            tools.insert(1, _web_search_tool_def())
         if bool(getattr(bot, "enable_data_agent", False)):
             tools.append(give_command_to_data_agent_tool_def())
             tools.append(_summarize_screenshot_tool_def())
@@ -3798,10 +3856,78 @@ def create_app() -> FastAPI:
                     continue
         return out
 
-    def _estimate_llm_cost_for_turn(*, bot: Bot, history: list[Message], assistant_text: str) -> tuple[int, int, float]:
+    def _refresh_openrouter_models_cache(session: Session) -> None:
+        try:
+            now = time.time()
+            if (now - float(openrouter_models_cache.get("ts") or 0.0)) <= 3600.0:
+                return
+            openrouter_models_cache["ts"] = now
+            openrouter_models_cache["models"] = []
+            openrouter_models_cache["pricing"] = {}
+            or_key = _get_openrouter_api_key(session)
+            base_url = (os.environ.get("OPENROUTER_BASE_URL") or "").strip() or "https://openrouter.ai/api/v1"
+            headers = {}
+            if or_key:
+                headers["Authorization"] = f"Bearer {or_key}"
+            ref = (os.environ.get("OPENROUTER_REFERER") or "").strip()
+            title = (os.environ.get("OPENROUTER_TITLE") or "").strip()
+            if ref:
+                headers["HTTP-Referer"] = ref
+            if title:
+                headers["X-Title"] = title
+            resp = httpx.get(f"{base_url.rstrip('/')}/models", headers=headers, timeout=15.0)
+            if resp.status_code >= 400:
+                return
+            data = resp.json()
+            items = data.get("data") or []
+            ids: list[str] = []
+            pricing_map: dict[str, ModelPrice] = {}
+            for m in items:
+                if not isinstance(m, dict):
+                    continue
+                mid = m.get("id")
+                if not isinstance(mid, str) or not mid.strip():
+                    continue
+                mid = mid.strip()
+                ids.append(mid)
+                price = m.get("pricing")
+                if isinstance(price, dict):
+                    try:
+                        prompt = float(price.get("prompt"))
+                        completion = float(price.get("completion"))
+                    except Exception:
+                        prompt = None
+                        completion = None
+                    if prompt is not None and completion is not None:
+                        pricing_map[mid] = ModelPrice(
+                            input_per_1m=prompt * 1_000_000.0,
+                            output_per_1m=completion * 1_000_000.0,
+                        )
+            openrouter_models_cache["models"] = sorted(set(ids))
+            openrouter_models_cache["pricing"] = pricing_map
+        except Exception:
+            return
+
+    def _get_openrouter_pricing(session: Session) -> dict[str, ModelPrice]:
+        _refresh_openrouter_models_cache(session)
+        return dict(openrouter_models_cache.get("pricing") or {})
+
+    def _get_model_price(session: Session, *, provider: str, model: str) -> Optional[ModelPrice]:
+        if provider == "openrouter":
+            return _get_openrouter_pricing(session).get(model)
+        return _get_openai_pricing().get(model)
+
+    def _estimate_llm_cost_for_turn(
+        *,
+        session: Session,
+        bot: Bot,
+        provider: str,
+        history: list[Message],
+        assistant_text: str,
+    ) -> tuple[int, int, float]:
         prompt_tokens = estimate_messages_tokens(history, bot.openai_model)
         output_tokens = estimate_text_tokens(assistant_text, bot.openai_model)
-        price = _get_openai_pricing().get(bot.openai_model)
+        price = _get_model_price(session, provider=provider, model=bot.openai_model)
         cost = estimate_cost_usd(model_price=price, input_tokens=prompt_tokens, output_tokens=output_tokens)
         return prompt_tokens, output_tokens, cost
 
@@ -3835,19 +3961,29 @@ def create_app() -> FastAPI:
             output_tokens_est: Optional[int] = None
             cost_usd_est: Optional[float] = None
             sent_greeting_delta = False
-            api_key: Optional[str] = None
+            llm_api_key: Optional[str] = None
+            openai_api_key: Optional[str] = None
+            provider = _llm_provider_for_bot(bot)
 
-            needs_openai_key = not (bot.start_message_mode == "static" and greeting_text) or bool(speak)
-            if needs_openai_key:
-                api_key = _get_openai_api_key_for_bot(session, bot=bot)
-                if not api_key:
-                    raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+            needs_llm = not (bot.start_message_mode == "static" and greeting_text)
+            if needs_llm:
+                provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
+            else:
+                llm = None
+            if speak:
+                openai_api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                if not openai_api_key:
+                    raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot (needed for TTS).")
 
             if bot.start_message_mode == "static" and greeting_text:
                 # Static greeting (no LLM).
                 pass
             else:
-                llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                if llm is None or not llm_api_key:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No {_provider_display_name(provider)} key configured for this bot.",
+                    )
                 ts = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
                 sys_prompt = f"Current Date Time(UTC): {ts}\n\n{render_template(bot.system_prompt, ctx={'meta': {}})}"
                 msgs = [
@@ -3880,11 +4016,12 @@ def create_app() -> FastAPI:
                 llm_total_ms = int(round((t1 - t0) * 1000.0))
 
                 # Estimate cost for this greeting turn.
-                input_tokens_est = estimate_messages_tokens(msgs, bot.openai_model)
-                output_tokens_est = estimate_text_tokens(greeting_text, bot.openai_model)
-                price = _get_openai_pricing().get(bot.openai_model)
-                cost_usd_est = estimate_cost_usd(
-                    model_price=price, input_tokens=input_tokens_est, output_tokens=output_tokens_est
+                input_tokens_est, output_tokens_est, cost_usd_est = _estimate_llm_cost_for_turn(
+                    session=session,
+                    bot=bot,
+                    provider=provider,
+                    history=msgs,
+                    assistant_text=greeting_text,
                 )
 
             if not greeting_text:
@@ -3921,7 +4058,7 @@ def create_app() -> FastAPI:
                 )
 
             if speak:
-                tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, api_key)
+                tts_synth = await asyncio.to_thread(_get_tts_synth_fn, bot, openai_api_key)
                 # Synthesize whole greeting as one chunk for now.
                 wav, sr = await asyncio.to_thread(tts_synth, greeting_text)
                 await _ws_send_json(
@@ -4890,9 +5027,15 @@ def create_app() -> FastAPI:
                         try:
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
-                                api_key = _get_openai_api_key_for_bot(session, bot=bot)
-                                if not api_key:
-                                    raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+                                provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
+                                openai_api_key: Optional[str] = None
+                                if speak:
+                                    openai_api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                                    if not openai_api_key:
+                                        raise HTTPException(
+                                            status_code=400,
+                                            detail="No OpenAI key configured for this bot (needed for TTS).",
+                                        )
 
                                 add_message_with_metrics(
                                     session,
@@ -4910,13 +5053,12 @@ def create_app() -> FastAPI:
                                 history = await _build_history_budgeted_async(
                                     bot_id=bot.id,
                                     conversation_id=conv_id,
-                                    api_key=api_key,
+                                    llm_api_key=llm_api_key,
                                     status_cb=_status_cb,
                                 )
                                 tools_defs = _build_tools_for_bot(session, bot.id)
-                                llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                                 if speak:
-                                    tts_synth = _get_tts_synth_fn(bot, api_key)
+                                    tts_synth = _get_tts_synth_fn(bot, openai_api_key)
                                 if debug_mode:
                                     await _emit_llm_debug_payload(
                                         ws=ws,
@@ -4978,7 +5120,7 @@ def create_app() -> FastAPI:
                                 audio_q.put(None)
                                 return
                             try:
-                                synth = tts_synth or _get_tts_synth_fn(bot, api_key)
+                                synth = tts_synth or _get_tts_synth_fn(bot, openai_api_key)
                                 for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
                                     if not text_to_speak:
                                         continue
@@ -5918,7 +6060,7 @@ def create_app() -> FastAPI:
                                     followup_history = await _build_history_budgeted_async(
                                         bot_id=followup_bot.id,
                                         conversation_id=conv_id,
-                                        api_key=api_key,
+                                        llm_api_key=llm_api_key,
                                         status_cb=None,
                                     )
                                 followup_history.append(
@@ -5933,7 +6075,11 @@ def create_app() -> FastAPI:
                                     )
                                 )
                                 followup_model = followup_bot.openai_model
-                                follow_llm = OpenAILLM(model=followup_model, api_key=api_key)
+                                follow_llm = _build_llm_client(
+                                    bot=followup_bot,
+                                    api_key=llm_api_key,
+                                    model_override=followup_model,
+                                )
                                 if debug_mode:
                                     await _emit_llm_debug_payload(
                                         ws=ws,
@@ -5950,7 +6096,8 @@ def create_app() -> FastAPI:
                                     followup_streamed = True
                                     in_tok = int(estimate_messages_tokens(followup_history, followup_model) or 0)
                                     out_tok = int(estimate_text_tokens(rendered_reply, followup_model) or 0)
-                                    price = _get_openai_pricing().get(followup_model)
+                                    with Session(engine) as session:
+                                        price = _get_model_price(session, provider=provider, model=followup_model)
                                     cost = float(
                                         estimate_cost_usd(
                                             model_price=price,
@@ -6002,10 +6149,14 @@ def create_app() -> FastAPI:
                                     await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
                                 try:
                                     if not followup_persisted:
-                                        in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                            bot=bot, history=history, assistant_text=rendered_reply
-                                        )
                                         with Session(engine) as session:
+                                            in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                                session=session,
+                                                bot=bot,
+                                                provider=provider,
+                                                history=history,
+                                                assistant_text=rendered_reply,
+                                            )
                                             add_message_with_metrics(
                                                 session,
                                                 conversation_id=conv_id,
@@ -6036,7 +6187,7 @@ def create_app() -> FastAPI:
                                 if speak:
                                     status(req_id, "tts")
                                     if tts_synth is None:
-                                        tts_synth = _get_tts_synth_fn(bot, api_key)
+                                        tts_synth = _get_tts_synth_fn(bot, openai_api_key)
                                     wav, sr = await asyncio.to_thread(tts_synth, rendered_reply)
                                     await _ws_send_json(
                                         ws,
@@ -6055,10 +6206,14 @@ def create_app() -> FastAPI:
                         else:
                             # Store assistant response.
                             try:
-                                in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                    bot=bot, history=history, assistant_text=final_text
-                                )
                                 with Session(engine) as session:
+                                    in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                        session=session,
+                                        bot=bot,
+                                        provider=provider,
+                                        history=history,
+                                        assistant_text=final_text,
+                                    )
                                     add_message_with_metrics(
                                         session,
                                         conversation_id=conv_id,
@@ -6126,8 +6281,8 @@ def create_app() -> FastAPI:
                         try:
                             with Session(engine) as session:
                                 bot = get_bot(session, bot_id)
-                                api_key = _get_openai_api_key_for_bot(session, bot=bot)
-                                if not api_key:
+                                openai_api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                                if not openai_api_key:
                                     await _ws_send_json(
                                         ws,
                                         {
@@ -6144,7 +6299,7 @@ def create_app() -> FastAPI:
                                 pcm16 = bytes(audio_buf)
 
                                 asr = await asyncio.to_thread(
-                                    _get_asr(api_key, bot.openai_asr_model, bot.language).transcribe_pcm16,
+                                    _get_asr(openai_api_key, bot.openai_asr_model, bot.language).transcribe_pcm16,
                                     pcm16=pcm16,
                                     sample_rate=16000,
                                 )
@@ -6186,15 +6341,14 @@ def create_app() -> FastAPI:
                                     _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
                                 )
 
+                            provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
                             history = await _build_history_budgeted_async(
                                 bot_id=bot.id,
                                 conversation_id=conv_id,
-                                api_key=api_key,
+                                llm_api_key=llm_api_key,
                                 status_cb=_status_cb,
                             )
                             tools_defs = _build_tools_for_bot(session, bot.id)
-
-                            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
                             if debug_mode:
                                 await _emit_llm_debug_payload(
                                     ws=ws,
@@ -6255,7 +6409,7 @@ def create_app() -> FastAPI:
                                 audio_q.put(None)
                                 return
                             try:
-                                tts_synth = _get_tts_synth_fn(bot, api_key)
+                                tts_synth = _get_tts_synth_fn(bot, openai_api_key)
                                 for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
                                     if not text_to_speak:
                                         continue
@@ -6353,10 +6507,14 @@ def create_app() -> FastAPI:
 
                         # Persist aggregates + last latencies (best-effort).
                         try:
-                            in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                bot=bot, history=history, assistant_text=final_text
-                            )
                             with Session(engine) as session:
+                                in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                    session=session,
+                                    bot=bot,
+                                    provider=provider,
+                                    history=history,
+                                    assistant_text=final_text,
+                                )
                                 if final_text and conv_id and not tool_calls:
                                     add_message_with_metrics(
                                         session,
@@ -7211,7 +7369,7 @@ def create_app() -> FastAPI:
                                     followup_history = await _build_history_budgeted_async(
                                         bot_id=bot2.id,
                                         conversation_id=conv_id,
-                                        api_key=api_key,
+                                        llm_api_key=llm_api_key,
                                         status_cb=None,
                                     )
                                     followup_history.append(
@@ -7227,7 +7385,11 @@ def create_app() -> FastAPI:
                                             "Do not call any tools.",
                                         )
                                     )
-                                follow_llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+                                follow_llm = _build_llm_client(
+                                    bot=bot,
+                                    api_key=llm_api_key,
+                                    model_override=bot.openai_model,
+                                )
                                 if debug_mode:
                                     await _emit_llm_debug_payload(
                                         ws=ws,
@@ -7246,7 +7408,8 @@ def create_app() -> FastAPI:
                                     followup_streamed = True
                                     in_tok = int(estimate_messages_tokens(followup_history, bot.openai_model) or 0)
                                     out_tok = int(estimate_text_tokens(rendered_reply, bot.openai_model) or 0)
-                                    price = _get_openai_pricing().get(bot.openai_model)
+                                    with Session(engine) as session:
+                                        price = _get_model_price(session, provider=provider, model=bot.openai_model)
                                     cost = float(
                                         estimate_cost_usd(model_price=price, input_tokens=in_tok, output_tokens=out_tok) or 0.0
                                     )
@@ -7294,10 +7457,14 @@ def create_app() -> FastAPI:
                                     await _ws_send_json(ws, {"type": "text_delta", "req_id": req_id, "delta": rendered_reply})
                                 try:
                                     if not followup_persisted:
-                                        in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                                            bot=bot, history=history, assistant_text=rendered_reply
-                                        )
                                         with Session(engine) as session:
+                                            in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
+                                                session=session,
+                                                bot=bot,
+                                                provider=provider,
+                                                history=history,
+                                                assistant_text=rendered_reply,
+                                            )
                                             add_message_with_metrics(
                                                 session,
                                                 conversation_id=conv_id,
@@ -7330,7 +7497,7 @@ def create_app() -> FastAPI:
                                 if speak:
                                     status(req_id, "tts")
                                     if tts_synth is None:
-                                        tts_synth = _get_tts_synth_fn(bot, api_key)
+                                        tts_synth = _get_tts_synth_fn(bot, openai_api_key)
                                     wav, sr = await asyncio.to_thread(tts_synth, rendered_reply)
                                     await _ws_send_json(
                                         ws,
@@ -8202,7 +8369,8 @@ def create_app() -> FastAPI:
         req_id: str,
         bot: Bot,
         conv_id: UUID,
-        api_key: str,
+        provider: str,
+        llm_api_key: str,
     ) -> tuple[str, dict]:
         greeting_text = (bot.start_message_text or "").strip()
         llm_ttfb_ms: Optional[int] = None
@@ -8215,7 +8383,7 @@ def create_app() -> FastAPI:
         if bot.start_message_mode == "static" and greeting_text:
             pass
         else:
-            llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+            llm = _build_llm_client(bot=bot, api_key=llm_api_key)
             msgs = [
                 Message(role="system", content=render_template(bot.system_prompt, ctx={"meta": {}})),
                 Message(role="user", content=_make_start_message_instruction(bot)),
@@ -8239,7 +8407,8 @@ def create_app() -> FastAPI:
 
             input_tokens_est = int(estimate_messages_tokens(msgs, bot.openai_model) or 0)
             output_tokens_est = int(estimate_text_tokens(greeting_text, bot.openai_model) or 0)
-            price = _get_openai_pricing().get(bot.openai_model)
+            with Session(engine) as session:
+                price = _get_model_price(session, provider=provider, model=bot.openai_model)
             cost_usd_est = float(
                 estimate_cost_usd(model_price=price, input_tokens=input_tokens_est, output_tokens=output_tokens_est) or 0.0
             )
@@ -8371,13 +8540,17 @@ def create_app() -> FastAPI:
                             need_llm = not (
                                 bot.start_message_mode == "static" and (bot.start_message_text or "").strip()
                             )
-                            api_key = ""
+                            provider = _llm_provider_for_bot(bot)
+                            llm_api_key = ""
                             if need_llm:
-                                api_key = _get_openai_api_key_for_bot(session, bot=bot)
-                                if not api_key:
-                                    raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+                                provider, llm_api_key, _ = _require_llm_client(session, bot=bot)
                             text, metrics = await _public_send_greeting(
-                                ws=ws, req_id=req_id, bot=bot, conv_id=conv_id, api_key=api_key
+                                ws=ws,
+                                req_id=req_id,
+                                bot=bot,
+                                conv_id=conv_id,
+                                provider=provider,
+                                llm_api_key=llm_api_key,
                             )
                             await _public_send_done(ws, req_id=req_id, text=text, metrics=metrics)
                         else:
@@ -8405,9 +8578,7 @@ def create_app() -> FastAPI:
                             ws, {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)}
                         )
 
-                        api_key = _get_openai_api_key_for_bot(session, bot=bot)
-                        if not api_key:
-                            raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+                        provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
 
                         add_message_with_metrics(session, conversation_id=conv_id, role="user", content=user_text)
                         loop = asyncio.get_running_loop()
@@ -8420,11 +8591,10 @@ def create_app() -> FastAPI:
                         history = await _build_history_budgeted_async(
                             bot_id=bot.id,
                             conversation_id=conv_id,
-                            api_key=api_key,
+                            llm_api_key=llm_api_key,
                             status_cb=_status_cb,
                         )
                         tools_defs = _build_tools_for_bot(session, bot.id)
-                        llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
 
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "llm"})
                         t0 = time.time()
@@ -9194,7 +9364,7 @@ def create_app() -> FastAPI:
                                 followup_history = await _build_history_budgeted_async(
                                     bot_id=bot.id,
                                     conversation_id=conv_id,
-                                    api_key=api_key,
+                                    llm_api_key=llm_api_key,
                                     status_cb=None,
                                 )
                                 followup_history.append(
@@ -9225,7 +9395,11 @@ def create_app() -> FastAPI:
                                 )
 
                         in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
-                            bot=bot, history=history, assistant_text=rendered_reply
+                            session=session,
+                            bot=bot,
+                            provider=provider,
+                            history=history,
+                            assistant_text=rendered_reply,
                         )
                         add_message_with_metrics(
                             session,
@@ -9282,7 +9456,7 @@ def create_app() -> FastAPI:
         return Response(content=p.read_text("utf-8"), media_type="application/javascript")
 
     @app.get("/api/options")
-    def api_options() -> dict:
+    def api_options(session: Session = Depends(get_session)) -> dict:
         pricing = _get_openai_pricing()
         dynamic_models: list[str] = []
         try:
@@ -9320,9 +9494,18 @@ def create_app() -> FastAPI:
             dynamic_models = []
 
         openai_models = sorted(set(ui_options.get("openai_models", []) + list(pricing.keys()) + dynamic_models))
+        _refresh_openrouter_models_cache(session)
+        openrouter_models = list(openrouter_models_cache.get("models") or [])
+        openrouter_pricing = dict(openrouter_models_cache.get("pricing") or {})
         return {
             "openai_models": openai_models,
             "openai_pricing": {k: {"input_per_1m": v.input_per_1m, "output_per_1m": v.output_per_1m} for k, v in pricing.items()},
+            "openrouter_models": openrouter_models,
+            "openrouter_pricing": {
+                k: {"input_per_1m": v.input_per_1m, "output_per_1m": v.output_per_1m}
+                for k, v in openrouter_pricing.items()
+            },
+            "llm_providers": ["openai", "openrouter"],
             "openai_asr_models": ui_options.get("openai_asr_models", []),
             "languages": ui_options.get("languages", []),
             "openai_tts_models": ui_options.get("openai_tts_models", []),
@@ -9334,8 +9517,11 @@ def create_app() -> FastAPI:
     @app.get("/api/status")
     def api_status(session: Session = Depends(get_session)) -> dict:
         openai_key = bool(_get_openai_api_key(session))
+        openrouter_key = bool(_get_openrouter_api_key(session))
         return {
             "openai_key_configured": openai_key,
+            "openrouter_key_configured": openrouter_key,
+            "llm_key_configured": openai_key or openrouter_key,
             "docker_available": docker_available(),
         }
 
@@ -9387,6 +9573,7 @@ def create_app() -> FastAPI:
         return {
             "id": str(bot.id),
             "name": bot.name,
+            "llm_provider": _llm_provider_for_bot(bot),
             "openai_model": bot.openai_model,
             "web_search_model": getattr(bot, "web_search_model", bot.openai_model),
             "codex_model": getattr(bot, "codex_model", "gpt-5.1-codex-mini"),
@@ -9469,11 +9656,13 @@ def create_app() -> FastAPI:
     def api_create_bot(payload: BotCreateRequest, session: Session = Depends(get_session)) -> dict:
         bot = Bot(
             name=payload.name,
+            llm_provider=_normalize_llm_provider(payload.llm_provider),
             openai_model=payload.openai_model,
             openai_asr_model=(payload.openai_asr_model or "gpt-4o-mini-transcribe").strip() or "gpt-4o-mini-transcribe",
             web_search_model=(payload.web_search_model or payload.openai_model).strip() or payload.openai_model,
             codex_model=(payload.codex_model or "gpt-5.1-codex-mini").strip() or "gpt-5.1-codex-mini",
-            summary_model=(payload.summary_model or "gpt-5-nano").strip() or "gpt-5-nano",
+            summary_model=(payload.summary_model or payload.openai_model or "gpt-5-nano").strip()
+            or (payload.openai_model or "gpt-5-nano"),
             history_window_turns=int(payload.history_window_turns or 16),
             enable_data_agent=bool(getattr(payload, "enable_data_agent", False)),
             data_agent_api_spec_text=(payload.data_agent_api_spec_text or ""),
@@ -9505,7 +9694,12 @@ def create_app() -> FastAPI:
     def api_update_bot(bot_id: UUID, payload: BotUpdateRequest, session: Session = Depends(get_session)) -> dict:
         patch = {}
         for k, v in payload.model_dump(exclude_unset=True).items():
-            if k in (
+            if k == "llm_provider":
+                raw = (v or "").strip().lower()
+                if raw and raw not in ("openai", "openrouter"):
+                    raise HTTPException(status_code=400, detail="Unsupported LLM provider.")
+                patch[k] = raw or "openai"
+            elif k in (
                 "openai_tts_model",
                 "openai_tts_voice",
                 "web_search_model",
@@ -9658,7 +9852,7 @@ def create_app() -> FastAPI:
     @app.post("/api/keys")
     def api_create_key(payload: ApiKeyCreateRequest, session: Session = Depends(get_session)) -> dict:
         provider = (payload.provider or "").strip().lower() or "openai"
-        if provider not in ("openai",):
+        if provider not in ("openai", "openrouter"):
             raise HTTPException(status_code=400, detail="Unsupported provider.")
         crypto = require_crypto()
         k = create_key(session, crypto=crypto, provider=provider, name=payload.name, secret=payload.secret)
@@ -10429,14 +10623,15 @@ def create_app() -> FastAPI:
         session: Session = Depends(get_session),
     ) -> StreamingResponse:
         bot = get_bot(session, bot_id)
-        api_key = _get_openai_api_key_for_bot(session, bot=bot)
-        if not api_key:
-            raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
-
-        llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+        provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
+        speak = bool(payload.speak)
+        openai_api_key: Optional[str] = None
+        if speak:
+            openai_api_key = _get_openai_api_key_for_bot(session, bot=bot)
+            if not openai_api_key:
+                raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot (needed for TTS).")
         def gen() -> Generator[bytes, None, None]:
             text = (payload.text or "").strip()
-            speak = bool(payload.speak)
             if not text:
                 yield _ndjson({"type": "error", "error": "Empty text"})
                 return
@@ -10468,7 +10663,7 @@ def create_app() -> FastAPI:
                     audio_q.put(None)
                     return
                 try:
-                    tts_synth = _get_tts_synth_fn(bot, api_key)
+                    tts_synth = _get_tts_synth_fn(bot, openai_api_key)
                     for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
                         if not text_to_speak:
                             continue
@@ -10545,9 +10740,10 @@ def create_app() -> FastAPI:
         session: Session = Depends(get_session),
     ) -> StreamingResponse:
         bot = get_bot(session, bot_id)
-        api_key = _get_openai_api_key_for_bot(session, bot=bot)
-        if not api_key:
+        openai_api_key = _get_openai_api_key_for_bot(session, bot=bot)
+        if not openai_api_key:
             raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
+        provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
 
         conv_id: Optional[UUID] = UUID(conversation_id) if conversation_id.strip() else None
         if conv_id is None:
@@ -10559,7 +10755,7 @@ def create_app() -> FastAPI:
         if not pcm16:
             raise HTTPException(status_code=400, detail="Empty audio")
 
-        asr = _get_asr(api_key, bot.openai_asr_model, bot.language).transcribe_pcm16(
+        asr = _get_asr(openai_api_key, bot.openai_asr_model, bot.language).transcribe_pcm16(
             pcm16=pcm16, sample_rate=16000
         )
         user_text = asr.text.strip()
@@ -10574,8 +10770,6 @@ def create_app() -> FastAPI:
 
         add_message(session, conversation_id=conv_id, role="user", content=user_text)
 
-        llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
-
         def gen() -> Generator[bytes, None, None]:
             yield _ndjson({"type": "conversation", "id": str(conv_id)})
             yield _ndjson({"type": "asr", "text": user_text})
@@ -10584,7 +10778,7 @@ def create_app() -> FastAPI:
                 session=session,
                 bot=bot,
                 conversation_id=conv_id,
-                api_key=api_key,
+                llm_api_key=llm_api_key,
                 status_cb=None,
             )
 
@@ -10613,7 +10807,7 @@ def create_app() -> FastAPI:
                     audio_q.put(None)
                     return
                 try:
-                    tts_synth = _get_tts_synth_fn(bot, api_key)
+                    tts_synth = _get_tts_synth_fn(bot, openai_api_key)
                     for text_to_speak in _iter_tts_chunks(delta_q_tts, min_words=10):
                         if not text_to_speak:
                             continue
@@ -10690,11 +10884,7 @@ def create_app() -> FastAPI:
         session: Session = Depends(get_session),
     ) -> dict:
         bot = get_bot(session, bot_id)
-        api_key = _get_openai_api_key_for_bot(session, bot=bot)
-        if not api_key:
-            raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot.")
-
-        llm = OpenAILLM(model=bot.openai_model, api_key=api_key)
+        provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
         text = (payload.text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="Empty text")
@@ -10705,7 +10895,10 @@ def create_app() -> FastAPI:
         if not payload.speak:
             return {"text": out_text}
 
-        tts_synth = _get_tts_synth_fn(bot, api_key)
+        openai_api_key = _get_openai_api_key_for_bot(session, bot=bot)
+        if not openai_api_key:
+            raise HTTPException(status_code=400, detail="No OpenAI key configured for this bot (needed for TTS).")
+        tts_synth = _get_tts_synth_fn(bot, openai_api_key)
         wav, sr = tts_synth(out_text)
         return {"text": out_text, "audio_wav_base64": base64.b64encode(wav).decode(), "sr": sr}
 

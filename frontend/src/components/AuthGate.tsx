@@ -4,12 +4,18 @@ import { BACKEND_URL, apiPost } from '../api/client'
 import { authHeader } from '../auth'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<{ openai_key_configured: boolean; docker_available: boolean } | null>(null)
+  const [status, setStatus] = useState<{
+    openai_key_configured: boolean
+    openrouter_key_configured?: boolean
+    llm_key_configured?: boolean
+    docker_available: boolean
+  } | null>(null)
   const [checkingStatus, setCheckingStatus] = useState(false)
   const [statusErr, setStatusErr] = useState<string | null>(null)
   const [setupActive, setSetupActive] = useState(false)
-  const [setupStep, setSetupStep] = useState<'openai' | 'docker'>('openai')
-  const [openaiKey, setOpenaiKey] = useState('')
+  const [setupStep, setSetupStep] = useState<'llm' | 'docker'>('llm')
+  const [llmProvider, setLlmProvider] = useState<'openai' | 'openrouter'>('openai')
+  const [llmKey, setLlmKey] = useState('')
   const [setupErr, setSetupErr] = useState<string | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
   const [pullingImage, setPullingImage] = useState(false)
@@ -32,10 +38,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         const data = await res.json()
         if (canceled) return
         setStatus(data)
-        if (!data.openai_key_configured) {
+        const llmReady = Boolean(data.llm_key_configured ?? data.openai_key_configured)
+        if (!llmReady) {
           setSetupActive(true)
-          setSetupStep('openai')
-        } else if (setupActive && setupStep === 'openai') {
+          setSetupStep('llm')
+        } else if (setupActive && setupStep === 'llm') {
           setSetupStep('docker')
         }
       } catch (e: any) {
@@ -80,16 +87,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     )
   }
 
-  async function saveOpenAIKey() {
+  async function saveLlmKey() {
     setSetupErr(null)
-    if (!openaiKey.trim()) {
-      setSetupErr('Please enter an OpenAI API key.')
+    if (!llmKey.trim()) {
+      setSetupErr('Please enter an API key.')
       return
     }
     setSetupBusy(true)
     try {
-      await apiPost('/api/keys', { provider: 'openai', name: 'default', secret: openaiKey.trim() })
-      setOpenaiKey('')
+      await apiPost('/api/keys', { provider: llmProvider, name: 'default', secret: llmKey.trim() })
+      setLlmKey('')
       const res = await fetch(`${BACKEND_URL}/api/status`, {
         method: 'GET',
         headers: { ...authHeader() },
@@ -100,7 +107,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         setSetupStep('docker')
       }
     } catch (e: any) {
-      setSetupErr(e?.message || 'Failed to save OpenAI key.')
+      setSetupErr(e?.message || 'Failed to save API key.')
     } finally {
       setSetupBusy(false)
     }
@@ -145,7 +152,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (setupActive) {
-    const stepIndex = setupStep === 'openai' ? 1 : 2
+    const stepIndex = setupStep === 'llm' ? 1 : 2
     return (
       <div className="authWrap">
         <div className="authCard">
@@ -156,19 +163,26 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             <div className={`setupStep ${stepIndex >= 2 ? 'active' : ''}`} />
           </div>
           {setupErr ? <div className="alert">{setupErr}</div> : null}
-          {setupStep === 'openai' ? (
+          {setupStep === 'llm' ? (
             <>
-              <div className="setupHeading">OpenAI key (required)</div>
+              <div className="setupHeading">LLM key (required)</div>
               <div className="formRow">
-                <label>OpenAI API key</label>
+                <label>Provider</label>
+                <select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value as any)}>
+                  <option value="openai">OpenAI</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
+              </div>
+              <div className="formRow">
+                <label>{llmProvider === 'openai' ? 'OpenAI API key' : 'OpenRouter API key'}</label>
                 <input
                   type="password"
-                  placeholder="sk-..."
-                  value={openaiKey}
-                  onChange={(e) => setOpenaiKey(e.target.value)}
+                  placeholder={llmProvider === 'openai' ? 'sk-...' : 'sk-or-...'}
+                  value={llmKey}
+                  onChange={(e) => setLlmKey(e.target.value)}
                 />
               </div>
-              <button className="btn primary" onClick={() => void saveOpenAIKey()} disabled={setupBusy || !openaiKey.trim()}>
+              <button className="btn primary" onClick={() => void saveLlmKey()} disabled={setupBusy || !llmKey.trim()}>
                 {setupBusy ? 'Saving…' : 'Save and continue'}
               </button>
             </>

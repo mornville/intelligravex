@@ -3,6 +3,7 @@ export type UUID = string
 export type Bot = {
   id: UUID
   name: string
+  llm_provider?: string
   openai_model: string
   openai_asr_model: string
   web_search_model: string
@@ -206,13 +207,16 @@ export type ConversationFiles = {
 }
 
 export type Options = {
+  llm_providers?: string[]
   openai_models: string[]
+  openrouter_models?: string[]
   openai_asr_models: string[]
   languages: string[]
   openai_tts_models?: string[]
   openai_tts_voices?: string[]
   start_message_modes: string[]
   openai_pricing: Record<string, { input_per_1m: number; output_per_1m: number }>
+  openrouter_pricing?: Record<string, { input_per_1m: number; output_per_1m: number }>
   http_methods?: string[]
 }
 

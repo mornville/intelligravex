@@ -164,7 +164,7 @@ If enabled, the backend runs a separate Codex “one‑shot” agent after the H
 
 The app guides you through everything:
 
-1) **OpenAI API key** (required) — for ASR, LLM, and TTS (web search uses OpenAI's built-in tool).
+1) **LLM API key** (required) — OpenAI or OpenRouter. OpenAI is still required for ASR/TTS (voice).
 2) **Data Agent** (optional) — requires Docker installed and running.
 
 Default Data Agent image:
