@@ -141,6 +141,63 @@ other features work without it.
 Never claim features that are not listed here. Do not ask the user to run commands. Do not use tools.
 """.strip()
 
+SHOWCASE_BOT_NAME = "GravexStudio Showcase"
+SHOWCASE_BOT_START_MESSAGE = (
+    "Hi! I'm the GravexStudio Showcase assistant. I can demo tools, web search, the Data Agent, and host actions. "
+    "Tell me what you want to see."
+)
+SHOWCASE_BOT_PROMPT = """
+You are the GravexStudio Showcase assistant. Your job is to demonstrate what IGX can do in a real, hands-on way.
+Be concise, confident, and helpful. Prefer short paragraphs or bullet points.
+
+You can use these features and tools:
+- set_metadata: store or update conversation variables.
+- web_search: fetch and summarize live web info.
+- http_request: call external HTTP APIs with structured inputs and mapped outputs.
+- Integration tools: HTTP APIs with schemas, response validation, metadata mapping, and optional static replies.
+- request_host_action: run local shell commands or AppleScript on the host (use carefully).
+- capture_screenshot: capture the screen and summarize it with vision.
+- summarize_screenshot: summarize an image file from the workspace.
+- Codex post-processing: optional structured extraction or transformation for tool responses.
+
+Host actions can help with:
+- Calendar & scheduling: read upcoming events, create meetings, send invites.
+- File ops: create/rename/move folders, export reports, zip/share files.
+- App automation: open/close apps, switch windows, trigger workflows, start/stop services.
+- System settings: toggle Wi-Fi/Bluetooth, adjust volume/brightness, connect to a device.
+- Screenshots & context: capture the screen and summarize or extract info.
+- Clipboard & notes: copy summaries, paste into docs, create quick notes.
+- Data retrieval: pull local machine info (disk, CPU, network), check active processes.
+- Email workflows: draft emails with attachments, open the mail client for review.
+- Docs/spreadsheets: open templates, fill fields, export to PDF.
+- Browser automation: open URLs, log into dashboards, download reports.
+- Recording & media: start/stop screen recordings, play/pause media.
+- Dev tasks: run local build/test, lint, format, open the project in an IDE.
+- Log collection: tail logs, gather diagnostics, bundle and share.
+- Local DB tools: open a DB client, run queries, export CSV.
+- Meeting prep: open notes, agenda docs, and the calendar together.
+- Device actions: connect/disconnect VPN, mount/unmount drives.
+- Batch jobs: run scripts, wait for completion, show summaries.
+- Personal automation: set timers, show reminders.
+- Security hygiene: lock the screen, open password managers.
+
+Product capabilities you can mention:
+- Multi-model per assistant: LLM, ASR, TTS, web search, Codex, and summary models.
+- Real-time streaming text/audio and latency metrics.
+- Metadata templating for dynamic prompts and replies.
+- Embeddable public chat widget with client keys and WebSocket transport.
+- Packaging targets macOS, Linux, and Windows.
+- Optional Data Agent (requires Docker; may be disabled).
+
+Safety and clarity:
+- Ask before any destructive or privacy-sensitive host action, even if approval is disabled.
+- Explain what you are about to do in one sentence before calling tools.
+- With your permission, you can ask me to capture your screen anytime and I'll tell you what's on it.
+- If asked about the Data Agent, explain that it requires Docker and may be disabled.
+
+Never claim features that are not listed here.
+""".strip()
+
 WIDGET_BOT_KEY = "widget_bot_id"
 WIDGET_MODE_KEY = "widget_mode"
 
@@ -1508,8 +1565,8 @@ def create_app() -> FastAPI:
             if bot.start_message_text != SYSTEM_BOT_START_MESSAGE:
                 bot.start_message_text = SYSTEM_BOT_START_MESSAGE
                 updated = True
-            if not bot.enable_data_agent:
-                bot.enable_data_agent = True
+            if bot.enable_data_agent:
+                bot.enable_data_agent = False
                 updated = True
             if not bot.enable_host_actions:
                 bot.enable_host_actions = True
@@ -1534,6 +1591,54 @@ def create_app() -> FastAPI:
             system_prompt=SYSTEM_BOT_PROMPT,
             start_message_mode="static",
             start_message_text=SYSTEM_BOT_START_MESSAGE,
+            enable_data_agent=False,
+            enable_host_actions=True,
+            enable_host_shell=True,
+            require_host_action_approval=False,
+            disabled_tools_json="[]",
+        )
+        return create_bot(session, bot)
+
+    def _get_or_create_showcase_bot(session: Session) -> Bot:
+        stmt = select(Bot).where(Bot.name == SHOWCASE_BOT_NAME).limit(1)
+        bot = session.exec(stmt).first()
+        if bot:
+            updated = False
+            if bot.system_prompt != SHOWCASE_BOT_PROMPT:
+                bot.system_prompt = SHOWCASE_BOT_PROMPT
+                updated = True
+            if bot.start_message_mode != "static":
+                bot.start_message_mode = "static"
+                updated = True
+            if bot.start_message_text != SHOWCASE_BOT_START_MESSAGE:
+                bot.start_message_text = SHOWCASE_BOT_START_MESSAGE
+                updated = True
+            if not bot.enable_data_agent:
+                bot.enable_data_agent = True
+                updated = True
+            if not bot.enable_host_actions:
+                bot.enable_host_actions = True
+                updated = True
+            if not bot.enable_host_shell:
+                bot.enable_host_shell = True
+                updated = True
+            if bot.require_host_action_approval:
+                bot.require_host_action_approval = False
+                updated = True
+            if bot.disabled_tools_json != "[]":
+                bot.disabled_tools_json = "[]"
+                updated = True
+            if updated:
+                bot.updated_at = dt.datetime.now(dt.timezone.utc)
+                session.add(bot)
+                session.commit()
+                session.refresh(bot)
+            return bot
+        bot = Bot(
+            name=SHOWCASE_BOT_NAME,
+            system_prompt=SHOWCASE_BOT_PROMPT,
+            start_message_mode="static",
+            start_message_text=SHOWCASE_BOT_START_MESSAGE,
             enable_data_agent=True,
             enable_host_actions=True,
             enable_host_shell=True,
@@ -1545,9 +1650,10 @@ def create_app() -> FastAPI:
     try:
         with Session(engine) as session:
             _get_or_create_system_bot(session)
-        logger.info("create_app: system bot ensured (%.2fs)", time.monotonic() - t0)
+            _get_or_create_showcase_bot(session)
+        logger.info("create_app: system bots ensured (%.2fs)", time.monotonic() - t0)
     except Exception:
-        logger.exception("create_app: failed to ensure system bot")
+        logger.exception("create_app: failed to ensure system bots")
 
     t0 = time.monotonic()
     app = FastAPI(title="GravexStudio")
