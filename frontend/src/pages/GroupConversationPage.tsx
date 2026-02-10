@@ -474,7 +474,7 @@ export default function GroupConversationPage() {
         <div className="chatFilters">
           <span className="chatPill active">All</span>
           <span className="chatPill">Assistants</span>
-          <span className="chatPill">Groups</span>
+          <span className="chatPill">Groups (Beta)</span>
         </div>
         <div className="chatSectionLabel">Assistants</div>
         <div className="chatSidebarScroll">
