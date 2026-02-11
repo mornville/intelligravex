@@ -9,6 +9,8 @@ DIST_DIR="${ROOT_DIR}/dist"
 MARKETING_DIR="${ROOT_DIR}/marketing/download"
 APP_NAME="GravexOverlay"
 APP_DIR="${DIST_DIR}/${APP_NAME}.app"
+LLAMA_SERVER_PATH="${IGX_LLAMA_SERVER_PATH:-}"
+LLAMA_SERVER_URL="${IGX_LLAMA_SERVER_URL:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This script is intended for macOS."
@@ -54,6 +56,7 @@ pyinstaller --noconfirm --clean --onefile \
   --copy-metadata tiktoken \
   --add-data "${ROOT_DIR}/voicebot/web/ui:voicebot/web/ui" \
   --add-data "${ROOT_DIR}/voicebot/web/static:voicebot/web/static" \
+  --add-data "${ROOT_DIR}/voicebot/local_models.json:voicebot" \
   --distpath "${BUILD_DIR}/pyinstaller" \
   "${ROOT_DIR}/voicebot/launcher.py"
 
@@ -61,6 +64,97 @@ SERVER_BIN="${BUILD_DIR}/pyinstaller/GravexServer"
 if [[ ! -f "${SERVER_BIN}" ]]; then
   echo "Failed to build GravexServer binary."
   exit 1
+fi
+
+LLAMA_SERVER_BIN="${BUILD_DIR}/llama-server"
+LLAMA_SERVER_SRC_DIR=""
+if [[ -n "${LLAMA_SERVER_PATH}" && -f "${LLAMA_SERVER_PATH}" ]]; then
+  echo "Using llama-server from IGX_LLAMA_SERVER_PATH."
+  cp "${LLAMA_SERVER_PATH}" "${LLAMA_SERVER_BIN}"
+  LLAMA_SERVER_SRC_DIR="$(dirname "${LLAMA_SERVER_PATH}")"
+elif [[ -n "${LLAMA_SERVER_URL}" ]]; then
+  echo "Downloading llama-server from IGX_LLAMA_SERVER_URL..."
+  curl -L -o "${LLAMA_SERVER_BIN}" "${LLAMA_SERVER_URL}"
+else
+  echo "Fetching latest llama.cpp release for llama-server..."
+  LLAMA_SERVER_URL="$("${PYTHON_BIN}" - <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+arch = os.popen("uname -m").read().strip().lower()
+want_arm = "arm" in arch
+
+api = "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest"
+with urllib.request.urlopen(api) as resp:
+    data = json.load(resp)
+assets = data.get("assets") or []
+def match(name: str) -> bool:
+    n = name.lower()
+    if "macos" not in n:
+        return False
+    if want_arm:
+        if "arm64" not in n and "aarch64" not in n:
+            return False
+    else:
+        if "x86_64" not in n and "x64" not in n and "intel" not in n:
+            return False
+    if "zip" not in n and "tar.gz" not in n and "tgz" not in n:
+        return False
+    if "bin" not in n and "release" not in n:
+        return False
+    return True
+
+url = None
+for a in assets:
+    name = a.get("name") or ""
+    if match(name):
+        url = a.get("browser_download_url")
+        if url:
+            break
+
+if not url:
+    sys.exit(0)
+
+print(url)
+PY
+)"
+  if [[ -n "${LLAMA_SERVER_URL}" ]]; then
+    ARCHIVE_PATH="${BUILD_DIR}/llama-server-archive"
+    if [[ "${LLAMA_SERVER_URL}" == *.zip ]]; then
+      ARCHIVE_PATH="${ARCHIVE_PATH}.zip"
+    elif [[ "${LLAMA_SERVER_URL}" == *.tar.gz ]]; then
+      ARCHIVE_PATH="${ARCHIVE_PATH}.tar.gz"
+    elif [[ "${LLAMA_SERVER_URL}" == *.tgz ]]; then
+      ARCHIVE_PATH="${ARCHIVE_PATH}.tgz"
+    fi
+    curl -L -o "${ARCHIVE_PATH}" "${LLAMA_SERVER_URL}"
+    if [[ "${ARCHIVE_PATH}" == *.zip ]]; then
+      unzip -o "${ARCHIVE_PATH}" -d "${BUILD_DIR}/llama-server-tmp"
+    else
+      mkdir -p "${BUILD_DIR}/llama-server-tmp"
+      tar -xf "${ARCHIVE_PATH}" -C "${BUILD_DIR}/llama-server-tmp"
+    fi
+    FOUND_BIN="$(find "${BUILD_DIR}/llama-server-tmp" -type f -name 'llama-server' | head -n 1)"
+    if [[ -n "${FOUND_BIN}" ]]; then
+      cp "${FOUND_BIN}" "${LLAMA_SERVER_BIN}"
+      LLAMA_SERVER_SRC_DIR="$(dirname "${FOUND_BIN}")"
+    fi
+  fi
+fi
+
+if [[ -f "${LLAMA_SERVER_BIN}" ]]; then
+  chmod +x "${LLAMA_SERVER_BIN}"
+  if [[ -n "${LLAMA_SERVER_SRC_DIR}" ]]; then
+    shopt -s nullglob
+    for dylib in "${LLAMA_SERVER_SRC_DIR}"/*.dylib; do
+      cp "${dylib}" "${BUILD_DIR}/"
+    done
+    shopt -u nullglob
+  fi
+else
+  echo "Warning: llama-server binary not bundled."
 fi
 
 OVERLAY_BIN="${BUILD_DIR}/${APP_NAME}"
@@ -83,7 +177,18 @@ if [[ -f "${ROOT_DIR}/macos/overlay/GravexOverlay.icns" ]]; then
 fi
 cp "${OVERLAY_BIN}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 cp "${SERVER_BIN}" "${APP_DIR}/Contents/Resources/GravexServer"
+if [[ -f "${LLAMA_SERVER_BIN}" ]]; then
+  cp "${LLAMA_SERVER_BIN}" "${APP_DIR}/Contents/Resources/llama-server"
+  for dylib in "${BUILD_DIR}"/*.dylib; do
+    if [[ -f "${dylib}" ]]; then
+      cp "${dylib}" "${APP_DIR}/Contents/Resources/$(basename "${dylib}")"
+    fi
+  done
+fi
 chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}" "${APP_DIR}/Contents/Resources/GravexServer"
+if [[ -f "${APP_DIR}/Contents/Resources/llama-server" ]]; then
+  chmod +x "${APP_DIR}/Contents/Resources/llama-server"
+fi
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "${APP_DIR}"

@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import copy_metadata
 
-datas = [('/Users/ashutoshjha/Desktop/Proj/Intelligravex/voicebot/web/ui', 'voicebot/web/ui'), ('/Users/ashutoshjha/Desktop/Proj/Intelligravex/voicebot/web/static', 'voicebot/web/static')]
+datas = [('/Users/ashutoshjha/Desktop/Proj/Intelligravex/voicebot/web/ui', 'voicebot/web/ui'), ('/Users/ashutoshjha/Desktop/Proj/Intelligravex/voicebot/web/static', 'voicebot/web/static'), ('/Users/ashutoshjha/Desktop/Proj/Intelligravex/voicebot/local_models.json', 'voicebot')]
 binaries = []
 hiddenimports = []
 datas += copy_metadata('tiktoken')

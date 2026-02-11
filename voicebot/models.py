@@ -21,7 +21,7 @@ class Bot(SQLModel, table=True):
     name: str = Field(index=True)
 
     # LLM
-    llm_provider: str = "openai"  # "openai" | "openrouter"
+    llm_provider: str = "openai"  # "openai" | "openrouter" | "local"
     openai_model: str = "o4-mini"
     web_search_model: str = "gpt-4o-mini"
     codex_model: str = "gpt-5.1-codex-mini"

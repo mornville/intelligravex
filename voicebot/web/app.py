@@ -46,7 +46,9 @@ from voicebot.llm.codex_http_agent import run_codex_export_from_paths
 from voicebot.llm.codex_saved_runs import append_saved_run_index, find_saved_run
 from voicebot.downloads import create_download_token, is_allowed_download_path, load_download_token
 from voicebot.llm.openai_llm import Message, OpenAILLM, ToolCall, CitationEvent
+from voicebot.llm.openai_compat_llm import OpenAICompatLLM
 from voicebot.llm.openrouter_llm import OpenRouterLLM
+from voicebot.local_runtime import LOCAL_RUNTIME
 from voicebot.models import AppSetting, Bot, Conversation, ConversationMessage, HostAction
 from voicebot.store import (
     create_bot,
@@ -1446,6 +1448,12 @@ class WidgetConfigRequest(BaseModel):
 
 class OpenDashboardRequest(BaseModel):
     path: Optional[str] = None
+
+
+class LocalSetupRequest(BaseModel):
+    model_id: Optional[str] = None
+    custom_url: Optional[str] = None
+    custom_name: Optional[str] = None
 
 
 class BotCreateRequest(BaseModel):
@@ -3114,12 +3122,16 @@ def create_app() -> FastAPI:
 
     def _normalize_llm_provider(provider: str) -> str:
         p = (provider or "").strip().lower()
-        if p in ("openai", "openrouter"):
+        if p in ("openai", "openrouter", "local"):
             return p
         return "openai"
 
     def _provider_display_name(provider: str) -> str:
-        return "OpenRouter" if provider == "openrouter" else "OpenAI"
+        if provider == "openrouter":
+            return "OpenRouter"
+        if provider == "local":
+            return "Local"
+        return "OpenAI"
 
     def _get_openai_api_key(session: Session) -> str:
         # Prefer env, fall back to the latest stored OpenAI key.
@@ -3169,6 +3181,8 @@ def create_app() -> FastAPI:
         provider = _llm_provider_for_bot(bot)
         if provider == "openrouter":
             return provider, _get_openrouter_api_key_for_bot(session, bot=bot)
+        if provider == "local":
+            return provider, ""
         return provider, _get_openai_api_key_for_bot(session, bot=bot)
 
     def _build_llm_client(*, bot: Bot, api_key: str, model_override: Optional[str] = None):
@@ -3185,6 +3199,16 @@ def create_app() -> FastAPI:
                 referer=referer,
                 title=title,
             )
+        if provider == "local":
+            base_url = (os.environ.get("IGX_LOCAL_LLM_BASE_URL") or "").strip()
+            if not base_url:
+                status = LOCAL_RUNTIME.status()
+                port = int(status.get("server_port") or 0) or 0
+                if port:
+                    base_url = f"http://127.0.0.1:{port}"
+            if not base_url:
+                raise RuntimeError("Local runtime not ready.")
+            return OpenAICompatLLM(model=model, base_url=base_url, api_key=None)
         return OpenAILLM(model=model, api_key=api_key)
 
     def _require_llm_client(
@@ -3194,11 +3218,15 @@ def create_app() -> FastAPI:
         model_override: Optional[str] = None,
     ) -> tuple[str, str, Any]:
         provider, api_key = _get_llm_api_key_for_bot(session, bot=bot)
-        if not api_key:
+        if provider != "local" and not api_key:
             raise HTTPException(
                 status_code=400,
                 detail=f"No {_provider_display_name(provider)} key configured for this bot.",
             )
+        if provider == "local":
+            base_url_env = (os.environ.get("IGX_LOCAL_LLM_BASE_URL") or "").strip()
+            if not base_url_env and not LOCAL_RUNTIME.is_ready():
+                raise HTTPException(status_code=400, detail="Local model not ready. Finish local setup first.")
         llm = _build_llm_client(bot=bot, api_key=api_key, model_override=model_override)
         return provider, api_key, llm
 
@@ -3916,6 +3944,8 @@ def create_app() -> FastAPI:
         return dict(openrouter_models_cache.get("pricing") or {})
 
     def _get_model_price(session: Session, *, provider: str, model: str) -> Optional[ModelPrice]:
+        if provider == "local":
+            return None
         if provider == "openrouter":
             return _get_openrouter_pricing(session).get(model)
         return _get_openai_pricing().get(model)
@@ -3982,7 +4012,7 @@ def create_app() -> FastAPI:
                 # Static greeting (no LLM).
                 pass
             else:
-                if llm is None or not llm_api_key:
+                if llm is None or (provider != "local" and not llm_api_key):
                     raise HTTPException(
                         status_code=400,
                         detail=f"No {_provider_display_name(provider)} key configured for this bot.",
@@ -9521,6 +9551,9 @@ def create_app() -> FastAPI:
         _refresh_openrouter_models_cache(session)
         openrouter_models = list(openrouter_models_cache.get("models") or [])
         openrouter_pricing = dict(openrouter_models_cache.get("pricing") or {})
+        local_models = LOCAL_RUNTIME.list_models()
+        default_provider = (_get_app_setting(session, "default_llm_provider") or "").strip().lower() or "openai"
+        default_model = (_get_app_setting(session, "default_llm_model") or "").strip()
         return {
             "openai_models": openai_models,
             "openai_pricing": {k: {"input_per_1m": v.input_per_1m, "output_per_1m": v.output_per_1m} for k, v in pricing.items()},
@@ -9529,7 +9562,10 @@ def create_app() -> FastAPI:
                 k: {"input_per_1m": v.input_per_1m, "output_per_1m": v.output_per_1m}
                 for k, v in openrouter_pricing.items()
             },
-            "llm_providers": ["openai", "openrouter"],
+            "local_models": local_models,
+            "default_llm_provider": default_provider,
+            "default_llm_model": default_model,
+            "llm_providers": ["openai", "openrouter", "local"],
             "openai_asr_models": ui_options.get("openai_asr_models", []),
             "languages": ui_options.get("languages", []),
             "openai_tts_models": ui_options.get("openai_tts_models", []),
@@ -9542,12 +9578,50 @@ def create_app() -> FastAPI:
     def api_status(session: Session = Depends(get_session)) -> dict:
         openai_key = bool(_get_openai_api_key(session))
         openrouter_key = bool(_get_openrouter_api_key(session))
+        local_ready = LOCAL_RUNTIME.is_ready()
         return {
             "openai_key_configured": openai_key,
             "openrouter_key_configured": openrouter_key,
-            "llm_key_configured": openai_key or openrouter_key,
+            "local_ready": local_ready,
+            "local_status": LOCAL_RUNTIME.status(),
+            "llm_key_configured": openai_key or openrouter_key or local_ready,
             "docker_available": docker_available(),
         }
+
+    @app.get("/api/local/status")
+    def api_local_status() -> dict:
+        return LOCAL_RUNTIME.status()
+
+    @app.get("/api/local/models")
+    def api_local_models() -> dict:
+        return {"items": LOCAL_RUNTIME.list_models()}
+
+    @app.post("/api/local/setup")
+    def api_local_setup(payload: LocalSetupRequest, session: Session = Depends(get_session)) -> dict:
+        model_id = (payload.model_id or "").strip()
+        custom_url = (payload.custom_url or "").strip()
+        custom_name = (payload.custom_name or "").strip()
+        try:
+            status = LOCAL_RUNTIME.start(model_id=model_id, custom_url=custom_url, custom_name=custom_name)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        default_model = model_id or custom_name
+        if not default_model and custom_url:
+            default_model = custom_url.rsplit("/", 1)[-1].split("?", 1)[0].strip()
+        if default_model:
+            _set_app_setting(session, "default_llm_provider", "local")
+            _set_app_setting(session, "default_llm_model", default_model)
+        try:
+            bot = _get_or_create_system_bot(session)
+            bot.llm_provider = "local"
+            if default_model:
+                bot.openai_model = default_model
+            bot.updated_at = dt.datetime.now(dt.timezone.utc)
+            session.add(bot)
+            session.commit()
+        except Exception:
+            pass
+        return status
 
     @app.post("/api/data-agent/pull-image")
     def api_pull_data_agent_image() -> dict:
@@ -9678,15 +9752,18 @@ def create_app() -> FastAPI:
 
     @app.post("/api/bots")
     def api_create_bot(payload: BotCreateRequest, session: Session = Depends(get_session)) -> dict:
+        default_provider = (_get_app_setting(session, "default_llm_provider") or "").strip().lower()
+        default_model = (_get_app_setting(session, "default_llm_model") or "").strip()
+        provider = _normalize_llm_provider(payload.llm_provider or default_provider or "openai")
+        openai_model = (payload.openai_model or default_model or "o4-mini").strip() or "o4-mini"
         bot = Bot(
             name=payload.name,
-            llm_provider=_normalize_llm_provider(payload.llm_provider),
-            openai_model=payload.openai_model,
+            llm_provider=provider,
+            openai_model=openai_model,
             openai_asr_model=(payload.openai_asr_model or "gpt-4o-mini-transcribe").strip() or "gpt-4o-mini-transcribe",
-            web_search_model=(payload.web_search_model or payload.openai_model).strip() or payload.openai_model,
+            web_search_model=(payload.web_search_model or openai_model).strip() or openai_model,
             codex_model=(payload.codex_model or "gpt-5.1-codex-mini").strip() or "gpt-5.1-codex-mini",
-            summary_model=(payload.summary_model or payload.openai_model or "gpt-5-nano").strip()
-            or (payload.openai_model or "gpt-5-nano"),
+            summary_model=(payload.summary_model or openai_model or "gpt-5-nano").strip() or (openai_model or "gpt-5-nano"),
             history_window_turns=int(payload.history_window_turns or 16),
             enable_data_agent=bool(getattr(payload, "enable_data_agent", False)),
             data_agent_api_spec_text=(payload.data_agent_api_spec_text or ""),
@@ -9720,7 +9797,7 @@ def create_app() -> FastAPI:
         for k, v in payload.model_dump(exclude_unset=True).items():
             if k == "llm_provider":
                 raw = (v or "").strip().lower()
-                if raw and raw not in ("openai", "openrouter"):
+                if raw and raw not in ("openai", "openrouter", "local"):
                     raise HTTPException(status_code=400, detail="Unsupported LLM provider.")
                 patch[k] = raw or "openai"
             elif k in (
