@@ -11,11 +11,11 @@ if [[ ! -f "${DOCKERFILE}" ]]; then
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker is required to build the Data Agent image."
+  echo "Docker is required to build the Isolated Workspace image."
   exit 1
 fi
 
-echo "Building Data Agent image: ${IMAGE}"
+echo "Building Isolated Workspace image: ${IMAGE}"
 DOCKER_BUILDKIT=1 docker build -t "${IMAGE}" -f "${DOCKERFILE}" "${ROOT_DIR}/packaging/data-agent"
 
 echo "Build complete: ${IMAGE}"

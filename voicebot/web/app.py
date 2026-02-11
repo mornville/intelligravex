@@ -113,7 +113,7 @@ from voicebot.data_agent.docker_runner import (
 
 
 SYSTEM_BOT_NAME = "GravexStudio Guide"
-SYSTEM_BOT_START_MESSAGE = "Ask me about setup, features, tools, or the Data Agent."
+SYSTEM_BOT_START_MESSAGE = "Ask me about setup, features, tools, or the Isolated Workspace."
 SYSTEM_BOT_PROMPT = """
 You are the GravexStudio Guide, a friendly product tour assistant for GravexStudio.
 
@@ -126,9 +126,9 @@ What you know about GravexStudio:
 - Multi-model per assistant: LLM, ASR (speech-to-text), TTS (text-to-speech), web search, Codex, and summary models.
 - Real-time conversations with streamed text/audio and latency metrics.
 - Optional web search tool (can be disabled per assistant).
-- A Data Agent can run long tasks in a Docker container per conversation (Docker required for this feature).
-- The Data Agent has a persistent workspace, can read/write files, run scripts, and operate in parallel across conversations.
-- Git/SSH tooling is available for Data Agent workflows.
+- A Isolated Workspace can run long tasks in a Docker container per conversation (Docker required for this feature).
+- The Isolated Workspace has a persistent workspace, can read/write files, run scripts, and operate in parallel across conversations.
+- Git/SSH tooling is available for Isolated Workspace workflows.
 - Integration tools can call HTTP APIs with tool schemas, response validation, and response-to-metadata mapping.
 - Static reply templates (Jinja2) and optional Codex post-processing are supported for tools.
 - Metadata templating lets prompts and replies reference conversation variables.
@@ -137,9 +137,9 @@ What you know about GravexStudio:
 - Optional host actions let assistants request actions on the local machine (can require approval).
 
 When asked about handling large tool outputs, suggest: use response schemas, map only needed fields, and
-post-process results with scripts in the Data Agent workspace.
+post-process results with scripts in the Isolated Workspace workspace.
 
-If asked for setup steps, mention: OpenAI API key is required; Docker is required only for the Data Agent;
+If asked for setup steps, mention: OpenAI API key is required; Docker is required only for the Isolated Workspace;
 other features work without it.
 
 Never claim features that are not listed here. Do not ask the user to run commands. Do not use tools.
@@ -147,7 +147,7 @@ Never claim features that are not listed here. Do not ask the user to run comman
 
 SHOWCASE_BOT_NAME = "GravexStudio Showcase"
 SHOWCASE_BOT_START_MESSAGE = (
-    "Hi! I'm the GravexStudio Showcase assistant. I can demo tools, web search, the Data Agent, and host actions. "
+    "Hi! I'm the GravexStudio Showcase assistant. I can demo tools, web search, the Isolated Workspace, and host actions. "
     "Tell me what you want to see."
 )
 SHOWCASE_BOT_PROMPT = """
@@ -191,13 +191,13 @@ Product capabilities you can mention:
 - Metadata templating for dynamic prompts and replies.
 - Embeddable public chat widget with client keys and WebSocket transport.
 - Packaging targets macOS, Linux, and Windows.
-- Optional Data Agent (requires Docker; may be disabled).
+- Optional Isolated Workspace (requires Docker; may be disabled).
 
 Safety and clarity:
 - Ask before any destructive or privacy-sensitive host action, even if approval is disabled.
 - Explain what you are about to do in one sentence before calling tools.
 - With your permission, you can ask me to capture your screen anytime and I'll tell you what's on it.
-- If asked about the Data Agent, explain that it requires Docker and may be disabled.
+- If asked about the Isolated Workspace, explain that it requires Docker and may be disabled.
 
 Never claim features that are not listed here.
 """.strip()
@@ -943,7 +943,7 @@ def _summarize_screenshot_tool_def() -> dict:
     return {
         "type": "function",
         "name": "summarize_screenshot",
-        "description": "Summarize an image stored in the Data Agent workspace (e.g., a captured screenshot).",
+        "description": "Summarize an image stored in the Isolated Workspace workspace (e.g., a captured screenshot).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1200,7 +1200,7 @@ def _summarize_screenshot(
     prompt: str,
 ) -> tuple[bool, str, Optional[str]]:
     if not bool(getattr(bot, "enable_data_agent", False)):
-        return False, "Data Agent is disabled for this bot.", None
+        return False, "Isolated Workspace is disabled for this bot.", None
     api_key = _get_openai_api_key_global(session)
     if not api_key:
         return False, "OpenAI API key not configured.", None
@@ -2673,14 +2673,14 @@ def create_app() -> FastAPI:
                                             final = ""
                     elif tool_name == "give_command_to_data_agent":
                         if not bool(getattr(bot, "enable_data_agent", False)):
-                            tool_result = {"ok": False, "error": {"message": "Data Agent is disabled for this bot."}}
+                            tool_result = {"ok": False, "error": {"message": "Isolated Workspace is disabled for this bot."}}
                             tool_failed = True
                             needs_followup_llm = True
                             final = ""
                         elif not docker_available():
                             tool_result = {
                                 "ok": False,
-                                "error": {"message": "Docker is not available. Install Docker to use Data Agent."},
+                                "error": {"message": "Docker is not available. Install Docker to use Isolated Workspace."},
                             }
                             tool_failed = True
                             needs_followup_llm = True
@@ -2695,7 +2695,7 @@ def create_app() -> FastAPI:
                             else:
                                 try:
                                     logger.info(
-                                        "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                        "Isolated Workspace tool: start conv=%s bot=%s what_to_do=%s",
                                         conversation_id,
                                         bot_id,
                                         (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
@@ -2786,7 +2786,7 @@ def create_app() -> FastAPI:
                                         final = ""
                                 except Exception as exc:
                                     logger.exception(
-                                        "Data Agent tool failed conv=%s bot=%s",
+                                        "Isolated Workspace tool failed conv=%s bot=%s",
                                         conversation_id,
                                         bot_id,
                                     )
@@ -3355,7 +3355,7 @@ def create_app() -> FastAPI:
         session: Session, *, bot: Bot, conversation_id: UUID, meta_current: dict
     ) -> tuple[str, str, str]:
         """
-        Ensures the per-conversation Data Agent runtime exists.
+        Ensures the per-conversation Isolated Workspace runtime exists.
 
         Returns: (container_id, session_id, workspace_dir).
         """
@@ -3366,7 +3366,7 @@ def create_app() -> FastAPI:
 
         api_key = _get_openai_api_key_for_bot(session, bot=bot)
         if not api_key:
-            raise RuntimeError("No OpenAI API key configured for this bot (needed for Data Agent).")
+            raise RuntimeError("No OpenAI API key configured for this bot (needed for Isolated Workspace).")
         auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
         git_token = _get_git_token_plaintext(session, provider="github") if _git_auth_mode(auth_json) == "token" else ""
 
@@ -3427,7 +3427,7 @@ def create_app() -> FastAPI:
 
     async def _kickoff_data_agent_container_if_enabled(*, bot_id: UUID, conversation_id: UUID) -> None:
         """
-        Best-effort: start (and optionally prewarm) the per-conversation Data Agent runtime at conversation start.
+        Best-effort: start (and optionally prewarm) the per-conversation Isolated Workspace runtime at conversation start.
 
         NOTE: This uses Docker locally. For Kubernetes, this should be replaced with a Pod/Job-based runner.
         """
@@ -3443,12 +3443,12 @@ def create_app() -> FastAPI:
                     if not bool(getattr(bot, "enable_data_agent", False)):
                         return
                     if not docker_available():
-                        logger.warning("Data Agent kickoff: Docker not available conv=%s bot=%s", conversation_id, bot_id)
+                        logger.warning("Isolated Workspace kickoff: Docker not available conv=%s bot=%s", conversation_id, bot_id)
                         merge_conversation_metadata(
                             session,
                             conversation_id=conversation_id,
                             patch={
-                                "data_agent.init_error": "Docker is not available. Install Docker to use Data Agent.",
+                                "data_agent.init_error": "Docker is not available. Install Docker to use Isolated Workspace.",
                                 "data_agent.ready": False,
                             },
                         )
@@ -3464,7 +3464,7 @@ def create_app() -> FastAPI:
 
                     api_key = _get_openai_api_key_for_bot(session, bot=bot)
                     if not api_key:
-                        logger.warning("Data Agent kickoff: missing OpenAI key conv=%s bot=%s", conversation_id, bot_id)
+                        logger.warning("Isolated Workspace kickoff: missing OpenAI key conv=%s bot=%s", conversation_id, bot_id)
                         merge_conversation_metadata(
                             session,
                             conversation_id=conversation_id,
@@ -3488,7 +3488,7 @@ def create_app() -> FastAPI:
 
                 if not container_id:
                     logger.info(
-                        "Data Agent kickoff: starting container conv=%s workspace=%s",
+                        "Isolated Workspace kickoff: starting container conv=%s workspace=%s",
                         conversation_id,
                         workspace_dir,
                     )
@@ -3515,7 +3515,7 @@ def create_app() -> FastAPI:
                     return
 
                 logger.info(
-                    "Data Agent prewarm: begin conv=%s container_id=%s session_id=%s",
+                    "Isolated Workspace prewarm: begin conv=%s container_id=%s session_id=%s",
                     conversation_id,
                     container_id,
                     session_id or "",
@@ -3594,7 +3594,7 @@ def create_app() -> FastAPI:
                             },
                         )
                     logger.info(
-                        "Data Agent prewarm: done conv=%s ok=%s ready=%s session_id=%s error=%s",
+                        "Isolated Workspace prewarm: done conv=%s ok=%s ready=%s session_id=%s error=%s",
                         conversation_id,
                         bool(res.ok),
                         bool(res.ok),
@@ -3613,10 +3613,10 @@ def create_app() -> FastAPI:
                                 "data_agent.init_error": str(exc),
                             },
                         )
-                    logger.info("Data Agent prewarm: failed conv=%s error=%s", conversation_id, str(exc))
+                    logger.info("Isolated Workspace prewarm: failed conv=%s error=%s", conversation_id, str(exc))
 
             except Exception:
-                logger.exception("Data Agent kickoff failed conv=%s bot=%s", conversation_id, bot_id)
+                logger.exception("Isolated Workspace kickoff failed conv=%s bot=%s", conversation_id, bot_id)
                 return
 
     def _set_metadata_tool_def() -> dict:
@@ -5027,7 +5027,7 @@ def create_app() -> FastAPI:
                                         api_key = _get_openai_api_key_for_bot(session, bot=bot)
                                         if not api_key:
                                             raise RuntimeError(
-                                                "No OpenAI API key configured for this bot (needed to start Data Agent container)."
+                                                "No OpenAI API key configured for this bot (needed to start Isolated Workspace container)."
                                             )
                                         auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
                                         git_token = (
@@ -5599,7 +5599,7 @@ def create_app() -> FastAPI:
                                         if not bool(getattr(bot, "enable_data_agent", False)):
                                             tool_result = {
                                                 "ok": False,
-                                                "error": {"message": "Data Agent is disabled for this bot."},
+                                                "error": {"message": "Isolated Workspace is disabled for this bot."},
                                             }
                                             tool_failed = True
                                             needs_followup_llm = True
@@ -5608,7 +5608,7 @@ def create_app() -> FastAPI:
                                             tool_result = {
                                                 "ok": False,
                                                 "error": {
-                                                    "message": "Docker is not available. Install Docker to use Data Agent.",
+                                                    "message": "Docker is not available. Install Docker to use Isolated Workspace.",
                                                 },
                                             }
                                             tool_failed = True
@@ -5628,7 +5628,7 @@ def create_app() -> FastAPI:
                                                 # Ensure the per-conversation runtime exists (Docker) and run Codex CLI.
                                                 try:
                                                     logger.info(
-                                                        "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                                        "Isolated Workspace tool: start conv=%s bot=%s what_to_do=%s",
                                                         conv_id,
                                                         bot_id,
                                                         (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
@@ -5644,7 +5644,7 @@ def create_app() -> FastAPI:
                                                     api_key = _get_openai_api_key_for_bot(session, bot=bot)
                                                     if not api_key:
                                                         raise RuntimeError(
-                                                            "No OpenAI API key configured for this bot (needed for Data Agent)."
+                                                            "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
                                                         )
                                                     auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
                                                     git_token = (
@@ -5734,7 +5734,7 @@ def create_app() -> FastAPI:
                                                             patch={"data_agent.session_id": da_res.session_id},
                                                         )
                                                     logger.info(
-                                                        "Data Agent tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
+                                                        "Isolated Workspace tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
                                                         conv_id,
                                                         bool(da_res.ok),
                                                         da_res.container_id,
@@ -5763,7 +5763,7 @@ def create_app() -> FastAPI:
                                                         needs_followup_llm = True
                                                         rendered_reply = ""
                                                 except Exception as exc:
-                                                    logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
+                                                    logger.exception("Isolated Workspace tool failed conv=%s bot=%s", conv_id, bot_id)
                                                     tool_result = {
                                                         "ok": False,
                                                         "error": {"message": str(exc)},
@@ -6949,7 +6949,7 @@ def create_app() -> FastAPI:
                                         if not bool(getattr(bot2, "enable_data_agent", False)):
                                             tool_result = {
                                                 "ok": False,
-                                                "error": {"message": "Data Agent is disabled for this bot."},
+                                                "error": {"message": "Isolated Workspace is disabled for this bot."},
                                             }
                                             tool_failed = True
                                             needs_followup_llm = True
@@ -6957,7 +6957,7 @@ def create_app() -> FastAPI:
                                         elif not docker_available():
                                             tool_result = {
                                                 "ok": False,
-                                                "error": {"message": "Docker is not available. Install Docker to use Data Agent."},
+                                                "error": {"message": "Docker is not available. Install Docker to use Isolated Workspace."},
                                             }
                                             tool_failed = True
                                             needs_followup_llm = True
@@ -6975,7 +6975,7 @@ def create_app() -> FastAPI:
                                             else:
                                                 try:
                                                     logger.info(
-                                                        "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                                        "Isolated Workspace tool: start conv=%s bot=%s what_to_do=%s",
                                                         conv_id,
                                                         bot_id,
                                                         (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
@@ -6991,7 +6991,7 @@ def create_app() -> FastAPI:
                                                     api_key = _get_openai_api_key_for_bot(session, bot=bot2)
                                                     if not api_key:
                                                         raise RuntimeError(
-                                                            "No OpenAI API key configured for this bot (needed for Data Agent)."
+                                                            "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
                                                         )
                                                     auth_json_raw = getattr(bot2, "data_agent_auth_json", "") or "{}"
                                                     git_token = (
@@ -7079,7 +7079,7 @@ def create_app() -> FastAPI:
                                                             patch={"data_agent.session_id": da_res.session_id},
                                                         )
                                                     logger.info(
-                                                        "Data Agent tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
+                                                        "Isolated Workspace tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
                                                         conv_id,
                                                         bool(da_res.ok),
                                                         da_res.container_id,
@@ -7108,7 +7108,7 @@ def create_app() -> FastAPI:
                                                         needs_followup_llm = True
                                                         rendered_reply = ""
                                                 except Exception as exc:
-                                                    logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
+                                                    logger.exception("Isolated Workspace tool failed conv=%s bot=%s", conv_id, bot_id)
                                                     tool_result = {
                                                         "ok": False,
                                                         "error": {"message": str(exc)},
@@ -8347,7 +8347,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Conversation not found")
         bot = get_bot(session, conv.bot_id)
         if not bot or not bool(getattr(bot, "enable_data_agent", False)):
-            raise HTTPException(status_code=400, detail="Enable Data Agent to upload files.")
+            raise HTTPException(status_code=400, detail="Enable Isolated Workspace to upload files.")
 
         meta = _get_conversation_meta(session, conversation_id=conversation_id)
         try:
@@ -8564,7 +8564,7 @@ def create_app() -> FastAPI:
                 await _ws_send_json(ws, {"type": "error", "error": "Bot not allowed for this key"})
                 await ws.close(code=4403)
                 return
-            # Create (or load) the conversation immediately on connect so we can prewarm the Data Agent
+            # Create (or load) the conversation immediately on connect so we can prewarm the Isolated Workspace
             # as soon as the conversation exists (before the first user message).
             try:
                 bot = get_bot(session, bot_id)
@@ -8965,7 +8965,7 @@ def create_app() -> FastAPI:
                                     if not bool(getattr(bot, "enable_data_agent", False)):
                                         tool_result = {
                                             "ok": False,
-                                            "error": {"message": "Data Agent is disabled for this bot."},
+                                            "error": {"message": "Isolated Workspace is disabled for this bot."},
                                         }
                                         tool_failed = True
                                         needs_followup_llm = True
@@ -8973,7 +8973,7 @@ def create_app() -> FastAPI:
                                     elif not docker_available():
                                         tool_result = {
                                             "ok": False,
-                                            "error": {"message": "Docker is not available. Install Docker to use Data Agent."},
+                                            "error": {"message": "Docker is not available. Install Docker to use Isolated Workspace."},
                                         }
                                         tool_failed = True
                                         needs_followup_llm = True
@@ -8991,7 +8991,7 @@ def create_app() -> FastAPI:
                                         else:
                                             try:
                                                 logger.info(
-                                                    "Data Agent tool: start conv=%s bot=%s what_to_do=%s",
+                                                    "Isolated Workspace tool: start conv=%s bot=%s what_to_do=%s",
                                                     conv_id,
                                                     bot_id,
                                                     (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
@@ -9014,7 +9014,7 @@ def create_app() -> FastAPI:
                                                     api_key = _get_openai_api_key_for_bot(session, bot=bot)
                                                     if not api_key:
                                                         raise RuntimeError(
-                                                            "No OpenAI API key configured for this bot (needed for Data Agent)."
+                                                            "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
                                                         )
                                                     container_id = await asyncio.to_thread(
                                                         ensure_conversation_container,
@@ -9090,7 +9090,7 @@ def create_app() -> FastAPI:
                                                         patch={"data_agent.session_id": da_res.session_id},
                                                     )
                                                 logger.info(
-                                                    "Data Agent tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
+                                                    "Isolated Workspace tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
                                                     conv_id,
                                                     bool(da_res.ok),
                                                     da_res.container_id,
@@ -9119,7 +9119,7 @@ def create_app() -> FastAPI:
                                                     needs_followup_llm = True
                                                     final = ""
                                             except Exception as exc:
-                                                logger.exception("Data Agent tool failed conv=%s bot=%s", conv_id, bot_id)
+                                                logger.exception("Isolated Workspace tool failed conv=%s bot=%s", conv_id, bot_id)
                                                 tool_result = {"ok": False, "error": {"message": str(exc)}}
                                                 tool_failed = True
                                                 needs_followup_llm = True
@@ -10734,7 +10734,7 @@ def create_app() -> FastAPI:
         da = _data_agent_meta(meta)
         container_id = str(da.get("container_id") or "").strip()
         if not container_id:
-            return {"ok": False, "error": "No data agent container for this conversation."}
+            return {"ok": False, "error": "No Isolated Workspace container for this conversation."}
         kill_script = (
             "for p in /proc/[0-9]*; do "
             "cmd=$(tr '\\0' ' ' < \"$p\"/cmdline 2>/dev/null); "

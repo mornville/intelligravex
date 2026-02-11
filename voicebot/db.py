@@ -262,7 +262,7 @@ def _seed_demo_group(engine) -> None:
                 "(example: @sde1 please gather sources). If you have nothing to add, respond with <no_reply>."
             )
             sde1_prompt = (
-                "You are SDE1. Implement tasks using the Data Agent and available tools. State your plan, execute, and "
+                "You are SDE1. Implement tasks using the Isolated Workspace and available tools. State your plan, execute, and "
                 "report results clearly. If requirements are unclear, ask the user or another assistant using @slug. "
                 "If you have nothing to add, respond with <no_reply>."
             )
@@ -313,7 +313,7 @@ def _seed_demo_group(engine) -> None:
             "(example: @sde1 please gather sources). If you have nothing to add, respond with <no_reply>."
         )
         sde1_prompt = (
-            "You are SDE1. Implement tasks using the Data Agent and available tools. State your plan, execute, and "
+            "You are SDE1. Implement tasks using the Isolated Workspace and available tools. State your plan, execute, and "
             "report results clearly. If requirements are unclear, ask the user or another assistant using @slug. "
             "If you have nothing to add, respond with <no_reply>."
         )
@@ -384,7 +384,7 @@ def _seed_demo_group(engine) -> None:
                 "assistant",
                 sde1_bot.id,
                 "SDE1",
-                "On it. I’ll use the Data Agent to generate a script and a report template, then share results for review.",
+                "On it. I’ll use the Isolated Workspace to generate a script and a report template, then share results for review.",
             ),
             (
                 "tool",

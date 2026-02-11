@@ -28,7 +28,7 @@ class Bot(SQLModel, table=True):
     summary_model: str = "gpt-5-nano"
     history_window_turns: int = 16
     enable_data_agent: bool = Field(default=False)
-    # Data Agent (Codex CLI in an isolated runtime, per conversation).
+    # Isolated Workspace (Codex CLI in an isolated runtime, per conversation).
     # NOTE: auth is stored as plaintext JSON per user request (no masking); handle with care.
     data_agent_api_spec_text: str = Field(default="")
     data_agent_auth_json: str = Field(default="{}")

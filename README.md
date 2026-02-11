@@ -50,7 +50,7 @@ Outputs:
 - Live mic test and talk loop built into the UI.
 - Continuous session support (start / stop, new conversation).
 
-### Data Agent (optional, Docker)
+### Isolated Workspace (optional, Docker)
 - Run each conversation in its **own isolated workspace**.
 - Long‑running tasks that persist across turns.
 - Files, logs, and outputs stored per workspace.
@@ -162,7 +162,7 @@ If enabled, the backend runs a separate Codex “one‑shot” agent after the H
 - Public text‑chat widget you can embed in websites.
 - Client key support and WebSocket transport.
 
-### Git + SSH tooling (inside Data Agent)
+### Git + SSH tooling (inside Isolated Workspace)
 - Secure repo access for data‑agent workflows.
 - Useful for code tasks, automation, and structured work.
 
@@ -172,16 +172,16 @@ The app guides you through everything:
 
 1) **LLM choice** — OpenAI, OpenRouter, or **Local model (no API key)**.
 2) **Voice (optional)** — OpenAI is still required for ASR/TTS.
-3) **Data Agent** (optional) — requires Docker installed and running.
+3) **Isolated Workspace** (optional) — requires Docker installed and running.
 
-Default Data Agent image:
+Default Isolated Workspace image:
 - `ghcr.io/mornville/data-agent:latest`
 
-Override the Data Agent image if needed:
+Override the Isolated Workspace image if needed:
 - `IGX_DATA_AGENT_IMAGE=...`
 
 ## Notes
 
-- Docker is only needed if you enable the Data Agent.
+- Docker is only needed if you enable the Isolated Workspace.
 - All core features work without Docker.
 - Local models are downloaded automatically and stored on your machine.

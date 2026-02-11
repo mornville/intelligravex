@@ -445,26 +445,26 @@ def _get_data_agent_image() -> str:
 
 def ensure_image_pulled() -> str:
     if not _docker_available():
-        raise RuntimeError("Docker is not available (cannot start Data Agent runtime).")
+        raise RuntimeError("Docker is not available (cannot start Isolated Workspace runtime).")
     image = _get_data_agent_image().strip() or DEFAULT_DATA_AGENT_IMAGE
     p = _run(["docker", "image", "inspect", image], timeout_s=10.0)
     if p.returncode == 0:
-        logger.info("Data Agent image present: %s", image)
+        logger.info("Isolated Workspace image present: %s", image)
         return image
-    logger.info("Data Agent image missing; pulling: %s", image)
+    logger.info("Isolated Workspace image missing; pulling: %s", image)
     pull = _run(["docker", "pull", image], timeout_s=900.0)
     if pull.returncode != 0:
         logger.error(
-            "Failed to pull Data Agent image rc=%s stdout_tail=%s stderr_tail=%s",
+            "Failed to pull Isolated Workspace image rc=%s stdout_tail=%s stderr_tail=%s",
             pull.returncode,
             (pull.stdout or "")[-2000:],
             (pull.stderr or "")[-2000:],
         )
         raise RuntimeError(
-            "Failed to pull Data Agent image. "
+            "Failed to pull Isolated Workspace image. "
             "Check your network/login or set IGX_DATA_AGENT_IMAGE to a reachable image."
         )
-    logger.info("Pulled Data Agent image: %s", image)
+    logger.info("Pulled Isolated Workspace image: %s", image)
     return image
 
 
@@ -606,9 +606,9 @@ def ensure_conversation_container(
     existing_id = _get_existing_container_id(name)
     if existing_id:
         if _ensure_container_running(existing_id):
-            logger.info("Reusing Data Agent container %s for conversation %s", existing_id, conversation_id)
+            logger.info("Reusing Isolated Workspace container %s for conversation %s", existing_id, conversation_id)
             return existing_id
-        logger.warning("Data Agent container exists but is not running; recreating conv=%s container_id=%s", conversation_id, existing_id)
+        logger.warning("Isolated Workspace container exists but is not running; recreating conv=%s container_id=%s", conversation_id, existing_id)
 
     Path(workspace_dir).mkdir(parents=True, exist_ok=True)
     # Back-compat cleanup: older versions wrote API spec to API_SPEC.md.
@@ -619,7 +619,7 @@ def ensure_conversation_container(
             legacy.unlink()
     except Exception:
         pass
-    logger.info("Starting Data Agent container for conversation %s (workspace=%s)", conversation_id, workspace_dir)
+    logger.info("Starting Isolated Workspace container for conversation %s (workspace=%s)", conversation_id, workspace_dir)
 
     repo_url, repo_cache_path, repo_source_path = _extract_preferred_repo(auth_json or "")
     host_cache_path = _normalize_host_path(repo_cache_path)
@@ -670,23 +670,23 @@ def ensure_conversation_container(
             existing_id = _get_existing_container_id(name)
             if existing_id and _ensure_container_running(existing_id):
                 logger.warning(
-                    "Data Agent container name conflict; reusing existing container %s for conversation %s",
+                    "Isolated Workspace container name conflict; reusing existing container %s for conversation %s",
                     existing_id,
                     conversation_id,
                 )
                 return existing_id
         logger.error(
-            "Failed to start Data Agent container rc=%s stdout_tail=%s stderr_tail=%s",
+            "Failed to start Isolated Workspace container rc=%s stdout_tail=%s stderr_tail=%s",
             p.returncode,
             (p.stdout or "")[-2000:],
             (p.stderr or "")[-2000:],
         )
-        raise RuntimeError(f"Failed to start Data Agent container: {p.stderr.strip() or p.stdout.strip()}")
+        raise RuntimeError(f"Failed to start Isolated Workspace container: {p.stderr.strip() or p.stdout.strip()}")
     cid = (p.stdout or "").strip()
     if not cid:
-        logger.error("Failed to start Data Agent container: no container id returned (stdout=%s)", (p.stdout or "").strip())
-        raise RuntimeError("Failed to start Data Agent container: no container id returned.")
-    logger.info("Started Data Agent container %s for conversation %s", cid, conversation_id)
+        logger.error("Failed to start Isolated Workspace container: no container id returned (stdout=%s)", (p.stdout or "").strip())
+        raise RuntimeError("Failed to start Isolated Workspace container: no container id returned.")
+    logger.info("Started Isolated Workspace container %s for conversation %s", cid, conversation_id)
     return cid
 
 
@@ -1041,7 +1041,7 @@ def run_data_agent(
         )
 
     prompt = (
-        "You are the Data Agent for this conversation.\n"
+        "You are the Isolated Workspace for this conversation.\n"
         f"- Task (what_to_do): {what_to_do}\n\n"
         "Context files:\n"
         f"- API spec: {api_spec_path.name}\n"
@@ -1084,7 +1084,7 @@ def run_data_agent(
         cmd_str = f"{env_prefix} {cmd_str}"
 
     logger.info(
-        "Data Agent run: conv=%s container=%s session_id=%s timeout_s=%s",
+        "Isolated Workspace run: conv=%s container=%s session_id=%s timeout_s=%s",
         conversation_id,
         container_id,
         session_id or "",
@@ -1126,9 +1126,9 @@ def run_data_agent(
         on_event=_on_event,
     )
     elapsed_s = time.time() - started_at
-    logger.info("Data Agent finished: conv=%s rc=%s elapsed_s=%.2f", conversation_id, p.returncode, elapsed_s)
+    logger.info("Isolated Workspace finished: conv=%s rc=%s elapsed_s=%.2f", conversation_id, p.returncode, elapsed_s)
     logger.debug(
-        "Data Agent finished (tails): conv=%s stdout_tail=%s stderr_tail=%s",
+        "Isolated Workspace finished (tails): conv=%s stdout_tail=%s stderr_tail=%s",
         conversation_id,
         _safe_str((p.stdout or "")[-500:], limit=500),
         _safe_str((p.stderr or "")[-500:], limit=500),
@@ -1140,17 +1140,17 @@ def run_data_agent(
     try:
         shutil.copyfile(schema_path, schema_snapshot_path)
     except Exception:
-        logger.debug("Data Agent: failed to snapshot output schema conv=%s", conversation_id, exc_info=True)
+        logger.debug("Isolated Workspace: failed to snapshot output schema conv=%s", conversation_id, exc_info=True)
     try:
         if output_path.exists():
             shutil.copyfile(output_path, output_snapshot_path)
     except Exception:
-        logger.debug("Data Agent: failed to snapshot output.json conv=%s", conversation_id, exc_info=True)
+        logger.debug("Isolated Workspace: failed to snapshot output.json conv=%s", conversation_id, exc_info=True)
     try:
         if debug_path.exists():
             shutil.copyfile(debug_path, debug_snapshot_path)
     except Exception:
-        logger.debug("Data Agent: failed to snapshot debug.json conv=%s", conversation_id, exc_info=True)
+        logger.debug("Isolated Workspace: failed to snapshot debug.json conv=%s", conversation_id, exc_info=True)
 
     # Debug info (temporary; cleanup TODO).
     cmd_for_debug = list(cmd)
@@ -1188,7 +1188,7 @@ def run_data_agent(
                 "output_snapshot": str(output_snapshot_path),
                 "debug_snapshot": str(debug_snapshot_path),
                 "schema_snapshot": str(schema_snapshot_path),
-                "error": _safe_str((p.stderr.strip() or p.stdout.strip() or "Data Agent failed."), limit=2000),
+                "error": _safe_str((p.stderr.strip() or p.stdout.strip() or "Isolated Workspace failed."), limit=2000),
             },
         )
         return DataAgentRunResult(
@@ -1198,7 +1198,7 @@ def run_data_agent(
             session_id=session_id or thread_id or "",
             output_file=str(output_path),
             debug_file=str(debug_path),
-            error=_safe_str((p.stderr.strip() or p.stdout.strip() or "Data Agent failed."), limit=2000),
+            error=_safe_str((p.stderr.strip() or p.stdout.strip() or "Isolated Workspace failed."), limit=2000),
         )
 
     out_obj: dict[str, Any] = {}
@@ -1212,7 +1212,7 @@ def run_data_agent(
             session_id=session_id or thread_id or "",
             output_file=str(output_path),
             debug_file=str(debug_path),
-            error=f"Failed to parse Data Agent output.json: {exc}",
+            error=f"Failed to parse Isolated Workspace output.json: {exc}",
         )
 
     ok = bool(out_obj.get("ok", True))
