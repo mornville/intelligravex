@@ -18,6 +18,9 @@
   </head>
   <body>
     <div class="bg-noise" aria-hidden="true"></div>
+    <div class="parallax-layer blob blob-1" data-parallax="0.28" aria-hidden="true"></div>
+    <div class="parallax-layer blob blob-2" data-parallax="0.4" aria-hidden="true"></div>
+    <div class="parallax-layer blob blob-3" data-parallax="0.2" aria-hidden="true"></div>
     <header class="hero">
       <nav class="nav">
         <div class="brand">
@@ -29,51 +32,22 @@
         </div>
       </nav>
 
-      <div class="hero-grid">
+      <div class="hero-grid centered">
         <div class="hero-copy">
-          <h1>AI that actually works on your computer.</h1>
+          <h1>IGX Studio: local‑first Agents that get real work done.</h1>
           <p class="hero-subtitle">
-            Write code. Run tasks. Use tools.
+            Spin up Agents in seconds, keep data on your Mac, and approve every action.
             <br />
-            All with your approval.
+            Simple for daily tasks, powerful for serious workflows.
           </p>
           <div class="hero-actions">
             <a class="btn primary download-btn" href="download/GravexOverlay.dmg" download>Download for macOS</a>
           </div>
           <div class="hero-chips">
+            <span>Local-first</span>
+            <span>Agent teams</span>
+            <span>Isolated Workspaces</span>
             <span>Approval-first</span>
-            <span>Runs on your machine</span>
-            <span>Uses your tools</span>
-            <span>Clear outcomes</span>
-          </div>
-        </div>
-        <div class="hero-panel">
-          <div class="panel-card">
-            <div class="panel-top">
-              <div>
-                <p class="panel-title">One simple flow</p>
-                <p class="panel-caption">Choose AI, do a real task, approve actions, see results.</p>
-              </div>
-              <div class="pulse"></div>
-            </div>
-            <div class="panel-grid">
-              <div class="mini">
-                <p class="mini-title">Choose AI</p>
-                <p class="mini-text">OpenAI or a local model.</p>
-              </div>
-              <div class="mini">
-                <p class="mini-title">Do something real</p>
-                <p class="mini-text">Create files, run tasks, use tools.</p>
-              </div>
-              <div class="mini">
-                <p class="mini-title">Approve actions</p>
-                <p class="mini-text">You always stay in control.</p>
-              </div>
-              <div class="mini">
-                <p class="mini-title">See the result</p>
-                <p class="mini-text">Files and output appear instantly.</p>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -84,7 +58,6 @@
         <div class="section-head">
           <div class="pill-row">
             <span class="pill">What can IGX do?</span>
-            <span class="pill pill-ghost">For power users/Devs</span>
           </div>
           <h2>Automation Agents that run locally, with your rules.</h2>
           <p class="section-subtitle">
@@ -257,20 +230,190 @@
         <div class="section-head">
           <div class="pill-row">
             <span class="pill">For power users/Devs</span>
-            <span class="pill pill-soon">COMING SOON</span>
           </div>
-          <h2>Advanced workflows are on the way.</h2>
-          <p class="section-subtitle">Deeper integrations, orchestration, and developer control.</p>
+          <h2>Build serious workflows with Isolated Workspaces.</h2>
+          <p class="section-subtitle">
+            Configure Agents, wire integrations, and ship automations that stay local to your Mac.
+          </p>
         </div>
-        <div class="dev-grid">
-          <article class="dev-card">
-            <h3>What’s coming</h3>
-            <ul>
-              <li>Agent SDKs and templates</li>
-              <li>Multi-Agent orchestration controls</li>
-              <li>Custom tool schemas with audit trails</li>
-            </ul>
+
+        <div class="dev-showcase">
+          <div class="dev-tab-list" data-dev-tabs>
+            <button
+              class="dev-tab active"
+              data-dev-tab
+              data-title="Agent configs"
+              data-body="Tune language, voice, tools, and behavior per Agent."
+              data-src="static/agent-configs.png"
+            >
+              <img class="dev-thumb" src="static/agent-configs.png" alt="Agent configs" />
+              <div>
+                <div class="dev-tab-title">Agent configs</div>
+                <div class="dev-tab-body">Tune language, voice, and tools.</div>
+              </div>
+            </button>
+            <button
+              class="dev-tab"
+              data-dev-tab
+              data-title="Isolated Workspaces"
+              data-body="Every Agent gets its own local workspace and files."
+              data-src="static/isolated-workspaces-plural.png"
+            >
+              <img class="dev-thumb" src="static/isolated-workspaces-plural.png" alt="Isolated Workspaces" />
+              <div>
+                <div class="dev-tab-title">Isolated Workspaces</div>
+                <div class="dev-tab-body">Separate, local workspaces.</div>
+              </div>
+            </button>
+            <button
+              class="dev-tab"
+              data-dev-tab
+              data-title="Workspace home"
+              data-body="See active tasks, files, and recent outputs."
+              data-src="static/isolated-workspace-home.png"
+            >
+              <img class="dev-thumb" src="static/isolated-workspace-home.png" alt="Workspace home" />
+              <div>
+                <div class="dev-tab-title">Workspace home</div>
+                <div class="dev-tab-body">Tasks, files, outputs.</div>
+              </div>
+            </button>
+            <button
+              class="dev-tab"
+              data-dev-tab
+              data-title="Workspace settings"
+              data-body="Add API credentials and specs to power integrations."
+              data-src="static/isolated-workspace-settings.png"
+            >
+              <img class="dev-thumb" src="static/isolated-workspace-settings.png" alt="Workspace settings" />
+              <div>
+                <div class="dev-tab-title">Workspace settings</div>
+                <div class="dev-tab-body">Credentials + API specs.</div>
+              </div>
+            </button>
+            <button
+              class="dev-tab"
+              data-dev-tab
+              data-title="Workspace data"
+              data-body="Track outputs, artifacts, and generated assets."
+              data-src="static/workspace_data.png"
+            >
+              <img class="dev-thumb" src="static/workspace_data.png" alt="Workspace data" />
+              <div>
+                <div class="dev-tab-title">Workspace data</div>
+                <div class="dev-tab-body">Outputs and artifacts.</div>
+              </div>
+            </button>
+            <button
+              class="dev-tab"
+              data-dev-tab
+              data-title="System tools"
+              data-body="Use built-in tools with permissions and approvals."
+              data-src="static/system-tools.png"
+            >
+              <img class="dev-thumb" src="static/system-tools.png" alt="System tools" />
+              <div>
+                <div class="dev-tab-title">System tools</div>
+                <div class="dev-tab-body">Built-in tools + approvals.</div>
+              </div>
+            </button>
+            <button
+              class="dev-tab"
+              data-dev-tab
+              data-title="Integration tools"
+              data-body="Define schemas, map outputs, and control responses."
+              data-src="static/integration-tool-settings.png"
+            >
+              <img class="dev-thumb" src="static/integration-tool-settings.png" alt="Integration tools" />
+              <div>
+                <div class="dev-tab-title">Integration tools</div>
+                <div class="dev-tab-body">Schemas + response mapping.</div>
+              </div>
+            </button>
+          </div>
+
+          <div class="dev-panel" data-dev-panel>
+            <div class="dev-panel-frame">
+              <img class="dev-panel-img" data-dev-image src="static/agent-configs.png" alt="Agent configs" />
+            </div>
+            <div class="dev-panel-caption">
+              <h3 data-dev-title>Agent configs</h3>
+              <p data-dev-body>Tune language, voice, tools, and behavior per Agent.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="dev-feature-grid">
+          <article class="dev-feature-card">
+            <h3>Integration tools with schemas</h3>
+            <p>Validate inputs, map outputs, and control what Agents see.</p>
           </article>
+          <article class="dev-feature-card">
+            <h3>Jinja templates for replies</h3>
+            <p>Deterministic formatting for tool responses and summaries.</p>
+          </article>
+          <article class="dev-feature-card">
+            <h3>Local + cloud model choices</h3>
+            <p>Use OpenAI or local models without changing your flow.</p>
+          </article>
+          <article class="dev-feature-card">
+            <h3>Workspace artifacts + logs</h3>
+            <p>Every run leaves files, outputs, and data you can inspect.</p>
+          </article>
+        </div>
+
+        <div class="dev-workflow">
+          <div class="section-head">
+            <p class="eyebrow">Advanced workflow</p>
+            <h2>End-to-end automation with full control.</h2>
+            <p class="section-subtitle">
+              Create many Agents, give each an Isolated Workspace, and wire integrations in minutes.
+            </p>
+          </div>
+          <div class="workflow-grid">
+            <div class="workflow-step" style="--accent: #7dd3fc; --delay: 0ms">
+              <div class="workflow-index">01</div>
+              <div>
+                <h3>Create multiple Agents fast</h3>
+                <p>Spin up as many Agents as the job needs.</p>
+              </div>
+            </div>
+            <div class="workflow-step" style="--accent: #7ef29a; --delay: 120ms">
+              <div class="workflow-index">02</div>
+              <div>
+                <h3>Each Agent gets an Isolated Workspace</h3>
+                <p>Local files, logs, and artifacts are kept per Agent.</p>
+              </div>
+            </div>
+            <div class="workflow-step" style="--accent: #f2c94c; --delay: 240ms">
+              <div class="workflow-index">03</div>
+              <div>
+                <h3>Drop credentials + API specs</h3>
+                <p>Configure integrations in workspace settings or your workspace instructions file.</p>
+              </div>
+            </div>
+            <div class="workflow-step" style="--accent: #c4b5fd; --delay: 360ms">
+              <div class="workflow-index">04</div>
+              <div>
+                <h3>Define tools + Jinja replies</h3>
+                <p>Use schemas, mappings, and templates for clean output.</p>
+              </div>
+            </div>
+            <div class="workflow-step" style="--accent: #ff7a78; --delay: 480ms">
+              <div class="workflow-index">05</div>
+              <div>
+                <h3>Generate reusable scripts</h3>
+                <p>Agents create helper scripts inside the workspace.</p>
+              </div>
+            </div>
+            <div class="workflow-step" style="--accent: #64f0ff; --delay: 600ms">
+              <div class="workflow-index">06</div>
+              <div>
+                <h3>Ship work with approvals</h3>
+                <p>Run tools safely and keep full visibility.</p>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 

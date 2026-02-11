@@ -17,6 +17,25 @@ if ('IntersectionObserver' in window && cards.length > 0) {
   cards.forEach((card) => card.classList.add('in'))
 }
 
+const parallaxLayers = Array.from(document.querySelectorAll('[data-parallax]'))
+if (parallaxLayers.length > 0) {
+  let ticking = false
+  const onScroll = () => {
+    if (ticking) return
+    ticking = true
+    window.requestAnimationFrame(() => {
+      const y = window.scrollY || window.pageYOffset || 0
+      parallaxLayers.forEach((layer) => {
+        const speed = Number(layer.dataset.parallax || '0')
+        layer.style.transform = `translate3d(0, ${y * speed}px, 0)`
+      })
+      ticking = false
+    })
+  }
+  window.addEventListener('scroll', onScroll, { passive: true })
+  onScroll()
+}
+
 const modal = document.getElementById('download-modal')
 const downloadButtons = Array.from(document.querySelectorAll('.download-btn'))
 
@@ -175,5 +194,37 @@ if (mediaTabs.length > 0 && mediaPanel) {
   })
 
   const initial = mediaTabs.findIndex((tab) => tab.classList.contains('active'))
+  setActive(initial >= 0 ? initial : 0)
+}
+
+const devTabs = Array.from(document.querySelectorAll('[data-dev-tab]'))
+const devPanel = document.querySelector('[data-dev-panel]')
+if (devTabs.length > 0 && devPanel) {
+  const imgEl = devPanel.querySelector('[data-dev-image]')
+  const titleEl = devPanel.querySelector('[data-dev-title]')
+  const bodyEl = devPanel.querySelector('[data-dev-body]')
+
+  const setActive = (index) => {
+    const tab = devTabs[index]
+    if (!tab) return
+    devTabs.forEach((btn, i) => btn.classList.toggle('active', i === index))
+    const title = tab.dataset.title || ''
+    const body = tab.dataset.body || ''
+    const src = tab.dataset.src || ''
+
+    if (titleEl) titleEl.textContent = title
+    if (bodyEl) bodyEl.textContent = body
+    if (imgEl instanceof HTMLImageElement && src) {
+      imgEl.src = src
+      imgEl.alt = title || 'Preview'
+    }
+  }
+
+  devTabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => setActive(index))
+    tab.addEventListener('focus', () => setActive(index))
+  })
+
+  const initial = devTabs.findIndex((tab) => tab.classList.contains('active'))
   setActive(initial >= 0 ? initial : 0)
 }
