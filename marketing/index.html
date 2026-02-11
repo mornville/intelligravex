@@ -6,7 +6,7 @@
     <title>Intelligravex | GravexStudio</title>
     <meta
       name="description"
-      content="Intelligravex is a local-first assistant studio with voice, tools, host actions, optional workspaces, and an overlay mode for fast access."
+      content="Intelligravex is a local-first agent studio with voice, tools, host actions, optional workspaces, and an overlay mode for fast access."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -33,7 +33,7 @@
       <div class="hero-grid">
         <div class="hero-copy">
           <p class="eyebrow">GravexStudio</p>
-          <h1>One studio. Many assistants. Built for real work.</h1>
+          <h1>One studio. Many agents. Built for real work.</h1>
           <p class="hero-subtitle">
             Intelligravex keeps everything local while giving you voice, tools, host actions, and an overlay mode for fast
             access.
@@ -86,7 +86,7 @@
       <section class="section" id="overview">
         <div class="section-head">
           <p class="eyebrow">Why Intelligravex</p>
-          <h2>Everything you need to build and run assistants, all on your machine.</h2>
+          <h2>Everything you need to build and run agents, all on your machine.</h2>
           <p class="section-subtitle">Keep control of your data while still moving fast with tools, voice, and live search.</p>
         </div>
         <div class="highlight-grid">
@@ -123,7 +123,7 @@
               data-title="Host actions"
               data-body="Queue local shell or AppleScript tasks to get real work done."
               data-tags="Shell,AppleScript"
-              data-bullets="Great for file ops and app automation.|Approval can be enabled per assistant."
+              data-bullets="Great for file ops and app automation.|Approval can be enabled per agent."
               data-accent="#ff7a78"
             >
               <span class="logo-icon" aria-hidden="true">
@@ -169,6 +169,25 @@
                 </svg>
               </span>
               <span class="logo-label">Local LLMs</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Teams (shared chats)"
+              data-body="Run shared conversations with multiple agents in one thread."
+              data-tags="Groups,Routing"
+              data-bullets="Route replies by @mention.|Great for multi-agent workflows."
+              data-accent="#8b9cff"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 11a4 4 0 1 0-8 0" />
+                  <path d="M3 21a7 7 0 0 1 18 0" />
+                  <circle cx="9" cy="7" r="3" />
+                  <circle cx="15" cy="7" r="3" />
+                </svg>
+              </span>
+              <span class="logo-label">Teams</span>
             </button>
             <button
               class="feature-logo"
@@ -229,7 +248,7 @@
               data-title="Multi-model stack"
               data-body="Tune LLM, ASR, TTS, web search, Codex, and summaries."
               data-tags="LLM,ASR,TTS"
-              data-bullets="Mix models per assistant.|Optimize speed and cost."
+              data-bullets="Mix models per agent.|Optimize speed and cost."
               data-accent="#7ef29a"
             >
               <span class="logo-icon" aria-hidden="true">
@@ -248,7 +267,7 @@
               data-title="Embeddable widget"
               data-body="Embed a live chat or mic experience on any site."
               data-tags="Embed,Web"
-              data-bullets="Client keys + WebSocket transport.|Customize per assistant."
+              data-bullets="Client keys + WebSocket transport.|Customize per agent."
               data-accent="#60a5fa"
             >
               <span class="logo-icon" aria-hidden="true">
@@ -366,11 +385,11 @@
 
         <div class="card-grid">
           <article class="card reveal">
-            <h3>Assistant Studio</h3>
+            <h3>Agent Studio</h3>
             <ul>
-              <li>Create, configure, and manage multiple assistants.</li>
-              <li>Per-assistant personality, system prompt, and response style.</li>
-              <li>Central dashboard for assistants, chats, and developer settings.</li>
+              <li>Create, configure, and manage multiple agents.</li>
+              <li>Per-agent personality, system prompt, and response style.</li>
+              <li>Central dashboard for agents, chats, and developer settings.</li>
             </ul>
           </article>
 
@@ -383,7 +402,16 @@
               <li>Live web search for fresh information.</li>
               <li>Post-processing model for tool responses.</li>
               <li>Long-context summary model.</li>
-              <li>Adjustable history window for each assistant.</li>
+              <li>Adjustable history window for each agent.</li>
+            </ul>
+          </article>
+
+          <article class="card reveal">
+            <h3>Teams (Shared Chats)</h3>
+            <ul>
+              <li>Create shared conversations with multiple agents.</li>
+              <li>Route replies by @mention for clean collaboration.</li>
+              <li>Keep team context without losing individual threads.</li>
             </ul>
           </article>
 
@@ -426,7 +454,7 @@
             <ul>
               <li>Run local shell commands or AppleScript on demand.</li>
               <li>Screen capture with vision summaries.</li>
-              <li>Approval gates available per assistant.</li>
+              <li>Approval gates available per agent.</li>
             </ul>
           </article>
 
@@ -497,7 +525,7 @@
         </div>
         <div class="steps">
           <article class="step-card">
-            <h3>Design your assistant</h3>
+            <h3>Design your agent</h3>
             <p>Set goals, personality, tools, and response style in the studio.</p>
           </article>
           <article class="step-card">
@@ -576,7 +604,7 @@
     <footer class="footer">
       <div>
         <p class="brand-text">Intelligravex</p>
-        <p class="muted">Local-first assistant studio with an overlay mode.</p>
+        <p class="muted">Local-first agent studio with an overlay mode.</p>
       </div>
       <div class="footer-actions">
         <a class="btn ghost" href="#feature-matrix">Features</a>
