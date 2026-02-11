@@ -189,6 +189,8 @@ export default function MicTest({
   const pendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
   const cacheAppliedConvRef = useRef<string | null>(null)
   const downloadMsgTimerRef = useRef<number | null>(null)
+  const autoScrollLockRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
 
   const activeStage = useMemo(() => {
     if (connectionStage === 'disconnected' || connectionStage === 'error') return connectionStage
@@ -797,8 +799,8 @@ export default function MicTest({
       pendingScrollAdjustRef.current = null
       return
     }
-    if (isNearBottomRef.current) {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    if (isNearBottomRef.current && !autoScrollLockRef.current) {
+      el.scrollTop = el.scrollHeight
     }
   }, [items.length])
 
@@ -808,6 +810,13 @@ export default function MicTest({
     const onScroll = () => {
       const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 80
       isNearBottomRef.current = nearBottom
+      const prevTop = lastScrollTopRef.current
+      lastScrollTopRef.current = el.scrollTop
+      if (nearBottom) {
+        autoScrollLockRef.current = false
+      } else if (el.scrollTop < prevTop) {
+        autoScrollLockRef.current = true
+      }
       const nearTop = el.scrollTop <= 40
       if (nearTop && hasMore && !loadingOlder) {
         void loadOlder()

@@ -78,6 +78,8 @@ export default function GroupConversationPage() {
   const nearBottomRef = useRef(true)
   const pendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const autoScrollLockRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
   const [groupList, setGroupList] = useState<GroupConversationSummary[]>([])
   const [groupListErr, setGroupListErr] = useState<string | null>(null)
   const [groupListLoading, setGroupListLoading] = useState(false)
@@ -303,8 +305,8 @@ export default function GroupConversationPage() {
       pendingScrollAdjustRef.current = null
       return
     }
-    if (nearBottomRef.current) {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    if (nearBottomRef.current && !autoScrollLockRef.current) {
+      el.scrollTop = el.scrollHeight
     }
   }, [messages.length, groupId])
 
@@ -314,6 +316,13 @@ export default function GroupConversationPage() {
     const onScroll = () => {
       const nearBottom = el.scrollHeight - (el.scrollTop + el.clientHeight) < 80
       nearBottomRef.current = nearBottom
+      const prevTop = lastScrollTopRef.current
+      lastScrollTopRef.current = el.scrollTop
+      if (nearBottom) {
+        autoScrollLockRef.current = false
+      } else if (el.scrollTop < prevTop) {
+        autoScrollLockRef.current = true
+      }
       const nearTop = el.scrollTop <= 40
       if (nearTop && hasMore && !loadingOlder) {
         void loadOlderMessages()
