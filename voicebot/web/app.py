@@ -1260,7 +1260,7 @@ def _execute_host_action(
             is_screencapture = "screencapture" in command
             if is_screencapture and command:
                 logger.info("capture_screenshot: command=%s", command)
-            res = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
             stdout, stderr, exit_code = res.stdout or "", res.stderr or "", res.returncode
             if exit_code == 0 and is_screencapture:
                 copied = _maybe_copy_screenshot_from_command(command)
@@ -1270,7 +1270,7 @@ def _execute_host_action(
             if sys.platform != "darwin":
                 raise RuntimeError("AppleScript is only supported on macOS")
             script = str(payload.get("script") or "").strip()
-            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=60)
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=30)
             stdout, stderr, exit_code = res.stdout or "", res.stderr or "", res.returncode
         else:
             raise RuntimeError("Unknown host action")
@@ -2947,6 +2947,10 @@ def create_app() -> FastAPI:
                     if tool_name == "capture_screenshot" and tool_failed:
                         msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
                         final = f"Screenshot failed: {msg}"
+                        needs_followup_llm = False
+                    if tool_name == "request_host_action" and tool_failed:
+                        msg = _tool_error_message(tool_result, fallback="Host action failed.")
+                        final = f"Host action failed: {msg}"
                         needs_followup_llm = False
 
                     tool_result_msg = add_message_with_metrics(
@@ -6049,6 +6053,10 @@ def create_app() -> FastAPI:
                                         msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
                                         rendered_reply = f"Screenshot failed: {msg}"
                                         needs_followup_llm = False
+                                    if tool_name == "request_host_action" and tool_failed:
+                                        msg = _tool_error_message(tool_result, fallback="Host action failed.")
+                                        rendered_reply = f"Host action failed: {msg}"
+                                        needs_followup_llm = False
 
                                     add_message_with_metrics(
                                         session,
@@ -7398,6 +7406,10 @@ def create_app() -> FastAPI:
                                     if tool_name == "capture_screenshot" and tool_failed:
                                         msg = _tool_error_message(tool_result, fallback="Screenshot failed.")
                                         rendered_reply = f"Screenshot failed: {msg}"
+                                        needs_followup_llm = False
+                                    if tool_name == "request_host_action" and tool_failed:
+                                        msg = _tool_error_message(tool_result, fallback="Host action failed.")
+                                        rendered_reply = f"Host action failed: {msg}"
                                         needs_followup_llm = False
 
                                     add_message_with_metrics(
