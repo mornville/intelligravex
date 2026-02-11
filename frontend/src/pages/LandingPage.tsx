@@ -358,6 +358,11 @@ export default function LandingPage() {
       body: 'Tune LLM, ASR, TTS, web search, Codex, and summary models per assistant.',
     },
     {
+      icon: <CpuChipIcon aria-hidden="true" />,
+      title: 'Local LLM runtime',
+      body: 'Run GGUF models locally with automatic downloads and no API key.',
+    },
+    {
       icon: <ChatBubbleBottomCenterTextIcon aria-hidden="true" />,
       title: 'Embeddable widget',
       body: 'Drop a public chat widget anywhere with client keys and WebSocket transport.',
@@ -437,6 +442,15 @@ export default function LandingPage() {
       icon: <AdjustmentsHorizontalIcon aria-hidden="true" />,
       accent: 'rgba(94, 234, 212, 0.9)',
       tags: ['LLM', 'ASR', 'TTS'],
+    },
+    {
+      title: 'Local LLM runtime',
+      short: 'Local LLMs',
+      body: 'Run GGUF models locally with automatic downloads and no API key.',
+      bullets: ['Tool-call aware model catalog.', 'Great for private, on-device workflows.'],
+      icon: <CpuChipIcon aria-hidden="true" />,
+      accent: 'rgba(126, 242, 154, 0.9)',
+      tags: ['On-device', 'No API key'],
     },
     {
       title: 'Embeddable widget',
@@ -553,7 +567,7 @@ export default function LandingPage() {
   const stats = [
     { value: 'Parallel workspaces', label: 'One container per conversation' },
     { value: 'Persistent memory', label: 'Summaries keep context lean' },
-    { value: 'Tool‑native', label: 'Web search + APIs + scripts' },
+    { value: 'Local LLM ready', label: 'On-device, tool-call aware' },
   ]
   const workflow = [
     {
@@ -599,6 +613,7 @@ export default function LandingPage() {
             <div className="heroBadges">
               <span>Parallel workspaces</span>
               <span>Persistent context</span>
+              <span>Local LLMs</span>
               <span>Stored locally</span>
             </div>
           </div>

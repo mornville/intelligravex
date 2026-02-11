@@ -45,6 +45,7 @@
           <div class="hero-chips">
             <span>Overlay mode</span>
             <span>Host actions</span>
+            <span>Local LLMs</span>
             <span>Local-first by design</span>
             <span>Embeddable widget</span>
           </div>
@@ -92,6 +93,10 @@
           <article class="highlight-card">
             <h3>Local-first control</h3>
             <p>Workspaces, configs, and conversation history stay on your device unless you decide otherwise.</p>
+          </article>
+          <article class="highlight-card">
+            <h3>Local LLMs, zero setup</h3>
+            <p>Download and run GGUF models automatically with the bundled runtime. No API key needed.</p>
           </article>
           <article class="highlight-card">
             <h3>Realtime, multi-model</h3>
@@ -146,6 +151,24 @@
                 </svg>
               </span>
               <span class="logo-label">Screen capture</span>
+            </button>
+            <button
+              class="feature-logo"
+              data-feature
+              data-title="Local LLM runtime"
+              data-body="Run GGUF models locally with automatic downloads and a bundled runtime."
+              data-tags="On-device,No API key"
+              data-bullets="Tool-call aware model catalog.|Great for private workflows."
+              data-accent="#7ef29a"
+            >
+              <span class="logo-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="4" y="4" width="16" height="16" rx="2" />
+                  <path d="M9 9h6v6H9z" />
+                  <path d="M4 9h2M4 15h2M18 9h2M18 15h2" />
+                </svg>
+              </span>
+              <span class="logo-label">Local LLMs</span>
             </button>
             <button
               class="feature-logo"
@@ -356,6 +379,7 @@
             <ul>
               <li>Main chat model for reasoning and response quality.</li>
               <li>Voice input and voice output models.</li>
+              <li>Local GGUF models with a bundled runtime.</li>
               <li>Live web search for fresh information.</li>
               <li>Post-processing model for tool responses.</li>
               <li>Long-context summary model.</li>
@@ -454,7 +478,9 @@
           <article class="card reveal">
             <h3>First-Time Setup</h3>
             <ul>
-              <li>OpenAI API key required for voice; OpenAI or OpenRouter for chat.</li>
+              <li>Choose OpenAI, OpenRouter, or a local model (no API key).</li>
+              <li>Local models download automatically on first run.</li>
+              <li>OpenAI API key required for voice.</li>
               <li>Data Agent is optional and needs Docker.</li>
               <li>Default Data Agent image can be overridden.</li>
               <li>All core features work without Docker.</li>

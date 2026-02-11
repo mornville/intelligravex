@@ -152,6 +152,12 @@ If enabled, the backend runs a separate Codex “one‑shot” agent after the H
 - Provider secrets encrypted at rest.
 - You decide what gets shared externally.
 
+### Local LLMs (no API key)
+- Run local GGUF models via the bundled llama.cpp server.
+- Auto‑download models on first use (no manual setup).
+- Tool‑calling aware model catalog with compatibility labels.
+- Keep sensitive workflows fully on device.
+
 ### Embeddable chat widget
 - Public text‑chat widget you can embed in websites.
 - Client key support and WebSocket transport.
@@ -164,8 +170,9 @@ If enabled, the backend runs a separate Codex “one‑shot” agent after the H
 
 The app guides you through everything:
 
-1) **LLM API key** (required) — OpenAI or OpenRouter. OpenAI is still required for ASR/TTS (voice).
-2) **Data Agent** (optional) — requires Docker installed and running.
+1) **LLM choice** — OpenAI, OpenRouter, or **Local model (no API key)**.
+2) **Voice (optional)** — OpenAI is still required for ASR/TTS.
+3) **Data Agent** (optional) — requires Docker installed and running.
 
 Default Data Agent image:
 - `ghcr.io/mornville/data-agent:latest`
@@ -177,3 +184,4 @@ Override the Data Agent image if needed:
 
 - Docker is only needed if you enable the Data Agent.
 - All core features work without Docker.
+- Local models are downloaded automatically and stored on your machine.
