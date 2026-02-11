@@ -531,7 +531,7 @@ Rules:
               TTS
             </button>
             <button className={activeTab === 'agent' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('agent')}>
-              Data Agent
+              Isolated Workspace
             </button>
             <button className={activeTab === 'tools' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tools')}>
               Tools
@@ -768,10 +768,10 @@ Rules:
               {activeTab === 'agent' ? (
                 <>
                   <div className="muted" style={{ marginBottom: 8 }}>
-                    Data Agent requires Docker. Install and start Docker before enabling.
+                    Isolated Workspace requires Docker. Install and start Docker before enabling.
                   </div>
                   <div className="formRow">
-                    <label>Enable Data Agent</label>
+                    <label>Enable Isolated Workspace</label>
                     <label className="checkRow">
                       <input
                         type="checkbox"
@@ -784,7 +784,7 @@ Rules:
                   {bot.enable_data_agent ? (
                     <>
                       <div className="formRow">
-                        <label>Prewarm Data Agent on conversation start</label>
+                        <label>Prewarm Isolated Workspace on conversation start</label>
                         <label className="checkRow">
                           <input
                             type="checkbox"
@@ -812,23 +812,23 @@ Rules:
                         </div>
                       </div>
                       <div className="formRow">
-                        <label>Return Data Agent result directly</label>
+                        <label>Return Isolated Workspace result directly</label>
                         <label className="checkRow">
                           <input
                             type="checkbox"
                             checked={Boolean(bot.data_agent_return_result_directly)}
                             onChange={(e) => void save({ data_agent_return_result_directly: e.target.checked })}
                           />
-                          <span className="muted">Skip LLM rewrite; show Data Agent result_text as-is.</span>
+                          <span className="muted">Skip LLM rewrite; show Isolated Workspace result_text as-is.</span>
                         </label>
                       </div>
                       <div className="formRow">
-                        <label>Data Agent API spec</label>
+                        <label>Isolated Workspace API spec</label>
                         <textarea
                           value={bot.data_agent_api_spec_text || ''}
                           onChange={(e) => setBot((p) => (p ? { ...p, data_agent_api_spec_text: e.target.value } : p))}
                           rows={8}
-                          placeholder="Paste API spec JSON here (saved as api_spec.json in the agent workspace). The Data Agent will use only the APIs listed here."
+                          placeholder="Paste API spec JSON here (saved as api_spec.json in the agent workspace). The Isolated Workspace will use only the APIs listed here."
                         />
                         <div className="row">
                           <button className="btn" onClick={() => void save({ data_agent_api_spec_text: bot.data_agent_api_spec_text || '' })}>
@@ -837,7 +837,7 @@ Rules:
                         </div>
                       </div>
                       <div className="formRow">
-                        <label>Data Agent API authorizations (JSON)</label>
+                        <label>Isolated Workspace API authorizations (JSON)</label>
                         <textarea
                           value={bot.data_agent_auth_json || '{}'}
                           onChange={(e) => setBot((p) => (p ? { ...p, data_agent_auth_json: e.target.value } : p))}
@@ -906,7 +906,7 @@ Rules:
                         </div>
                       </div>
                       <div className="formRow">
-                        <label>Data Agent system prompt</label>
+                        <label>Isolated Workspace system prompt</label>
                         <textarea
                           value={bot.data_agent_system_prompt || ''}
                           onChange={(e) => setBot((p) => (p ? { ...p, data_agent_system_prompt: e.target.value } : p))}
@@ -915,7 +915,7 @@ Rules:
                         />
                         <div className="row">
                           <button className="btn" onClick={() => void save({ data_agent_system_prompt: bot.data_agent_system_prompt || '' })}>
-                            Save Data Agent prompt
+                            Save Isolated Workspace prompt
                           </button>
                         </div>
                       </div>

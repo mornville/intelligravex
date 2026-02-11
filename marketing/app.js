@@ -123,3 +123,57 @@ if (featureButtons.length > 0 && featurePanel) {
     setActive((currentIndex + 1) % featureButtons.length)
   }, 5200)
 }
+
+const mediaTabs = Array.from(document.querySelectorAll('[data-media-tab]'))
+const mediaPanel = document.querySelector('[data-media-panel]')
+if (mediaTabs.length > 0 && mediaPanel) {
+  const imgEl = mediaPanel.querySelector('[data-media-image]')
+  const videoEl = mediaPanel.querySelector('[data-media-video]')
+  const titleEl = mediaPanel.querySelector('[data-media-title]')
+  const bodyEl = mediaPanel.querySelector('[data-media-body]')
+
+  const setActive = (index) => {
+    const tab = mediaTabs[index]
+    if (!tab) return
+    mediaTabs.forEach((btn, i) => btn.classList.toggle('active', i === index))
+    const title = tab.dataset.title || ''
+    const body = tab.dataset.body || ''
+    const type = tab.dataset.type || 'image'
+    const src = tab.dataset.src || ''
+    const poster = tab.dataset.poster || ''
+
+    if (titleEl) titleEl.textContent = title
+    if (bodyEl) bodyEl.textContent = body
+
+    if (type === 'video') {
+      mediaPanel.classList.add('video-active')
+      if (videoEl instanceof HTMLVideoElement) {
+        if (poster) videoEl.poster = poster
+        if (src) {
+          videoEl.pause()
+          videoEl.src = src
+          videoEl.load()
+        }
+      }
+      if (imgEl instanceof HTMLImageElement && src) {
+        imgEl.src = poster || src
+      }
+    } else {
+      mediaPanel.classList.remove('video-active')
+      if (imgEl instanceof HTMLImageElement && src) {
+        imgEl.src = src
+      }
+      if (videoEl instanceof HTMLVideoElement) {
+        videoEl.pause()
+      }
+    }
+  }
+
+  mediaTabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => setActive(index))
+    tab.addEventListener('focus', () => setActive(index))
+  })
+
+  const initial = mediaTabs.findIndex((tab) => tab.classList.contains('active'))
+  setActive(initial >= 0 ? initial : 0)
+}

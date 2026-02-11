@@ -221,7 +221,7 @@ export default function ConversationDetailPage() {
           <section className="card">
             <div className="cardTitleRow">
               <div>
-                <div className="cardTitle">Data Agent container</div>
+                <div className="cardTitle">Isolated Workspace container</div>
                 <div className="muted">Per-conversation runtime for tools and files.</div>
               </div>
               <button className="btn" onClick={() => void loadAgentStatus()} disabled={agentLoading}>

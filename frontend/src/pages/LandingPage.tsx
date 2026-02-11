@@ -182,9 +182,9 @@ function FloatingGuide() {
   const starters = useMemo(
     () => [
       'What can GravexStudio do?',
-      'How does the Data Agent work?',
+      'How does the Isolated Workspace work?',
       'What tools and scripts can I run?',
-      'Do I need Docker to use the Data Agent?',
+      'Do I need Docker to use the Isolated Workspace?',
     ],
     [],
   )
@@ -374,7 +374,7 @@ export default function LandingPage() {
     },
     {
       icon: <BoltIcon aria-hidden="true" />,
-      title: 'Optional Data Agent',
+      title: 'Optional Isolated Workspace',
       body: 'Run long tasks in a Docker container with a persistent workspace.',
     },
     {
@@ -476,8 +476,8 @@ export default function LandingPage() {
       tags: ['Embed', 'Web'],
     },
     {
-      title: 'Optional Data Agent',
-      short: 'Data Agent',
+      title: 'Optional Isolated Workspace',
+      short: 'Isolated Workspace',
       body: 'Run long tasks in Docker with a persistent workspace.',
       bullets: ['Parallel containers per conversation.', 'Scripted post‑processing available.'],
       icon: <BoltIcon aria-hidden="true" />,
@@ -549,7 +549,7 @@ export default function LandingPage() {
     },
     {
       src: slide4,
-      title: 'Data Agent control',
+      title: 'Isolated Workspace control',
       body: 'Enable long‑running jobs with workspace‑aware tooling.',
     },
   ]

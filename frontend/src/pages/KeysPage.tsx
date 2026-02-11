@@ -325,7 +325,7 @@ export default function KeysPage() {
         <section className="card">
           <div className="cardTitle">GitHub token (fine‑grained)</div>
           <div className="muted" style={{ marginBottom: 8 }}>
-            Prefer SSH? Set a per-bot SSH key path in Bot settings (Data Agent).
+            Prefer SSH? Set a per-bot SSH key path in Bot settings (Isolated Workspace).
           </div>
           <div className="muted" style={{ marginBottom: 8 }}>
             Go to GitHub → Settings → Developer settings → Personal access tokens → Fine‑grained tokens.

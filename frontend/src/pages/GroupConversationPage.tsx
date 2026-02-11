@@ -673,7 +673,7 @@ export default function GroupConversationPage() {
               <div className="workspaceTitle">Status</div>
               <div className="workspaceRow">
                 <strong>Runtime</strong>
-                <span>{agentStatus?.exists ? 'Data Agent' : '—'}</span>
+                <span>{agentStatus?.exists ? 'Isolated Workspace' : '—'}</span>
               </div>
               <div className="workspaceRow">
                 <strong>Status</strong>

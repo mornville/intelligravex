@@ -219,7 +219,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   async function pullDataAgentImage() {
     if (!status?.docker_available) {
-      setSetupErr('Docker not detected. Install Docker to download the Data Agent image.')
+      setSetupErr('Docker not detected. Install Docker to download the Isolated Workspace image.')
       return
     }
     setSetupErr(null)
@@ -227,10 +227,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setPullingImage(true)
     try {
       const res: any = await apiPost('/api/data-agent/pull-image', {})
-      const image = (res && typeof res.image === 'string' && res.image.trim()) ? res.image.trim() : 'Data Agent image'
+      const image = (res && typeof res.image === 'string' && res.image.trim()) ? res.image.trim() : 'Isolated Workspace image'
       setPullMessage(`${image} is ready.`)
     } catch (e: any) {
-      setSetupErr(e?.message || 'Failed to download Data Agent image.')
+      setSetupErr(e?.message || 'Failed to download Isolated Workspace image.')
     } finally {
       setPullingImage(false)
     }
@@ -343,9 +343,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           ) : null}
           {setupStep === 'docker' ? (
             <>
-              <div className="setupHeading">Data Agent (optional)</div>
+              <div className="setupHeading">Isolated Workspace (optional)</div>
               <div className="muted" style={{ marginBottom: 10 }}>
-                Docker is required to run the Data Agent. {status?.docker_available ? 'Docker detected.' : 'Docker not detected.'}
+                Docker is required to run the Isolated Workspace. {status?.docker_available ? 'Docker detected.' : 'Docker not detected.'}
               </div>
               <div className="muted" style={{ marginBottom: 10 }}>
                 The first run will download a prebuilt container image.
@@ -361,7 +361,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               ) : null}
               <div className="row gap">
                 <button className="btn" onClick={() => void pullDataAgentImage()} disabled={pullingImage || !status?.docker_available}>
-                  {pullingImage ? 'Downloading…' : 'Download Data Agent'}
+                  {pullingImage ? 'Downloading…' : 'Download Isolated Workspace'}
                 </button>
                 <button className="btn" onClick={() => void refreshStatus()} disabled={checkingStatus}>
                   {checkingStatus ? 'Checking…' : 'Recheck'}

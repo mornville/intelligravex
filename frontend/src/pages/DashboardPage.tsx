@@ -805,7 +805,7 @@ export default function DashboardPage() {
   const activeBot = bots.find((b) => b.id === activeBotId) || null
   const canUpload = Boolean(activeConversationId && activeBot?.enable_data_agent)
   const uploadDisabledReason = !activeBot?.enable_data_agent
-    ? 'Enable Data Agent to upload files.'
+    ? 'Enable Isolated Workspace to upload files.'
     : !activeConversationId
       ? 'Start a conversation to upload files.'
       : ''
@@ -1593,7 +1593,7 @@ export default function DashboardPage() {
               <div className="workspaceTitle">Status</div>
               <div className="workspaceRow">
                 <strong>Runtime</strong>
-                <span>{workspaceStatus?.exists ? 'Data Agent' : '—'}</span>
+                <span>{workspaceStatus?.exists ? 'Isolated Workspace' : '—'}</span>
               </div>
               <div className="workspaceRow">
                 <strong>Status</strong>
@@ -1724,7 +1724,7 @@ export default function DashboardPage() {
             <div className="cardTitleRow">
               <div>
                 <div className="cardTitle">Developer</div>
-                <div className="muted">Monitor and stop Data Agent containers.</div>
+                <div className="muted">Monitor and stop Isolated Workspace containers.</div>
               </div>
               <button className="btn" onClick={() => setShowDeveloperModal(false)}>
                 Close

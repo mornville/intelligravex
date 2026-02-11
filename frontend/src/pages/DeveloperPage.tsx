@@ -98,7 +98,7 @@ export default function DeveloperPage() {
       <div className="pageHeader">
         <div>
           <h1>Developer settings</h1>
-          <div className="muted">Operational controls for Data Agent containers.</div>
+          <div className="muted">Operational controls for Isolated Workspace containers.</div>
         </div>
         <div className="row gap">
           <button className="btn" onClick={() => void reload()} disabled={loading} aria-label="Refresh containers">
@@ -121,7 +121,7 @@ export default function DeveloperPage() {
       <section className="card">
         <div className="cardTitleRow">
           <div>
-            <div className="cardTitle">Data Agent containers</div>
+            <div className="cardTitle">Isolated Workspace containers</div>
             <div className="muted">Running Docker containers. Updated every 15 seconds.</div>
           </div>
           {!dockerAvailable ? <span className="pill accent">Docker unavailable</span> : null}
