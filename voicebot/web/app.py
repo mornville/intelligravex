@@ -755,6 +755,35 @@ def _group_bot_slugs(conv: Conversation) -> dict[str, str]:
     return {b["slug"].lower(): b["id"] for b in _group_bots_from_conv(conv)}
 
 
+def _group_bot_aliases(conv: Conversation) -> dict[str, list[str]]:
+    aliases: dict[str, list[str]] = {}
+    for b in _group_bots_from_conv(conv):
+        bid = str(b.get("id") or "").strip()
+        if not bid:
+            continue
+        name = str(b.get("name") or "").strip().lower()
+        slug = str(b.get("slug") or "").strip().lower()
+        candidate_aliases = set()
+        if slug:
+            candidate_aliases.add(slug)
+        if name:
+            candidate_aliases.add(_slugify(name))
+            compact_name = re.sub(r"[^a-z0-9]+", "", name)
+            if compact_name:
+                candidate_aliases.add(compact_name)
+        for alias in list(candidate_aliases):
+            compact = re.sub(r"[-_]+", "", alias)
+            if compact:
+                candidate_aliases.add(compact)
+        for alias in candidate_aliases:
+            if not alias:
+                continue
+            entries = aliases.setdefault(alias, [])
+            if bid not in entries:
+                entries.append(bid)
+    return aliases
+
+
 def _sanitize_group_reply(text: str, conv: Conversation, bot_id: UUID) -> str:
     if not text:
         return text
@@ -773,7 +802,7 @@ def _sanitize_group_reply(text: str, conv: Conversation, bot_id: UUID) -> str:
 
     # Remove self-mentions to avoid confusing triggers.
     if self_slug:
-        text = re.sub(rf"@{re.escape(self_slug)}\b", self_slug, text, flags=re.IGNORECASE)
+        text = re.sub(rf"@{re.escape(self_slug)}(?![A-Za-z0-9_-])", self_slug, text, flags=re.IGNORECASE)
     return text
 
 
@@ -2351,21 +2380,24 @@ def create_app() -> FastAPI:
         return meta if isinstance(meta, dict) else {}
 
     def _extract_group_mentions(text: str, conv: Conversation) -> list[UUID]:
-        slug_map = _group_bot_slugs(conv)
-        if not slug_map:
+        alias_map = _group_bot_aliases(conv)
+        if not alias_map:
             return []
         hits: list[UUID] = []
         for m in re.finditer(r"@([a-zA-Z0-9][a-zA-Z0-9_-]{0,48})", text or ""):
-            slug = m.group(1).lower()
-            bot_id = slug_map.get(slug)
-            if not bot_id:
-                continue
-            try:
-                bid = UUID(bot_id)
-            except Exception:
-                continue
-            if bid not in hits:
-                hits.append(bid)
+            token = m.group(1).lower()
+            candidates = {token}
+            compact = re.sub(r"[-_]+", "", token)
+            if compact:
+                candidates.add(compact)
+            for cand in candidates:
+                for bot_id in alias_map.get(cand, []):
+                    try:
+                        bid = UUID(bot_id)
+                    except Exception:
+                        continue
+                    if bid not in hits:
+                        hits.append(bid)
         return hits
 
     async def _run_group_bot_turn(
@@ -3008,7 +3040,13 @@ def create_app() -> FastAPI:
                 rendered_reply = _sanitize_group_reply(rendered_reply, conv, bot_id)
 
         payload = None
-        suppress_reply = "<no_reply>" in rendered_reply.lower()
+        raw_reply = rendered_reply or ""
+        if re.fullmatch(r"\s*<no_reply>\s*", raw_reply, flags=re.IGNORECASE):
+            rendered_reply = ""
+            suppress_reply = True
+        else:
+            rendered_reply = re.sub(r"\s*<no_reply>\s*$", "", raw_reply, flags=re.IGNORECASE).strip()
+            suppress_reply = False
         with Session(engine) as session:
             in_tok, out_tok, cost = _estimate_llm_cost_for_turn(
                 session=session,
