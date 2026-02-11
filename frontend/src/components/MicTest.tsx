@@ -100,6 +100,7 @@ function b64ToBytes(b64: string): Uint8Array {
 export type ChatCacheEntry = {
   items: ChatItem[]
   lastAt?: string
+  lastId?: string
 }
 
 export default function MicTest({
@@ -712,7 +713,8 @@ export default function MicTest({
   useEffect(() => {
     if (!conversationId || !onCacheUpdate) return
     const lastAt = items.length ? items[items.length - 1]?.created_at : undefined
-    onCacheUpdate(conversationId, { items, lastAt })
+    const lastId = items.length ? items[items.length - 1]?.id : undefined
+    onCacheUpdate(conversationId, { items, lastAt, lastId })
   }, [items, conversationId, onCacheUpdate])
 
   useEffect(() => {
@@ -726,8 +728,9 @@ export default function MicTest({
       if (!entry?.lastAt) return
       try {
         const since = encodeURIComponent(entry.lastAt)
+        const sinceId = entry.lastId ? `&since_id=${encodeURIComponent(entry.lastId)}` : ''
         const d = await apiGet<{ messages: ConversationMessage[] }>(
-          `/api/conversations/${conversationId}/messages?since=${since}&include_tools=1`,
+          `/api/conversations/${conversationId}/messages?since=${since}${sinceId}&include_tools=1`,
         )
         if (!d?.messages?.length) return
         const delta = d.messages.map(mapConversationMessage)

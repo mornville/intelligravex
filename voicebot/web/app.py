@@ -100,10 +100,12 @@ from voicebot.models import IntegrationTool
 from voicebot.utils.template import eval_template_value, render_jinja_template, render_template, safe_json_loads
 from voicebot.data_agent.docker_runner import (
     DEFAULT_DATA_AGENT_SYSTEM_PROMPT,
+    container_name_for_conversation,
     default_workspace_dir_for_conversation,
     docker_available,
     ensure_conversation_container,
     ensure_image_pulled,
+    get_container_ports,
     get_container_status,
     list_data_agent_containers,
     run_container_command,
@@ -2731,6 +2733,19 @@ def create_app() -> FastAPI:
                                                 "data_agent.workspace_dir": workspace_dir,
                                             },
                                         )
+                                    container_name, ports = _data_agent_container_info(
+                                        conversation_id=conversation_id,
+                                        container_id=container_id,
+                                    )
+                                    if container_name or ports:
+                                        meta_current = merge_conversation_metadata(
+                                            session,
+                                            conversation_id=conversation_id,
+                                            patch={
+                                                "data_agent.container_name": container_name,
+                                                "data_agent.ports": ports,
+                                            },
+                                        )
 
                                     ctx = _build_data_agent_conversation_context(
                                         session,
@@ -2768,6 +2783,8 @@ def create_app() -> FastAPI:
                                         "ok": bool(da_res.ok),
                                         "result_text": da_res.result_text,
                                         "data_agent_container_id": da_res.container_id,
+                                        "data_agent_container_name": container_name,
+                                        "data_agent_ports": ports,
                                         "data_agent_session_id": da_res.session_id,
                                         "data_agent_output_file": da_res.output_file,
                                         "data_agent_debug_file": da_res.debug_file,
@@ -3355,6 +3372,19 @@ def create_app() -> FastAPI:
         da = meta.get("data_agent")
         return da if isinstance(da, dict) else {}
 
+    def _data_agent_container_info(
+        *,
+        conversation_id: UUID,
+        container_id: str,
+    ) -> tuple[str, list[dict[str, int]]]:
+        name = container_name_for_conversation(conversation_id)
+        ports = get_container_ports(
+            container_id=container_id,
+            container_name=name,
+            conversation_id=conversation_id,
+        )
+        return name, ports
+
     def _ensure_data_agent_container(
         session: Session, *, bot: Bot, conversation_id: UUID, meta_current: dict
     ) -> tuple[str, str, str]:
@@ -3382,6 +3412,11 @@ def create_app() -> FastAPI:
                 git_token=git_token,
                 auth_json=auth_json,
             )
+        if container_id:
+            container_name, ports = _data_agent_container_info(
+                conversation_id=conversation_id,
+                container_id=container_id,
+            )
             meta_current = merge_conversation_metadata(
                 session,
                 conversation_id=conversation_id,
@@ -3389,6 +3424,8 @@ def create_app() -> FastAPI:
                     "data_agent.container_id": container_id,
                     "data_agent.workspace_dir": workspace_dir,
                     "data_agent.session_id": session_id,
+                    "data_agent.container_name": container_name,
+                    "data_agent.ports": ports,
                 },
             )
         return container_id, session_id, workspace_dir
@@ -3403,12 +3440,19 @@ def create_app() -> FastAPI:
         except Exception:
             summary = ""
 
+        da = _data_agent_meta(meta)
+        container_name = str(da.get("container_name") or "").strip()
+        ports = da.get("ports") if isinstance(da.get("ports"), list) else []
+
         msgs = list_messages(session, conversation_id=conversation_id)
         n_turns = int(getattr(bot, "history_window_turns", 16) or 16)
         max_msgs = max(8, min(96, n_turns * 2))
         tail = msgs[-max_msgs:] if len(msgs) > max_msgs else msgs
         history = [{"role": m.role, "content": m.content} for m in tail]
-        return {"summary": summary, "messages": history}
+        ctx: dict[str, Any] = {"summary": summary, "messages": history}
+        if container_name or ports:
+            ctx["data_agent"] = {"container_name": container_name, "ports": ports}
+        return ctx
 
     def _initialize_data_agent_workspace(session: Session, *, bot: Bot, conversation_id: UUID, meta: dict) -> str:
         workspace_dir = _data_agent_workspace_dir_for_conversation(session, conversation_id=conversation_id)
@@ -5676,6 +5720,19 @@ def create_app() -> FastAPI:
                                                                 "data_agent.workspace_dir": workspace_dir,
                                                             },
                                                         )
+                                                    container_name, ports = _data_agent_container_info(
+                                                        conversation_id=conv_id,
+                                                        container_id=container_id,
+                                                    )
+                                                    if container_name or ports:
+                                                        meta_current = merge_conversation_metadata(
+                                                            session,
+                                                            conversation_id=conv_id,
+                                                            patch={
+                                                                "data_agent.container_name": container_name,
+                                                                "data_agent.ports": ports,
+                                                            },
+                                                        )
 
                                                     ctx = _build_data_agent_conversation_context(
                                                         session,
@@ -5750,6 +5807,8 @@ def create_app() -> FastAPI:
                                                         "ok": bool(da_res.ok),
                                                         "result_text": da_res.result_text,
                                                         "data_agent_container_id": da_res.container_id,
+                                                        "data_agent_container_name": container_name,
+                                                        "data_agent_ports": ports,
                                                         "data_agent_session_id": da_res.session_id,
                                                         "data_agent_output_file": da_res.output_file,
                                                         "data_agent_debug_file": da_res.debug_file,
@@ -7025,6 +7084,19 @@ def create_app() -> FastAPI:
                                                                 "data_agent.workspace_dir": workspace_dir,
                                                             },
                                                         )
+                                                    container_name, ports = _data_agent_container_info(
+                                                        conversation_id=conv_id,
+                                                        container_id=container_id,
+                                                    )
+                                                    if container_name or ports:
+                                                        meta_current = merge_conversation_metadata(
+                                                            session,
+                                                            conversation_id=conv_id,
+                                                            patch={
+                                                                "data_agent.container_name": container_name,
+                                                                "data_agent.ports": ports,
+                                                            },
+                                                        )
 
                                                     ctx = _build_data_agent_conversation_context(
                                                         session,
@@ -7099,6 +7171,8 @@ def create_app() -> FastAPI:
                                                         "ok": bool(da_res.ok),
                                                         "result_text": da_res.result_text,
                                                         "data_agent_container_id": da_res.container_id,
+                                                        "data_agent_container_name": container_name,
+                                                        "data_agent_ports": ports,
                                                         "data_agent_session_id": da_res.session_id,
                                                         "data_agent_output_file": da_res.output_file,
                                                         "data_agent_debug_file": da_res.debug_file,
@@ -9044,6 +9118,19 @@ def create_app() -> FastAPI:
                                                             "data_agent.workspace_dir": workspace_dir,
                                                         },
                                                     )
+                                                container_name, ports = _data_agent_container_info(
+                                                    conversation_id=conv_id,
+                                                    container_id=container_id,
+                                                )
+                                                if container_name or ports:
+                                                    meta_current = merge_conversation_metadata(
+                                                        session,
+                                                        conversation_id=conv_id,
+                                                        patch={
+                                                            "data_agent.container_name": container_name,
+                                                            "data_agent.ports": ports,
+                                                        },
+                                                    )
 
                                                 ctx = _build_data_agent_conversation_context(
                                                     session,
@@ -9114,6 +9201,8 @@ def create_app() -> FastAPI:
                                                     "ok": bool(da_res.ok),
                                                     "result_text": da_res.result_text,
                                                     "data_agent_container_id": da_res.container_id,
+                                                    "data_agent_container_name": container_name,
+                                                    "data_agent_ports": ports,
                                                     "data_agent_session_id": da_res.session_id,
                                                     "data_agent_output_file": da_res.output_file,
                                                     "data_agent_debug_file": da_res.debug_file,
@@ -10259,6 +10348,7 @@ def create_app() -> FastAPI:
     def api_conversation_messages(
         conversation_id: UUID,
         since: Optional[str] = None,
+        since_id: Optional[str] = None,
         before: Optional[str] = None,
         before_id: Optional[str] = None,
         limit: int = 200,
@@ -10273,6 +10363,12 @@ def create_app() -> FastAPI:
                 since_dt = dt.datetime.fromisoformat(str(since))
             except Exception:
                 since_dt = None
+        since_uuid: UUID | None = None
+        if since_id:
+            try:
+                since_uuid = UUID(str(since_id))
+            except Exception:
+                since_uuid = None
         before_dt: dt.datetime | None = None
         if before:
             try:
@@ -10289,7 +10385,18 @@ def create_app() -> FastAPI:
         if not include_tools:
             stmt = stmt.where(ConversationMessage.role != "tool")
         if since_dt is not None:
-            stmt = stmt.where(ConversationMessage.created_at > since_dt)
+            if since_uuid is not None:
+                stmt = stmt.where(
+                    or_(
+                        ConversationMessage.created_at > since_dt,
+                        and_(
+                            ConversationMessage.created_at == since_dt,
+                            ConversationMessage.id > since_uuid,
+                        ),
+                    )
+                )
+            else:
+                stmt = stmt.where(ConversationMessage.created_at > since_dt)
         if before_dt is not None:
             if before_uuid is not None:
                 stmt = stmt.where(

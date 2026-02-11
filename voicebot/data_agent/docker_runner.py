@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -34,6 +35,10 @@ _REDACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)(Incorrect API key provided: )([^\\s\"']+)"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(api[_-]?key\\s*[:=]\\s*)([^\\s,;\"']+)"), r"\1[REDACTED]"),
 ]
+
+_PORT_ALLOC_LOCK = threading.Lock()
+_DEFAULT_PORT_RANGE = (8000, 8100)
+_DEFAULT_PORTS_PER_CONTAINER = 5
 
 
 def _redact(text: str) -> str:
@@ -354,6 +359,344 @@ def docker_available() -> bool:
     return _docker_available()
 
 
+def _data_agent_state_dir() -> Path:
+    raw = (
+        os.environ.get("VOICEBOT_DATA_DIR")
+        or os.environ.get("DATA_DIR")
+        or str(Path.home() / ".gravexstudio")
+    )
+    path = Path(raw).expanduser()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return path
+
+
+def _port_allocations_path() -> Path:
+    return _data_agent_state_dir() / "data_agent_ports.json"
+
+
+def _load_port_allocations() -> dict[str, Any]:
+    path = _port_allocations_path()
+    if not path.exists():
+        return {"version": 1, "ports": {}}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": 1, "ports": {}}
+    if not isinstance(obj, dict):
+        return {"version": 1, "ports": {}}
+    ports = obj.get("ports")
+    if not isinstance(ports, dict):
+        obj["ports"] = {}
+    if "version" not in obj:
+        obj["version"] = 1
+    return obj
+
+
+def _save_port_allocations(obj: dict[str, Any]) -> None:
+    path = _port_allocations_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _parse_port_range(raw: str) -> tuple[int, int]:
+    s = (raw or "").strip()
+    if not s:
+        return _DEFAULT_PORT_RANGE
+    m = re.match(r"^\s*(\d+)\s*[-:]\s*(\d+)\s*$", s)
+    if not m:
+        return _DEFAULT_PORT_RANGE
+    try:
+        start = int(m.group(1))
+        end = int(m.group(2))
+    except Exception:
+        return _DEFAULT_PORT_RANGE
+    if start < 1 or end < 1 or start > 65535 or end > 65535:
+        return _DEFAULT_PORT_RANGE
+    if end < start:
+        start, end = end, start
+    return start, end
+
+
+def _port_range() -> tuple[int, int]:
+    raw = (
+        os.environ.get("IGX_DATA_AGENT_PORT_RANGE")
+        or os.environ.get("VOICEBOT_DATA_AGENT_PORT_RANGE")
+        or ""
+    )
+    return _parse_port_range(raw)
+
+
+def _ports_per_container() -> int:
+    raw = (
+        os.environ.get("IGX_DATA_AGENT_PORTS_PER_CONTAINER")
+        or os.environ.get("VOICEBOT_DATA_AGENT_PORTS_PER_CONTAINER")
+        or ""
+    )
+    try:
+        val = int(raw)
+    except Exception:
+        val = _DEFAULT_PORTS_PER_CONTAINER
+    if val < 0:
+        val = 0
+    if val > 50:
+        val = 50
+    return val
+
+
+def _port_available(port: int) -> bool:
+    if port <= 0 or port > 65535:
+        return False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+        return True
+    except Exception:
+        return False
+
+
+def _ports_for_container(data: dict[str, Any], *, container_id: str, container_name: str) -> list[dict[str, int]]:
+    ports_obj = data.get("ports")
+    if not isinstance(ports_obj, dict):
+        return []
+    items: list[dict[str, int]] = []
+    for host_str, entry in ports_obj.items():
+        if not isinstance(entry, dict):
+            continue
+        match_id = container_id and entry.get("container_id") == container_id
+        match_name = container_name and entry.get("container_name") == container_name
+        if not (match_id or match_name):
+            continue
+        try:
+            host_port = int(host_str)
+        except Exception:
+            continue
+        try:
+            container_port = int(entry.get("container_port") or host_port)
+        except Exception:
+            container_port = host_port
+        items.append({"host": host_port, "container": container_port})
+    items.sort(key=lambda x: x["host"])
+    return items
+
+
+def reserve_container_ports(
+    *,
+    conversation_id: UUID,
+    container_name: str,
+    container_id: str = "",
+) -> list[dict[str, int]]:
+    name = (container_name or "").strip()
+    cid = (container_id or "").strip()
+    if not name:
+        return []
+    with _PORT_ALLOC_LOCK:
+        data = _load_port_allocations()
+        existing = _ports_for_container(data, container_id=cid, container_name=name)
+        if existing:
+            return existing
+        count = _ports_per_container()
+        if count <= 0:
+            return []
+        start, end = _port_range()
+        ports_obj = data.get("ports")
+        if not isinstance(ports_obj, dict):
+            ports_obj = {}
+            data["ports"] = ports_obj
+        used = set()
+        for key in ports_obj.keys():
+            try:
+                used.add(int(key))
+            except Exception:
+                continue
+        picked: list[int] = []
+        for p in range(start, end + 1):
+            if p in used:
+                continue
+            if not _port_available(p):
+                continue
+            picked.append(p)
+            if len(picked) >= count:
+                break
+        if not picked:
+            return []
+        now = datetime.now(timezone.utc).isoformat()
+        for p in picked:
+            ports_obj[str(p)] = {
+                "container_port": p,
+                "container_id": cid,
+                "container_name": name,
+                "conversation_id": str(conversation_id),
+                "assigned_at": now,
+            }
+        _save_port_allocations(data)
+        return [{"host": p, "container": p} for p in picked]
+
+
+def assign_container_id_to_ports(*, container_id: str, container_name: str) -> None:
+    cid = (container_id or "").strip()
+    name = (container_name or "").strip()
+    if not cid or not name:
+        return
+    with _PORT_ALLOC_LOCK:
+        data = _load_port_allocations()
+        ports_obj = data.get("ports")
+        if not isinstance(ports_obj, dict):
+            return
+        changed = False
+        for entry in ports_obj.values():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("container_name") != name:
+                continue
+            if entry.get("container_id") != cid:
+                entry["container_id"] = cid
+                changed = True
+        if changed:
+            _save_port_allocations(data)
+
+
+def release_container_ports(*, container_id: str = "", container_name: str = "") -> list[dict[str, int]]:
+    cid = (container_id or "").strip()
+    name = (container_name or "").strip()
+    if not cid and not name:
+        return []
+    removed: list[dict[str, int]] = []
+    with _PORT_ALLOC_LOCK:
+        data = _load_port_allocations()
+        ports_obj = data.get("ports")
+        if not isinstance(ports_obj, dict):
+            return []
+        next_ports: dict[str, Any] = {}
+        for host_str, entry in ports_obj.items():
+            if not isinstance(entry, dict):
+                continue
+            match_id = cid and entry.get("container_id") == cid
+            match_name = name and entry.get("container_name") == name
+            if match_id or match_name:
+                try:
+                    host_port = int(host_str)
+                except Exception:
+                    host_port = 0
+                try:
+                    container_port = int(entry.get("container_port") or host_port)
+                except Exception:
+                    container_port = host_port
+                if host_port:
+                    removed.append({"host": host_port, "container": container_port})
+                continue
+            next_ports[host_str] = entry
+        data["ports"] = next_ports
+        _save_port_allocations(data)
+    removed.sort(key=lambda x: x["host"])
+    return removed
+
+
+def _inspect_container_ports(container_id: str) -> list[dict[str, int]]:
+    cid = (container_id or "").strip()
+    if not cid:
+        return []
+    p = _run(["docker", "inspect", cid], timeout_s=10.0)
+    if p.returncode != 0:
+        return []
+    try:
+        obj = json.loads(p.stdout or "")
+    except Exception:
+        return []
+    if not isinstance(obj, list) or not obj:
+        return []
+    data = obj[0] if isinstance(obj[0], dict) else {}
+    ports = data.get("NetworkSettings", {}).get("Ports", {})
+    if not isinstance(ports, dict):
+        return []
+    out: list[dict[str, int]] = []
+    for key, host_list in ports.items():
+        if not isinstance(key, str) or not isinstance(host_list, list):
+            continue
+        try:
+            container_port = int(key.split("/", 1)[0])
+        except Exception:
+            continue
+        for host in host_list:
+            if not isinstance(host, dict):
+                continue
+            try:
+                host_port = int(host.get("HostPort") or 0)
+            except Exception:
+                host_port = 0
+            if host_port:
+                out.append({"host": host_port, "container": container_port})
+    dedup: dict[int, dict[str, int]] = {}
+    for item in out:
+        dedup[item["host"]] = item
+    return sorted(dedup.values(), key=lambda x: x["host"])
+
+
+def sync_container_ports_from_docker(
+    *,
+    container_id: str,
+    container_name: str,
+    conversation_id: UUID | None = None,
+) -> list[dict[str, int]]:
+    cid = (container_id or "").strip()
+    name = (container_name or "").strip()
+    if not cid or not name:
+        return []
+    mappings = _inspect_container_ports(cid)
+    if not mappings:
+        return []
+    with _PORT_ALLOC_LOCK:
+        data = _load_port_allocations()
+        ports_obj = data.get("ports")
+        if not isinstance(ports_obj, dict):
+            ports_obj = {}
+            data["ports"] = ports_obj
+        now = datetime.now(timezone.utc).isoformat()
+        for item in mappings:
+            host_port = int(item.get("host") or 0)
+            if not host_port:
+                continue
+            ports_obj[str(host_port)] = {
+                "container_port": int(item.get("container") or host_port),
+                "container_id": cid,
+                "container_name": name,
+                "conversation_id": str(conversation_id) if conversation_id else "",
+                "assigned_at": now,
+            }
+        _save_port_allocations(data)
+        return _ports_for_container(data, container_id=cid, container_name=name)
+
+
+def get_container_ports(
+    *,
+    container_id: str = "",
+    container_name: str = "",
+    conversation_id: UUID | None = None,
+) -> list[dict[str, int]]:
+    cid = (container_id or "").strip()
+    name = (container_name or "").strip()
+    with _PORT_ALLOC_LOCK:
+        data = _load_port_allocations()
+        existing = _ports_for_container(data, container_id=cid, container_name=name)
+    if existing:
+        return existing
+    if cid and name:
+        return sync_container_ports_from_docker(
+            container_id=cid,
+            container_name=name,
+            conversation_id=conversation_id,
+        )
+    return []
+
+
 def list_data_agent_containers() -> dict:
     if not _docker_available():
         return {"docker_available": False, "items": []}
@@ -425,6 +768,13 @@ def stop_data_agent_container(container_id_or_name: str) -> dict:
     target = (container_id_or_name or "").strip()
     if not target:
         return {"docker_available": True, "stopped": False, "error": "Missing container id"}
+    container_name = ""
+    try:
+        inspect = _run(["docker", "inspect", "-f", "{{.Name}}", target], timeout_s=5.0)
+        if inspect.returncode == 0:
+            container_name = (inspect.stdout or "").strip().lstrip("/")
+    except Exception:
+        container_name = ""
     p = _run(["docker", "rm", "-f", target], timeout_s=20.0)
     if p.returncode != 0:
         return {
@@ -432,6 +782,10 @@ def stop_data_agent_container(container_id_or_name: str) -> dict:
             "stopped": False,
             "error": (p.stderr or p.stdout or "").strip(),
         }
+    try:
+        release_container_ports(container_id=target, container_name=container_name)
+    except Exception:
+        logger.debug("Failed to release Isolated Workspace ports for %s", target, exc_info=True)
     return {"docker_available": True, "stopped": True}
 
 
@@ -471,6 +825,10 @@ def ensure_image_pulled() -> str:
 def _container_name_for_conversation(conversation_id: UUID) -> str:
     s = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(conversation_id))
     return f"igx-data-agent-{s}"
+
+
+def container_name_for_conversation(conversation_id: UUID) -> str:
+    return _container_name_for_conversation(conversation_id)
 
 
 def _conversation_id_from_container_name(name: str) -> str:
@@ -607,6 +965,14 @@ def ensure_conversation_container(
     if existing_id:
         if _ensure_container_running(existing_id):
             logger.info("Reusing Isolated Workspace container %s for conversation %s", existing_id, conversation_id)
+            try:
+                sync_container_ports_from_docker(
+                    container_id=existing_id,
+                    container_name=name,
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                logger.debug("Failed to sync Isolated Workspace ports for %s", existing_id, exc_info=True)
             return existing_id
         logger.warning("Isolated Workspace container exists but is not running; recreating conv=%s container_id=%s", conversation_id, existing_id)
 
@@ -630,6 +996,7 @@ def ensure_conversation_container(
         except Exception:
             pass
 
+    ports = reserve_container_ports(conversation_id=conversation_id, container_name=name)
     cmd = [
         "docker",
         "run",
@@ -643,6 +1010,11 @@ def ensure_conversation_container(
         "-e",
         "PYTHONUNBUFFERED=1",
     ]
+    for mapping in ports:
+        host_port = int(mapping.get("host") or 0)
+        container_port = int(mapping.get("container") or 0)
+        if host_port > 0 and container_port > 0:
+            cmd.extend(["-p", f"127.0.0.1:{host_port}:{container_port}"])
     if git_token:
         cmd.extend(["-e", f"GIT_TOKEN={git_token}", "-e", f"GITHUB_TOKEN={git_token}"])
     if host_cache_path:
@@ -669,12 +1041,22 @@ def ensure_conversation_container(
         if "Conflict. The container name" in stderr and name in stderr:
             existing_id = _get_existing_container_id(name)
             if existing_id and _ensure_container_running(existing_id):
+                release_container_ports(container_name=name)
+                try:
+                    sync_container_ports_from_docker(
+                        container_id=existing_id,
+                        container_name=name,
+                        conversation_id=conversation_id,
+                    )
+                except Exception:
+                    logger.debug("Failed to sync Isolated Workspace ports for %s", existing_id, exc_info=True)
                 logger.warning(
                     "Isolated Workspace container name conflict; reusing existing container %s for conversation %s",
                     existing_id,
                     conversation_id,
                 )
                 return existing_id
+        release_container_ports(container_name=name)
         logger.error(
             "Failed to start Isolated Workspace container rc=%s stdout_tail=%s stderr_tail=%s",
             p.returncode,
@@ -684,8 +1066,10 @@ def ensure_conversation_container(
         raise RuntimeError(f"Failed to start Isolated Workspace container: {p.stderr.strip() or p.stdout.strip()}")
     cid = (p.stdout or "").strip()
     if not cid:
+        release_container_ports(container_name=name)
         logger.error("Failed to start Isolated Workspace container: no container id returned (stdout=%s)", (p.stdout or "").strip())
         raise RuntimeError("Failed to start Isolated Workspace container: no container id returned.")
+    assign_container_id_to_ports(container_id=cid, container_name=name)
     logger.info("Started Isolated Workspace container %s for conversation %s", cid, conversation_id)
     return cid
 

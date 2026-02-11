@@ -99,6 +99,7 @@ export default function WidgetPage() {
   const widgetModeRef = useRef<WidgetMode>('mic')
   const messagesRef = useRef<WidgetMessage[]>([])
   const lastMessageAtRef = useRef<string | null>(null)
+  const lastMessageIdRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const resumeAttemptRef = useRef<string | null>(null)
 
@@ -117,6 +118,7 @@ export default function WidgetPage() {
     messagesRef.current = messages
     const last = messages[messages.length - 1]
     lastMessageAtRef.current = last?.created_at || null
+    lastMessageIdRef.current = last?.id || null
   }, [messages])
 
   useEffect(() => {
@@ -300,7 +302,10 @@ export default function WidgetPage() {
     const params = new URLSearchParams()
     params.set('order', 'asc')
     params.set('limit', '200')
-    if (opts.since) params.set('since', opts.since)
+    if (opts.since) {
+      params.set('since', opts.since)
+      if (lastMessageIdRef.current) params.set('since_id', lastMessageIdRef.current)
+    }
     try {
       const res = await apiGet<{ messages?: WidgetMessage[] }>(
         `/api/conversations/${conversationId}/messages?${params.toString()}`,
