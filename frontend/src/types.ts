@@ -210,6 +210,9 @@ export type Options = {
   llm_providers?: string[]
   openai_models: string[]
   openrouter_models?: string[]
+  local_models?: LocalModel[]
+  default_llm_provider?: string
+  default_llm_model?: string
   openai_asr_models: string[]
   languages: string[]
   openai_tts_models?: string[]
@@ -218,6 +221,18 @@ export type Options = {
   openai_pricing: Record<string, { input_per_1m: number; output_per_1m: number }>
   openrouter_pricing?: Record<string, { input_per_1m: number; output_per_1m: number }>
   http_methods?: string[]
+}
+
+export type LocalModel = {
+  id: string
+  name: string
+  download_url?: string
+  filename?: string
+  size_gb?: number | null
+  min_ram_gb?: number | null
+  supports_tools?: boolean
+  tool_support?: string | null
+  recommended?: boolean
 }
 
 export type WidgetConfig = {

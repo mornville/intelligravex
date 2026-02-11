@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import { BACKEND_URL, apiPost } from '../api/client'
+import type { LocalModel, Options } from '../types'
+import { BACKEND_URL, apiGet, apiPost } from '../api/client'
 import { authHeader } from '../auth'
+import { formatLocalModelToolSupport } from '../utils/localModels'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<{
@@ -14,12 +16,20 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [statusErr, setStatusErr] = useState<string | null>(null)
   const [setupActive, setSetupActive] = useState(false)
   const [setupStep, setSetupStep] = useState<'llm' | 'docker'>('llm')
-  const [llmProvider, setLlmProvider] = useState<'openai' | 'openrouter'>('openai')
+  const [llmProvider, setLlmProvider] = useState<'openai' | 'openrouter' | 'local'>('openai')
   const [llmKey, setLlmKey] = useState('')
   const [setupErr, setSetupErr] = useState<string | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
   const [pullingImage, setPullingImage] = useState(false)
   const [pullMessage, setPullMessage] = useState<string | null>(null)
+  const [options, setOptions] = useState<Options | null>(null)
+  const [localModelId, setLocalModelId] = useState('')
+  const [localCustomUrl, setLocalCustomUrl] = useState('')
+  const [localCustomName, setLocalCustomName] = useState('')
+  const [localStatus, setLocalStatus] = useState<any>(null)
+
+  const localModels: LocalModel[] = options?.local_models || []
+  const selectedLocalModel = localModels.find((m) => m.id === localModelId) || null
 
   useEffect(() => {
     let canceled = false
@@ -59,6 +69,56 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       canceled = true
     }
   }, [setupActive, setupStep])
+
+  useEffect(() => {
+    let canceled = false
+    async function loadOptions() {
+      try {
+        const res = await apiGet<Options>('/api/options')
+        if (canceled) return
+        setOptions(res)
+        if (res.default_llm_provider && llmProvider === 'openai') {
+          setLlmProvider(res.default_llm_provider as any)
+        }
+        if (!localModelId) {
+          const rec = res.local_models?.find((m) => m.recommended) || res.local_models?.[0]
+          if (rec) setLocalModelId(rec.id)
+          else setLocalModelId('__custom__')
+        }
+      } catch {
+        if (!canceled) setOptions(null)
+      }
+    }
+    void loadOptions()
+    return () => {
+      canceled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!setupActive || llmProvider !== 'local') return
+    let canceled = false
+    async function poll() {
+      try {
+        const res = await apiGet<any>('/api/local/status')
+        if (!canceled) setLocalStatus(res)
+        if (res?.state === 'ready') {
+          await refreshStatus()
+          if (!canceled) setSetupStep('docker')
+        }
+      } catch {
+        if (!canceled) setLocalStatus(null)
+      }
+    }
+    void poll()
+    const t = window.setInterval(() => {
+      void poll()
+    }, 1200)
+    return () => {
+      canceled = true
+      window.clearInterval(t)
+    }
+  }, [setupActive, llmProvider])
 
   if (checkingStatus && !status) {
     return (
@@ -113,6 +173,31 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     }
   }
 
+  async function startLocalSetup() {
+    setSetupErr(null)
+    const usingCustom = localModelId === '__custom__'
+    if (usingCustom && !localCustomUrl.trim()) {
+      setSetupErr('Please enter a model download URL.')
+      return
+    }
+    if (!usingCustom && !localModelId.trim()) {
+      setSetupErr('Please choose a model.')
+      return
+    }
+    setSetupBusy(true)
+    try {
+      await apiPost('/api/local/setup', {
+        model_id: usingCustom ? (localCustomName.trim() || '') : localModelId.trim(),
+        custom_url: usingCustom ? localCustomUrl.trim() : '',
+        custom_name: usingCustom ? localCustomName.trim() : '',
+      })
+    } catch (e: any) {
+      setSetupErr(e?.message || 'Failed to start local setup.')
+    } finally {
+      setSetupBusy(false)
+    }
+  }
+
   async function refreshStatus() {
     setCheckingStatus(true)
     try {
@@ -153,6 +238,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   if (setupActive) {
     const stepIndex = setupStep === 'llm' ? 1 : 2
+    const usingLocal = llmProvider === 'local'
+    const showCustom = localModelId === '__custom__'
+    const progress = localStatus?.percent ? `${localStatus.percent}%` : ''
     return (
       <div className="authWrap">
         <div className="authCard">
@@ -165,26 +253,92 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           {setupErr ? <div className="alert">{setupErr}</div> : null}
           {setupStep === 'llm' ? (
             <>
-              <div className="setupHeading">LLM key (required)</div>
+              <div className="setupHeading">LLM setup</div>
               <div className="formRow">
                 <label>Provider</label>
                 <select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value as any)}>
                   <option value="openai">OpenAI</option>
                   <option value="openrouter">OpenRouter</option>
+                  <option value="local">Local model (no API key)</option>
                 </select>
               </div>
-              <div className="formRow">
-                <label>{llmProvider === 'openai' ? 'OpenAI API key' : 'OpenRouter API key'}</label>
-                <input
-                  type="password"
-                  placeholder={llmProvider === 'openai' ? 'sk-...' : 'sk-or-...'}
-                  value={llmKey}
-                  onChange={(e) => setLlmKey(e.target.value)}
-                />
-              </div>
-              <button className="btn primary" onClick={() => void saveLlmKey()} disabled={setupBusy || !llmKey.trim()}>
-                {setupBusy ? 'Saving…' : 'Save and continue'}
-              </button>
+              {!usingLocal ? (
+                <>
+                  <div className="formRow">
+                    <label>{llmProvider === 'openai' ? 'OpenAI API key' : 'OpenRouter API key'}</label>
+                    <input
+                      type="password"
+                      placeholder={llmProvider === 'openai' ? 'sk-...' : 'sk-or-...'}
+                      value={llmKey}
+                      onChange={(e) => setLlmKey(e.target.value)}
+                    />
+                  </div>
+                  <button className="btn primary" onClick={() => void saveLlmKey()} disabled={setupBusy || !llmKey.trim()}>
+                    {setupBusy ? 'Saving…' : 'Save and continue'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="formRow">
+                    <label>Local model</label>
+                    <select value={localModelId} onChange={(e) => setLocalModelId(e.target.value)}>
+                      {localModels.length ? (
+                        <>
+                          <optgroup label="Recommended">
+                            {localModels.filter((m) => m.recommended).map((m) => (
+                              <option key={`rec-${m.id}`} value={m.id}>
+                                {m.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="All compatible">
+                            {localModels.map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        </>
+                      ) : null}
+                      <option value="__custom__">Custom download URL…</option>
+                    </select>
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      {formatLocalModelToolSupport(localModelId === '__custom__' ? null : selectedLocalModel)}
+                    </div>
+                  </div>
+                  {showCustom ? (
+                    <>
+                      <div className="formRow">
+                        <label>Model URL</label>
+                        <input
+                          type="text"
+                          placeholder="https://huggingface.co/.../resolve/main/model.gguf"
+                          value={localCustomUrl}
+                          onChange={(e) => setLocalCustomUrl(e.target.value)}
+                        />
+                      </div>
+                      <div className="formRow">
+                        <label>Model name (optional)</label>
+                        <input
+                          type="text"
+                          placeholder="My GGUF model"
+                          value={localCustomName}
+                          onChange={(e) => setLocalCustomName(e.target.value)}
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                  {localStatus?.error ? <div className="alert">{localStatus.error}</div> : null}
+                  {localStatus ? (
+                    <div className="muted" style={{ marginBottom: 10 }}>
+                      {localStatus.message || 'Preparing local model...'} {progress}
+                    </div>
+                  ) : null}
+                  <button className="btn primary" onClick={() => void startLocalSetup()} disabled={setupBusy}>
+                    {setupBusy ? 'Starting…' : 'Start local setup'}
+                  </button>
+                </>
+              )}
             </>
           ) : null}
           {setupStep === 'docker' ? (

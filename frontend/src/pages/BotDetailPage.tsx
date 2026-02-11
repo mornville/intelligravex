@@ -5,6 +5,7 @@ import MicTest from '../components/MicTest'
 import SelectField from '../components/SelectField'
 import LoadingSpinner from '../components/LoadingSpinner'
 import type { Bot, ConversationSummary, IntegrationTool, Options, SystemTool } from '../types'
+import { formatLocalModelToolSupport } from '../utils/localModels'
 import { TrashIcon } from '@heroicons/react/24/solid'
 
 function HelpTip({ children }: { children: ReactNode }) {
@@ -57,6 +58,8 @@ export default function BotDetailPage() {
     pagination_json: '',
     static_reply_template: '',
   })
+  const selectedLocalModel =
+    (options?.local_models || []).find((m) => m.id === (bot?.openai_model || '')) || null
 
   const DEFAULT_CODEX_FILTER_PROMPT = `You are a data extraction agent.
 
@@ -104,6 +107,11 @@ Rules:
   }
 
   function llmModels(provider: string, fallback: string): string[] {
+    if (provider === 'local') {
+      const local = (options?.local_models || []).map((m) => m.id)
+      const combined = [fallback, ...local].filter(Boolean)
+      return Array.from(new Set(combined))
+    }
     const base = provider === 'openrouter' ? options?.openrouter_models || [] : options?.openai_models || []
     if (!base.length) return [fallback]
     return base.includes(fallback) ? base : [fallback, ...base]
@@ -554,7 +562,7 @@ Rules:
                         void save({ llm_provider: next, openai_model: nextModel })
                       }}
                     >
-                      {(options?.llm_providers || ['openai', 'openrouter']).map((p) => (
+                      {(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
                         <option value={p} key={p}>
                           {p}
                         </option>
@@ -563,13 +571,33 @@ Rules:
                   </div>
                   <div className="formRow">
                     <label>LLM model</label>
-                    <SelectField value={bot.openai_model} onChange={(e) => void save({ openai_model: e.target.value })}>
-                      {llmModels(llmProvider, bot.openai_model).map((m) => (
-                        <option value={m} key={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </SelectField>
+                    {llmProvider === 'local' ? (
+                      <>
+                        <input
+                          list="local-models-bot"
+                          value={bot.openai_model}
+                          onChange={(e) => void save({ openai_model: e.target.value })}
+                        />
+                        <datalist id="local-models-bot">
+                          {(options?.local_models || []).map((m) => (
+                            <option value={m.id} key={m.id}>
+                              {m.name}
+                            </option>
+                          ))}
+                        </datalist>
+                        <div className="muted" style={{ marginTop: 6 }}>
+                          {formatLocalModelToolSupport(selectedLocalModel)}
+                        </div>
+                      </>
+                    ) : (
+                      <SelectField value={bot.openai_model} onChange={(e) => void save({ openai_model: e.target.value })}>
+                        {llmModels(llmProvider, bot.openai_model).map((m) => (
+                          <option value={m} key={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </SelectField>
+                    )}
                   </div>
                   <details className="accordion" style={{ marginTop: 10 }}>
                     <summary>Advanced models</summary>

@@ -21,6 +21,7 @@ import type {
   WidgetConfig,
 } from '../types'
 import { fmtIso } from '../utils/format'
+import { formatLocalModelToolSupport } from '../utils/localModels'
 import {
   Cog6ToothIcon,
   CpuChipIcon,
@@ -119,6 +120,11 @@ export default function DashboardPage() {
   const [creatingAssistant, setCreatingAssistant] = useState(false)
   const [assistantErr, setAssistantErr] = useState<string | null>(null)
   function llmModels(provider: string, o: Options | null, fallback: string): string[] {
+    if (provider === 'local') {
+      const local = (o?.local_models || []).map((m) => m.id)
+      const combined = [fallback, ...local].filter(Boolean)
+      return Array.from(new Set(combined))
+    }
     const base = provider === 'openrouter' ? o?.openrouter_models || [] : o?.openai_models || []
     if (!base.length) return [fallback]
     return base.includes(fallback) ? base : [fallback, ...base]
@@ -138,6 +144,8 @@ export default function DashboardPage() {
     start_message_mode: 'llm' as const,
     start_message_text: '',
   })
+  const newBotLocalModel =
+    (options?.local_models || []).find((m) => m.id === newBot.openai_model) || null
   const [showCreateGroup, setShowCreateGroup] = useState(false)
   const [groupTitle, setGroupTitle] = useState('')
   const [groupFilter, setGroupFilter] = useState('')
@@ -223,6 +231,13 @@ export default function DashboardPage() {
         setGroups(g.items)
         setConversations(c.items)
         setOptions(o)
+        if (o?.default_llm_provider || o?.default_llm_model) {
+          setNewBot((p) => ({
+            ...p,
+            llm_provider: (o?.default_llm_provider || p.llm_provider) as any,
+            openai_model: o?.default_llm_model || p.openai_model,
+          }))
+        }
         setWidgetBotId(w?.bot_id || null)
         const initialUpdated: Record<string, string> = {}
         const initialUnseen: Record<string, number> = {}
@@ -1774,7 +1789,7 @@ export default function DashboardPage() {
                   }))
                 }}
               >
-                {(options?.llm_providers || ['openai', 'openrouter']).map((p) => (
+                {(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
                   <option value={p} key={p}>
                     {p}
                   </option>
@@ -1784,13 +1799,33 @@ export default function DashboardPage() {
             <div className="formRowGrid2">
               <div className="formRow">
                 <label>LLM model</label>
-                <SelectField value={newBot.openai_model} onChange={(e) => setNewBot((p) => ({ ...p, openai_model: e.target.value }))}>
-                  {llmModels(newBot.llm_provider, options, newBot.openai_model).map((m) => (
-                    <option value={m} key={m}>
-                      {m}
-                    </option>
-                  ))}
-                </SelectField>
+                {newBot.llm_provider === 'local' ? (
+                  <>
+                    <input
+                      list="local-models-new"
+                      value={newBot.openai_model}
+                      onChange={(e) => setNewBot((p) => ({ ...p, openai_model: e.target.value }))}
+                    />
+                    <datalist id="local-models-new">
+                      {(options?.local_models || []).map((m) => (
+                        <option value={m.id} key={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </datalist>
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      {formatLocalModelToolSupport(newBotLocalModel)}
+                    </div>
+                  </>
+                ) : (
+                  <SelectField value={newBot.openai_model} onChange={(e) => setNewBot((p) => ({ ...p, openai_model: e.target.value }))}>
+                    {llmModels(newBot.llm_provider, options, newBot.openai_model).map((m) => (
+                      <option value={m} key={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </SelectField>
+                )}
               </div>
               <div className="formRow">
                 <label>ASR model</label>

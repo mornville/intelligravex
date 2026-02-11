@@ -1,0 +1,46 @@
+[
+  {
+    "id": "llama3.2-3b-instruct-q4_k_m",
+    "name": "Llama 3.2 3B Instruct (Q4_K_M)",
+    "download_url": "https://huggingface.co/lmstudio-community/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    "size_gb": 2.02,
+    "min_ram_gb": 8,
+    "supports_tools": true,
+    "tool_support": "native",
+    "recommended": true
+  },
+  {
+    "id": "llama3.1-8b-instruct-q4_k_m",
+    "name": "Llama 3.1 8B Instruct (Q4_K_M)",
+    "download_url": "https://huggingface.co/lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+    "filename": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+    "size_gb": 4.92,
+    "min_ram_gb": 12,
+    "supports_tools": true,
+    "tool_support": "native",
+    "recommended": true
+  },
+  {
+    "id": "qwen2.5-7b-instruct-q4_k_m",
+    "name": "Qwen 2.5 7B Instruct (Q4_K_M)",
+    "download_url": "https://huggingface.co/lmstudio-community/Qwen2.5-7B-Instruct-1M-GGUF/resolve/main/Qwen2.5-7B-Instruct-1M-Q4_K_M.gguf",
+    "filename": "Qwen2.5-7B-Instruct-1M-Q4_K_M.gguf",
+    "size_gb": 4.68,
+    "min_ram_gb": 12,
+    "supports_tools": true,
+    "tool_support": "native",
+    "recommended": false
+  },
+  {
+    "id": "mistral-7b-instruct-v0.3-q4_k_m",
+    "name": "Mistral 7B Instruct v0.3 (Q4_K_M)",
+    "download_url": "https://huggingface.co/lmstudio-community/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+    "filename": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+    "size_gb": 4.37,
+    "min_ram_gb": 12,
+    "supports_tools": true,
+    "tool_support": "generic",
+    "recommended": false
+  }
+]
