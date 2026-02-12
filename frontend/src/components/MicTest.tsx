@@ -35,6 +35,7 @@ type ChatItem = {
   timings?: Timings
   local?: boolean
   citations?: Citation[]
+  interim?: boolean
 }
 
 type MessageCursor = {
@@ -593,9 +594,18 @@ export default function MicTest({
         const interimId = interimIdRef.current
         setItems((prev) => {
           const hasInterim = prev.some((it) => it.id === interimId)
-          const nextItem = { id: interimId, role: 'assistant' as const, text, created_at: new Date().toISOString(), local: true }
+          const nextItem = {
+            id: interimId,
+            role: 'assistant' as const,
+            text,
+            created_at: new Date().toISOString(),
+            local: true,
+            interim: true,
+          }
           if (!hasInterim) return [...prev, nextItem]
-          return prev.map((it) => (it.id === interimId ? { ...it, text, created_at: nextItem.created_at, local: true } : it))
+          return prev.map((it) =>
+            it.id === interimId ? { ...it, text, created_at: nextItem.created_at, local: true, interim: true } : it,
+          )
         })
         return
       }
@@ -1053,12 +1063,18 @@ export default function MicTest({
         const citations = role === 'assistant' ? normalizeCitations(it.citations) : []
         const hasText = Boolean(it.text && it.text.trim())
         const bubbleText = hasText ? it.text : role === 'assistant' ? loadingDots : '…'
+        const bubbleClass =
+          role === 'user'
+            ? 'bubble user'
+            : role === 'assistant'
+              ? `bubble assistant${it.interim ? ' interim' : ''}`
+              : 'bubble tool'
         return (
           <div key={it.id} className={`msgRow ${role}`}>
             <div className={`avatar ${role}`} aria-hidden="true">
               <RoleIcon role={role} />
             </div>
-            <div className={role === 'user' ? 'bubble user' : role === 'assistant' ? 'bubble assistant' : 'bubble tool'}>
+            <div className={bubbleClass}>
               <div className="bubbleText">{bubbleText}</div>
               {role === 'assistant' && citations.length ? (
                 <div className="citationBlock">

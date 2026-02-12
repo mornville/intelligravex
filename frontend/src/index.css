@@ -1667,11 +1667,20 @@ label {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+.bubble.assistant.interim {
+  background: rgba(148, 163, 184, 0.16);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+.bubble.assistant.interim .bubbleText {
+  font-weight: 600;
+  color: rgba(241, 245, 249, 0.95);
+}
 .loadingDots {
   display: inline-flex;
   gap: 2px;
   font-weight: 600;
   letter-spacing: 0.12em;
+  font-size: 18px;
 }
 .loadingDots span {
   opacity: 0.2;
