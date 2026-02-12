@@ -185,3 +185,7 @@ Override the Isolated Workspace image if needed:
 - Docker is only needed if you enable the Isolated Workspace.
 - All core features work without Docker.
 - Local models are downloaded automatically and stored on your machine.
+
+## TODO
+
+- Add heartbeat-based runtime state for long-running tool runs (track `running` vs `stalled`, avoid stale `generating`).
