@@ -54,17 +54,20 @@
 
     <main>
       <section class="section" id="helps">
-        <div class="section-head">
+        <div class="section-head center">
           <p class="eyebrow">How IGX Helps You</p>
           <h2>Real work, automated on your machine.</h2>
         </div>
-        <div class="helps-grid">
-          <div class="helps-item">Fix code and run tests automatically</div>
-          <div class="helps-item">Build scripts from natural language</div>
-          <div class="helps-item">Summarize your documents and files</div>
-          <div class="helps-item">Run HTTP workflows and automations</div>
-          <div class="helps-item">Use voice to interact with your tools</div>
-          <div class="helps-item">Automate repetitive tasks</div>
+        <div class="helps-media">
+          <img
+            src="static/combined_output1-ezgif.com-video-to-gif-converter.gif"
+            alt="IGX Studio workflow preview"
+            loading="lazy"
+          />
+          <p class="helps-caption">
+            What's happening in the video? IGX is creating an OpenAI chat bot, hosting it on Cloudflare, and giving a link to the user to test
+            it, all in an isolated environment.
+          </p>
         </div>
       </section>
 
@@ -357,25 +360,6 @@
           </div>
         </div>
 
-        <div class="dev-feature-grid">
-          <article class="dev-feature-card">
-            <h3>Integration tools with schemas</h3>
-            <p>Validate inputs, map outputs, and control what Agents see.</p>
-          </article>
-          <article class="dev-feature-card">
-            <h3>Jinja templates for replies</h3>
-            <p>Deterministic formatting for tool responses and summaries.</p>
-          </article>
-          <article class="dev-feature-card">
-            <h3>Local + cloud model choices</h3>
-            <p>Use OpenAI or local models without changing your flow.</p>
-          </article>
-          <article class="dev-feature-card">
-            <h3>Workspace artifacts + logs</h3>
-            <p>Every run leaves files, outputs, and data you can inspect.</p>
-          </article>
-        </div>
-
         <div class="dev-workflow">
           <div class="section-head">
             <p class="eyebrow">Advanced workflow</p>
@@ -384,47 +368,33 @@
               Create many Agents, give each an Isolated Workspace, and wire integrations in minutes.
             </p>
           </div>
-          <div class="workflow-grid">
-            <div class="workflow-step" style="--accent: #7dd3fc; --delay: 0ms">
-              <div class="workflow-index">01</div>
+          <div class="workflow-strip">
+            <div class="workflow-step-compact">
+              <div class="workflow-pill">01</div>
               <div>
-                <h3>Create multiple Agents fast</h3>
+                <h3>Create Agents fast</h3>
                 <p>Spin up as many Agents as the job needs.</p>
               </div>
             </div>
-            <div class="workflow-step" style="--accent: #7ef29a; --delay: 120ms">
-              <div class="workflow-index">02</div>
+            <div class="workflow-step-compact">
+              <div class="workflow-pill">02</div>
               <div>
-                <h3>Each Agent gets an Isolated Workspace</h3>
-                <p>Local files, logs, and artifacts are kept per Agent.</p>
+                <h3>Isolated Workspaces per Agent</h3>
+                <p>Keep local files, logs, and artifacts separated.</p>
               </div>
             </div>
-            <div class="workflow-step" style="--accent: #f2c94c; --delay: 240ms">
-              <div class="workflow-index">03</div>
+            <div class="workflow-step-compact">
+              <div class="workflow-pill">03</div>
               <div>
-                <h3>Drop credentials + API specs</h3>
-                <p>Configure integrations in workspace settings or your workspace instructions file.</p>
+                <h3>Wire integrations</h3>
+                <p>Add credentials, API specs, and tool schemas.</p>
               </div>
             </div>
-            <div class="workflow-step" style="--accent: #c4b5fd; --delay: 360ms">
-              <div class="workflow-index">04</div>
+            <div class="workflow-step-compact">
+              <div class="workflow-pill">04</div>
               <div>
-                <h3>Define tools + Jinja replies</h3>
-                <p>Use schemas, mappings, and templates for clean output.</p>
-              </div>
-            </div>
-            <div class="workflow-step" style="--accent: #ff7a78; --delay: 480ms">
-              <div class="workflow-index">05</div>
-              <div>
-                <h3>Generate reusable scripts</h3>
-                <p>Agents create helper scripts inside the workspace.</p>
-              </div>
-            </div>
-            <div class="workflow-step" style="--accent: #64f0ff; --delay: 600ms">
-              <div class="workflow-index">06</div>
-              <div>
-                <h3>Ship work with approvals</h3>
-                <p>Run tools safely and keep full visibility.</p>
+                <h3>Ship with approvals</h3>
+                <p>Run tools safely with full visibility.</p>
               </div>
             </div>
           </div>
