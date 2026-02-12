@@ -724,6 +724,24 @@ a {
   gap: 12px;
   align-items: center;
 }
+.floatingWsStatus {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-top: 4px;
+}
+.floatingWsStatus.open {
+  color: #16a34a;
+}
+.floatingWsStatus.retrying,
+.floatingWsStatus.connecting {
+  color: #f59e0b;
+}
+.floatingWsStatus.error,
+.floatingWsStatus.disconnected {
+  color: #ef4444;
+}
 .floatingHeader .iconBtn {
   color: #1f2937;
   background: #e2e8f0;
@@ -1648,6 +1666,32 @@ label {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.loadingDots {
+  display: inline-flex;
+  gap: 2px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+.loadingDots span {
+  opacity: 0.2;
+  animation: loadingDotPulse 1s infinite ease-in-out;
+}
+.loadingDots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.loadingDots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes loadingDotPulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 0.9;
+  }
 }
 .bubbleTime {
   margin-top: 4px;
@@ -2589,6 +2633,26 @@ label {
   justify-content: flex-end;
   padding: 12px;
   transform: none;
+}
+.widgetWsStatus {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(100, 116, 139, 0.9);
+}
+.widgetWsStatus.open {
+  color: #16a34a;
+}
+.widgetWsStatus.retrying,
+.widgetWsStatus.connecting {
+  color: #f59e0b;
+}
+.widgetWsStatus.error,
+.widgetWsStatus.disconnected {
+  color: #ef4444;
 }
 
 .widgetTextCard {

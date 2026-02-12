@@ -63,7 +63,11 @@ function FloatingGuide() {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [stage, setStage] = useState<'idle' | 'busy' | 'disconnected'>('disconnected')
+  const [wsState, setWsState] = useState<'connecting' | 'open' | 'retrying' | 'disconnected' | 'error'>(
+    'disconnected',
+  )
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectRef = useRef<{ attempt: number; timer: number | null }>({ attempt: 0, timer: null })
   const draftIdRef = useRef<string | null>(null)
   const pendingRef = useRef<string | null>(null)
   const initRequestedRef = useRef(false)
@@ -86,98 +90,152 @@ function FloatingGuide() {
 
   useEffect(() => {
     if (!open || !botId) return
-    if (wsRef.current) return
-    const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk`)
-    wsRef.current = ws
-    ws.onopen = () => {
-      setStage('idle')
-      if (!conversationId && !initRequestedRef.current) {
-        initRequestedRef.current = true
-        ws.send(JSON.stringify({ type: 'init', req_id: makeId(), speak: false, test_flag: false, debug: false }))
+    let closed = false
+
+    const scheduleReconnect = () => {
+      if (closed || !open) return
+      const nextAttempt = Math.min(reconnectRef.current.attempt + 1, 6)
+      reconnectRef.current.attempt = nextAttempt
+      const baseDelay = Math.min(1000 * 2 ** (nextAttempt - 1), 10000)
+      const jitter = Math.floor(Math.random() * 300)
+      setWsState('retrying')
+      if (reconnectRef.current.timer) {
+        window.clearTimeout(reconnectRef.current.timer)
       }
+      reconnectRef.current.timer = window.setTimeout(() => {
+        void connect()
+      }, baseDelay + jitter)
     }
-    ws.onclose = () => setStage('disconnected')
-    ws.onerror = () => setStage('disconnected')
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== 'string') return
-      let msg: any
-      try {
-        msg = JSON.parse(ev.data)
-      } catch {
-        return
-      }
-      if (msg.type === 'status') {
-        setStage(msg.stage === 'idle' ? 'idle' : 'busy')
-        return
-      }
-      if (msg.type === 'conversation') {
-        const cid = msg.conversation_id || msg.id
-        if (cid) setConversationId(String(cid))
-        if (pendingRef.current) {
-          const text = pendingRef.current
-          pendingRef.current = null
-          ws.send(
-            JSON.stringify({
-              type: 'chat',
-              req_id: makeId(),
-              conversation_id: cid,
-              speak: false,
-              test_flag: false,
-              debug: false,
-              text,
-            }),
-          )
+
+    const connect = () => {
+      if (closed) return
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return
+      setWsState(reconnectRef.current.attempt > 0 ? 'retrying' : 'connecting')
+      const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk`)
+      wsRef.current = ws
+      ws.onopen = () => {
+        reconnectRef.current.attempt = 0
+        setWsState('open')
+        setStage('idle')
+        setErr(null)
+        if (!conversationId && !initRequestedRef.current) {
+          initRequestedRef.current = true
+          ws.send(JSON.stringify({ type: 'init', req_id: makeId(), speak: false, test_flag: false, debug: false }))
         }
-        return
       }
-      if (msg.type === 'text_delta') {
-        const delta = String(msg.delta || '')
-        if (!delta) return
-        if (!draftIdRef.current) draftIdRef.current = makeId()
-        const draftId = draftIdRef.current
-        setMessages((prev) => {
-          const has = prev.some((m) => m.id === draftId)
-          if (!has) return [...prev, { id: draftId, role: 'assistant', text: delta }]
-          return prev.map((m) => (m.id === draftId ? { ...m, text: m.text + delta } : m))
-        })
-        return
+      ws.onclose = () => {
+        wsRef.current = null
+        setStage('disconnected')
+        setWsState('disconnected')
+        scheduleReconnect()
       }
-      if (msg.type === 'done') {
-        const doneText = String(msg.text || '')
-        const draftId = draftIdRef.current
-        setMessages((prev) => {
-          const has = draftId ? prev.some((m) => m.id === draftId) : false
-          if (doneText.trim() && (!draftId || !has)) {
-            const newId = makeId()
-            draftIdRef.current = newId
-            return [...prev, { id: newId, role: 'assistant', text: doneText }]
+      ws.onerror = () => {
+        setStage('disconnected')
+        setWsState('error')
+        try {
+          ws.close()
+        } catch {
+          // ignore
+        }
+      }
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') return
+        let msg: any
+        try {
+          msg = JSON.parse(ev.data)
+        } catch {
+          return
+        }
+        if (msg.type === 'status') {
+          setStage(msg.stage === 'idle' ? 'idle' : 'busy')
+          return
+        }
+        if (msg.type === 'conversation') {
+          const cid = msg.conversation_id || msg.id
+          if (cid) setConversationId(String(cid))
+          if (pendingRef.current) {
+            const text = pendingRef.current
+            pendingRef.current = null
+            ws.send(
+              JSON.stringify({
+                type: 'chat',
+                req_id: makeId(),
+                conversation_id: cid,
+                speak: false,
+                test_flag: false,
+                debug: false,
+                text,
+              }),
+            )
           }
-          if (draftId && has) {
-            return prev.map((m) => (m.id === draftId ? { ...m, text: doneText || m.text } : m))
-          }
-          return prev
-        })
-        draftIdRef.current = null
-      }
-      if (msg.type === 'error') {
-        setMessages((prev) => [...prev, { id: makeId(), role: 'assistant', text: `Error: ${msg.error || 'Unknown'}` }])
+          return
+        }
+        if (msg.type === 'text_delta') {
+          const delta = String(msg.delta || '')
+          if (!delta) return
+          if (!draftIdRef.current) draftIdRef.current = makeId()
+          const draftId = draftIdRef.current
+          setMessages((prev) => {
+            const has = prev.some((m) => m.id === draftId)
+            if (!has) return [...prev, { id: draftId, role: 'assistant', text: delta }]
+            return prev.map((m) => (m.id === draftId ? { ...m, text: m.text + delta } : m))
+          })
+          return
+        }
+        if (msg.type === 'done') {
+          const doneText = String(msg.text || '')
+          const draftId = draftIdRef.current
+          setMessages((prev) => {
+            const has = draftId ? prev.some((m) => m.id === draftId) : false
+            if (doneText.trim() && (!draftId || !has)) {
+              const newId = makeId()
+              draftIdRef.current = newId
+              return [...prev, { id: newId, role: 'assistant', text: doneText }]
+            }
+            if (draftId && has) {
+              return prev.map((m) => (m.id === draftId ? { ...m, text: doneText || m.text } : m))
+            }
+            return prev
+          })
+          draftIdRef.current = null
+        }
+        if (msg.type === 'error') {
+          setMessages((prev) => [...prev, { id: makeId(), role: 'assistant', text: `Error: ${msg.error || 'Unknown'}` }])
+        }
       }
     }
+    void connect()
     return () => {
+      closed = true
+      if (reconnectRef.current.timer) {
+        window.clearTimeout(reconnectRef.current.timer)
+        reconnectRef.current.timer = null
+      }
       try {
-        ws.close()
+        wsRef.current?.close()
       } catch {
         // ignore
       }
       wsRef.current = null
     }
-  }, [open, botId, conversationId])
+  }, [open, botId])
 
   useEffect(() => {
     const el = bodyRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
   }, [messages, stage])
+
+  const wsStatusText =
+    wsState === 'open'
+      ? 'Connected'
+      : wsState === 'retrying'
+        ? 'Reconnecting...'
+        : wsState === 'connecting'
+          ? 'Connecting...'
+          : wsState === 'error'
+            ? 'Error'
+            : 'Disconnected'
 
   const starters = useMemo(
     () => [
@@ -232,6 +290,7 @@ function FloatingGuide() {
             <div>
               <div className="floatingTitle">GravexStudio Guide</div>
               <div className="muted">Ask anything about the platform.</div>
+              <div className={`floatingWsStatus ${wsState}`}>WebSocket: {wsStatusText}</div>
             </div>
             <button className="btn iconBtn" onClick={() => setOpen(false)} aria-label="Close">
               ×

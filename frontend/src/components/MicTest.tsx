@@ -151,6 +151,8 @@ export default function MicTest({
   const [filesLoading, setFilesLoading] = useState(false)
   const [filesRecursive, setFilesRecursive] = useState(true)
   const [filesHidden, setFilesHidden] = useState(false)
+  const [showToolMessages, setShowToolMessages] = useState(false)
+  const [showWsSettings, setShowWsSettings] = useState(false)
   const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({})
   const [items, setItems] = useState<ChatItem[]>([])
   const [recording, setRecording] = useState(false)
@@ -192,6 +194,7 @@ export default function MicTest({
   const downloadMsgTimerRef = useRef<number | null>(null)
   const autoScrollLockRef = useRef(false)
   const lastScrollTopRef = useRef(0)
+  const interimIdRef = useRef<string | null>(null)
 
   const activeStage = useMemo(() => {
     if (connectionStage === 'disconnected' || connectionStage === 'error') return connectionStage
@@ -292,6 +295,7 @@ export default function MicTest({
     setOldestCursor(null)
     cacheAppliedConvRef.current = null
     isNearBottomRef.current = true
+    interimIdRef.current = null
   }, [conversationId])
 
   useEffect(() => {
@@ -305,10 +309,18 @@ export default function MicTest({
     setStageByConversationId((prev) => ({ ...prev, [cid]: next }))
   }
 
+  function clearInterim() {
+    const id = interimIdRef.current
+    if (!id) return
+    setItems((prev) => prev.filter((it) => it.id !== id))
+    interimIdRef.current = null
+  }
+
   function finalizeTurn(reqId?: string) {
     if (reqId && activeReqIdRef.current !== reqId) return
     activeReqIdRef.current = null
     draftAssistantIdRef.current = null
+    clearInterim()
     toolProgressIdRef.current = {}
     if (pendingUserIdRef.current) {
       const pendingId = pendingUserIdRef.current
@@ -336,6 +348,7 @@ export default function MicTest({
       setHasMore(raw.length === PAGE_SIZE)
       setOldestCursor(getOldestCursor(mapped))
       draftAssistantIdRef.current = null
+      interimIdRef.current = null
       if (onCacheUpdate) {
         const lastAt = mapped.length ? mapped[mapped.length - 1].created_at : undefined
         onCacheUpdate(cid, { items: mapped, lastAt })
@@ -576,10 +589,14 @@ export default function MicTest({
       if (msg.type === 'interim') {
         const text = String(msg.text || '').trim()
         if (!text) return
-        setItems((prev) => [
-          ...prev,
-          { id: makeId(), role: 'assistant', text, created_at: new Date().toISOString(), local: true },
-        ])
+        if (!interimIdRef.current) interimIdRef.current = makeId()
+        const interimId = interimIdRef.current
+        setItems((prev) => {
+          const hasInterim = prev.some((it) => it.id === interimId)
+          const nextItem = { id: interimId, role: 'assistant' as const, text, created_at: new Date().toISOString(), local: true }
+          if (!hasInterim) return [...prev, nextItem]
+          return prev.map((it) => (it.id === interimId ? { ...it, text, created_at: nextItem.created_at, local: true } : it))
+        })
         return
       }
       if (msg.type === 'text_delta') {
@@ -587,6 +604,7 @@ export default function MicTest({
         if (!isActiveConversationForReq(reqId)) return
         const delta = String(msg.delta || '')
         if (!delta) return
+        clearInterim()
         if (!draftAssistantIdRef.current) draftAssistantIdRef.current = makeId()
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
@@ -613,6 +631,7 @@ export default function MicTest({
         const errorText = String(msg.error || 'Unknown error')
         setErr(errorText)
         setConnectionStage('error')
+        clearInterim()
         setItems((prev) => [
           ...prev,
           { id: makeId(), role: 'assistant', text: `Error: ${errorText}`, created_at: new Date().toISOString(), local: true },
@@ -1005,6 +1024,7 @@ export default function MicTest({
           ? 'running'
           : containerStatus.status || 'stopped'
         : 'not started'
+  const wsStatusLabel = connectionStage === 'idle' ? 'connected' : connectionStage
   const modalItems = (files?.items || []).filter((it) => it.path && it.path !== '.')
   const tree = useMemo(() => buildTree(modalItems), [modalItems])
 
@@ -1018,18 +1038,28 @@ export default function MicTest({
     setExpandedPaths(next)
   }, [showFilesPane, tree, expandedPaths])
 
+  const displayItems = showToolMessages ? items : items.filter((it) => it.role !== 'tool')
+  const loadingDots = (
+    <span className="loadingDots" aria-label="Loading">
+      <span>.</span>
+      <span>.</span>
+      <span>.</span>
+    </span>
+  )
   const messages = (
     <>
-      {items.map((it) => {
+      {displayItems.map((it) => {
         const role = it.role
         const citations = role === 'assistant' ? normalizeCitations(it.citations) : []
+        const hasText = Boolean(it.text && it.text.trim())
+        const bubbleText = hasText ? it.text : role === 'assistant' ? loadingDots : '…'
         return (
           <div key={it.id} className={`msgRow ${role}`}>
             <div className={`avatar ${role}`} aria-hidden="true">
               <RoleIcon role={role} />
             </div>
             <div className={role === 'user' ? 'bubble user' : role === 'assistant' ? 'bubble assistant' : 'bubble tool'}>
-              <div className="bubbleText">{it.text || '…'}</div>
+              <div className="bubbleText">{bubbleText}</div>
               {role === 'assistant' && citations.length ? (
                 <div className="citationBlock">
                   <div className="citationTitle">Sources</div>
@@ -1196,6 +1226,38 @@ export default function MicTest({
         {err ? <div className="alert">{err}</div> : null}
         <div className={`assistantSplit ${hideWorkspace || !conversationId || !showFilesPane ? 'full' : ''}`}>
           <div className="assistantChatPane">
+            <div className="row gap" style={{ alignItems: 'center' }}>
+              <div className="pill" title={`stage: ${activeStage}`}>
+                ws: {wsStatusLabel}
+              </div>
+              <div className="spacer" />
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => setShowWsSettings((v) => !v)}
+                aria-pressed={showWsSettings}
+              >
+                WS settings: {showWsSettings ? 'on' : 'off'}
+              </button>
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => setShowToolMessages((v) => !v)}
+                aria-pressed={showToolMessages}
+              >
+                More info: {showToolMessages ? 'on' : 'off'}
+              </button>
+            </div>
+            {showWsSettings ? (
+              <div className="row gap" style={{ marginTop: 6 }}>
+                <label className="check">
+                  <input type="checkbox" checked={testFlag} onChange={(e) => setTestFlag(e.target.checked)} /> test
+                </label>
+                <label className="check">
+                  <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} /> debug
+                </label>
+              </div>
+            ) : null}
             <div className="chatArea" ref={scrollerRef}>
               {loadingOlder || hasMore ? (
                 <div className="muted" style={{ padding: '8px 0', textAlign: 'center' }}>
@@ -1292,6 +1354,9 @@ export default function MicTest({
         <label className="check">
           <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} /> debug
         </label>
+        <button className="btn ghost" type="button" onClick={() => setShowToolMessages((v) => !v)} aria-pressed={showToolMessages}>
+          More info: {showToolMessages ? 'on' : 'off'}
+        </button>
         <button className="btn" onClick={() => void initConversation()} disabled={!canInit}>
           {conversationId ? 'New conversation' : 'Start conversation'}
         </button>

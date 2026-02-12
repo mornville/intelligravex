@@ -1449,7 +1449,7 @@ def run_data_agent(
         "--model",
         "gpt-5.2",
         "--config",
-        'model_reasoning_effort="low"',
+        'model_reasoning_effort="high"',
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--json",

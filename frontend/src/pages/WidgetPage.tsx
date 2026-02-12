@@ -108,6 +108,9 @@ export default function WidgetPage() {
   const [assistantText, setAssistantText] = useState('')
   const [textInput, setTextInput] = useState('')
   const [err, setErr] = useState<string | null>(null)
+  const [wsState, setWsState] = useState<'connecting' | 'open' | 'retrying' | 'disconnected' | 'error'>(
+    'disconnected',
+  )
   const [menuOpen, setMenuOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [modeSaving, setModeSaving] = useState(false)
@@ -116,6 +119,7 @@ export default function WidgetPage() {
   const [voiceSetupPending, setVoiceSetupPending] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectRef = useRef<{ attempt: number; timer: number | null }>({ attempt: 0, timer: null })
   const recorderRef = useRef<Recorder | null>(null)
   const playerRef = useRef<WavQueuePlayer | null>(null)
   const recordingRef = useRef(false)
@@ -258,32 +262,66 @@ export default function WidgetPage() {
   useEffect(() => {
     if (!botId) return
     setStage('disconnected')
+    setWsState('connecting')
     const storedConversationId = readStoredConversation(botId)
     setConversationId(storedConversationId)
     setMessages([])
     setAssistantText('')
     setErr(null)
-    const token = getBasicAuthToken()
-    const authQuery = token ? `?auth=${encodeURIComponent(token)}` : ''
-    const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk${authQuery}`)
-    wsRef.current = ws
     playerRef.current?.close()
     playerRef.current = new WavQueuePlayer()
-    ws.onopen = () => {
-      setStage('idle')
-      initConversation(storedConversationId)
+    let closed = false
+
+    const scheduleReconnect = () => {
+      if (closed) return
+      const nextAttempt = Math.min(reconnectRef.current.attempt + 1, 6)
+      reconnectRef.current.attempt = nextAttempt
+      const baseDelay = Math.min(1000 * 2 ** (nextAttempt - 1), 10000)
+      const jitter = Math.floor(Math.random() * 300)
+      setWsState('retrying')
+      if (reconnectRef.current.timer) {
+        window.clearTimeout(reconnectRef.current.timer)
+      }
+      reconnectRef.current.timer = window.setTimeout(() => {
+        void connect()
+      }, baseDelay + jitter)
     }
-    ws.onclose = () => {
-      setStage('disconnected')
-    }
-    ws.onerror = () => {
-      setStage('error')
-      setErr('WebSocket error')
-    }
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== 'string') return
-      let msg: any
-      try {
+
+    const connect = () => {
+      if (closed) return
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return
+      setWsState(reconnectRef.current.attempt > 0 ? 'retrying' : 'connecting')
+      const token = getBasicAuthToken()
+      const authQuery = token ? `?auth=${encodeURIComponent(token)}` : ''
+      const ws = new WebSocket(`${wsBase()}/ws/bots/${botId}/talk${authQuery}`)
+      wsRef.current = ws
+      ws.onopen = () => {
+        reconnectRef.current.attempt = 0
+        setWsState('open')
+        setStage('idle')
+        setErr(null)
+        initConversation(readStoredConversation(botId))
+      }
+      ws.onclose = () => {
+        wsRef.current = null
+        setStage('disconnected')
+        setWsState('disconnected')
+        scheduleReconnect()
+      }
+      ws.onerror = () => {
+        setStage('error')
+        setWsState('error')
+        setErr('WebSocket error')
+        try {
+          ws.close()
+        } catch {
+          // ignore
+        }
+      }
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== 'string') return
+        let msg: any
+        try {
         msg = JSON.parse(ev.data)
       } catch {
         return
@@ -353,9 +391,16 @@ export default function WidgetPage() {
         }
       }
     }
+    }
+    void connect()
     return () => {
+      closed = true
+      if (reconnectRef.current.timer) {
+        window.clearTimeout(reconnectRef.current.timer)
+        reconnectRef.current.timer = null
+      }
       try {
-        ws.close()
+        wsRef.current?.close()
       } catch {
         // ignore
       }
@@ -631,6 +676,16 @@ export default function WidgetPage() {
   const micClass = `widgetMic ${recording ? 'recording' : ''} ${busy ? 'busy' : ''}`
   const textClass = `widgetTextCard ${busy ? 'busy' : ''}`
   const micCardClass = `${textClass} widgetMicOnly`
+  const wsStatusText =
+    wsState === 'open'
+      ? 'Connected'
+      : wsState === 'retrying'
+        ? 'Reconnecting...'
+        : wsState === 'connecting'
+          ? 'Connecting...'
+          : wsState === 'error'
+            ? 'Error'
+            : 'Disconnected'
   const onboardingTooltip = showRefreshTooltip
     ? 'Setup complete. Go ahead and refresh your mic overlay; you will be able to use it.'
     : onboardingPending
@@ -654,6 +709,7 @@ export default function WidgetPage() {
         ) : (
           <>
             <div className="widgetCenter">
+              <div className={`widgetWsStatus ${wsState}`}>WebSocket: {wsStatusText}</div>
               {isTextMode ? (
                 <div className={textClass}>
                   <div className="widgetConversation" onScroll={handleScroll} ref={scrollRef}>

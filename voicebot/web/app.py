@@ -21,7 +21,7 @@ import time
 import webbrowser
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Generator, Optional
+from typing import Any, Awaitable, Callable, Generator, Optional
 from urllib.parse import quote as _url_quote, parse_qsl
 from uuid import UUID
 
@@ -4757,6 +4757,343 @@ def create_app() -> FastAPI:
         total_ms = int(round((t1 - t0) * 1000.0))
         return text, ttfb_ms, total_ms
 
+    class _NullWebSocket:
+        async def send_text(self, _text: str) -> None:
+            return None
+
+    async def _run_data_agent_tool_persist(
+        *,
+        conversation_id: UUID,
+        bot_id: UUID,
+        what_to_do: str,
+        req_id: str,
+        ws: Optional[WebSocket],
+        wait_reply: str,
+        send_wait: bool,
+        send_wait_cb: Optional[Callable[[str], Awaitable[None]]],
+        stream_followup: bool,
+    ) -> dict[str, Any]:
+        """
+        Run Isolated Workspace tool and persist tool + assistant messages even if the WS disconnects.
+        Returns a dict with tool_result, tool_failed, rendered_reply, llm_ttfb_ms, llm_total_ms,
+        followup_streamed, tool_result_persisted, assistant_persisted.
+        """
+        outcome: dict[str, Any] = {
+            "tool_result": {},
+            "tool_failed": True,
+            "rendered_reply": "",
+            "llm_ttfb_ms": None,
+            "llm_total_ms": None,
+            "followup_streamed": False,
+            "tool_result_persisted": False,
+            "assistant_persisted": False,
+        }
+        loop = asyncio.get_running_loop()
+
+        def _emit_tool_progress(text: str) -> None:
+            t = (text or "").strip()
+            if not t or ws is None:
+                return
+            asyncio.run_coroutine_threadsafe(
+                _ws_send_json(ws, {"type": "interim", "req_id": req_id, "kind": "tool", "text": t}),
+                loop,
+            )
+
+        async def _send_wait(text: str) -> None:
+            t = (text or "").strip()
+            if not t or ws is None or not send_wait:
+                return
+            if send_wait_cb is not None:
+                await send_wait_cb(t)
+                return
+            await _ws_send_json(ws, {"type": "interim", "req_id": req_id, "kind": "wait", "text": t})
+
+        def _strip_no_reply(text: str) -> str:
+            raw = text or ""
+            if re.fullmatch(r"\s*<no_reply>\s*", raw, flags=re.IGNORECASE):
+                return ""
+            return re.sub(r"\s*<no_reply>\s*$", "", raw, flags=re.IGNORECASE).strip()
+
+        try:
+            with Session(engine) as session:
+                bot = get_bot(session, bot_id)
+                if not bool(getattr(bot, "enable_data_agent", False)):
+                    outcome["tool_result"] = {
+                        "ok": False,
+                        "error": {"message": "Isolated Workspace is disabled for this bot."},
+                    }
+                    outcome["tool_failed"] = True
+                    raise RuntimeError("data_agent_disabled")
+                if not docker_available():
+                    outcome["tool_result"] = {
+                        "ok": False,
+                        "error": {"message": "Docker is not available. Install Docker to use Isolated Workspace."},
+                    }
+                    outcome["tool_failed"] = True
+                    raise RuntimeError("docker_unavailable")
+                if not what_to_do:
+                    outcome["tool_result"] = {
+                        "ok": False,
+                        "error": {"message": "Missing required tool arg: what_to_do"},
+                    }
+                    outcome["tool_failed"] = True
+                    raise RuntimeError("missing_what_to_do")
+
+                meta_current = _get_conversation_meta(session, conversation_id=conversation_id)
+                da = _data_agent_meta(meta_current)
+                workspace_dir = (
+                    str(da.get("workspace_dir") or "").strip()
+                    or default_workspace_dir_for_conversation(conversation_id)
+                )
+                container_id = str(da.get("container_id") or "").strip()
+                session_id = str(da.get("session_id") or "").strip()
+                auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
+                git_token = (
+                    _get_git_token_plaintext(session, provider="github")
+                    if _git_auth_mode(auth_json_raw) == "token"
+                    else ""
+                )
+
+                if not container_id:
+                    api_key = _get_openai_api_key_for_bot(session, bot=bot)
+                    if not api_key:
+                        outcome["tool_result"] = {
+                            "ok": False,
+                            "error": {
+                                "message": "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
+                            },
+                        }
+                        outcome["tool_failed"] = True
+                        raise RuntimeError("missing_openai_key")
+                    container_id = await asyncio.to_thread(
+                        ensure_conversation_container,
+                        conversation_id=conversation_id,
+                        workspace_dir=workspace_dir,
+                        openai_api_key=api_key,
+                        git_token=git_token,
+                        auth_json=auth_json_raw,
+                    )
+                    meta_current = merge_conversation_metadata(
+                        session,
+                        conversation_id=conversation_id,
+                        patch={
+                            "data_agent.container_id": container_id,
+                            "data_agent.workspace_dir": workspace_dir,
+                        },
+                    )
+
+                container_name, ports = _data_agent_container_info(
+                    conversation_id=conversation_id,
+                    container_id=container_id,
+                )
+                if container_name or ports:
+                    meta_current = merge_conversation_metadata(
+                        session,
+                        conversation_id=conversation_id,
+                        patch={
+                            "data_agent.container_name": container_name,
+                            "data_agent.ports": ports,
+                        },
+                    )
+
+                ctx = _build_data_agent_conversation_context(
+                    session,
+                    bot=bot,
+                    conversation_id=conversation_id,
+                    meta=meta_current,
+                )
+                api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
+                auth_json = _merge_git_token_auth(auth_json_raw, git_token)
+                sys_prompt = (
+                    (getattr(bot, "data_agent_system_prompt", "") or "").strip()
+                    or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
+                )
+
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    run_data_agent,
+                    conversation_id=conversation_id,
+                    container_id=container_id,
+                    session_id=session_id,
+                    workspace_dir=workspace_dir,
+                    api_spec_text=api_spec_text,
+                    auth_json=auth_json,
+                    system_prompt=sys_prompt,
+                    conversation_context=ctx,
+                    what_to_do=what_to_do,
+                    on_stream=_emit_tool_progress,
+                )
+            )
+            if send_wait and wait_reply:
+                await _send_wait(wait_reply)
+            last_wait = time.time()
+            while not task.done():
+                if send_wait and wait_reply and (time.time() - last_wait) >= 10.0:
+                    await _send_wait(wait_reply)
+                    last_wait = time.time()
+                await asyncio.sleep(0.2)
+            da_res = await task
+
+            with Session(engine) as session:
+                if da_res.session_id and da_res.session_id != session_id:
+                    merge_conversation_metadata(
+                        session,
+                        conversation_id=conversation_id,
+                        patch={"data_agent.session_id": da_res.session_id},
+                    )
+
+            tool_result = {
+                "ok": bool(da_res.ok),
+                "result_text": da_res.result_text,
+                "data_agent_container_id": da_res.container_id,
+                "data_agent_container_name": container_name,
+                "data_agent_ports": ports,
+                "data_agent_session_id": da_res.session_id,
+                "data_agent_output_file": da_res.output_file,
+                "data_agent_debug_file": da_res.debug_file,
+                "error": da_res.error,
+            }
+            outcome["tool_result"] = tool_result
+            outcome["tool_failed"] = not bool(da_res.ok)
+
+            with Session(engine) as session:
+                bot = get_bot(session, bot_id)
+                conv = get_conversation(session, conversation_id)
+                msg = add_message_with_metrics(
+                    session,
+                    conversation_id=conversation_id,
+                    role="tool",
+                    content=json.dumps({"tool": "give_command_to_data_agent", "result": tool_result}, ensure_ascii=False),
+                    sender_bot_id=bot.id,
+                    sender_name=bot.name,
+                )
+                if bool(conv.is_group):
+                    _mirror_group_message(session, conv=conv, msg=msg)
+            outcome["tool_result_persisted"] = True
+
+            rendered_reply = ""
+            llm_ttfb_ms: Optional[int] = None
+            llm_total_ms: Optional[int] = None
+            followup_streamed = False
+            with Session(engine) as session:
+                bot = get_bot(session, bot_id)
+                provider, llm_api_key, _ = _require_llm_client(session, bot=bot)
+                base_history = await _build_history_budgeted_async(
+                    bot_id=bot.id,
+                    conversation_id=conversation_id,
+                    llm_api_key=llm_api_key,
+                    status_cb=None,
+                )
+                history_for_cost = base_history
+                if (
+                    bool(getattr(bot, "data_agent_return_result_directly", False))
+                    and bool(da_res.ok)
+                    and str(da_res.result_text or "").strip()
+                ):
+                    rendered_reply = str(da_res.result_text or "").strip()
+                else:
+                    followup_history = list(base_history)
+                    followup_history.append(
+                        Message(
+                            role="system",
+                            content=(
+                                ("The previous tool call failed. " if outcome["tool_failed"] else "")
+                                + "Using the latest tool result(s) above, write the next assistant reply. "
+                                "If the tool result contains codex_result_text, rephrase it for the user and do not mention file paths. "
+                                "Do not call any tools."
+                            ),
+                        )
+                    )
+                    followup_model = bot.openai_model
+                    follow_llm = _build_llm_client(
+                        bot=bot,
+                        api_key=llm_api_key,
+                        model_override=followup_model,
+                    )
+                    target_ws: WebSocket = ws if (stream_followup and ws is not None) else _NullWebSocket()  # type: ignore[assignment]
+                    text2, ttfb2, total2 = await _stream_llm_reply(
+                        ws=target_ws, req_id=req_id, llm=follow_llm, messages=followup_history
+                    )
+                    rendered_reply = text2.strip()
+                    llm_ttfb_ms = ttfb2
+                    llm_total_ms = total2
+                    followup_streamed = bool(stream_followup and ws is not None)
+                    history_for_cost = followup_history
+
+                rendered_reply = _strip_no_reply(rendered_reply)
+                if rendered_reply:
+                    in_tok = int(estimate_messages_tokens(history_for_cost, bot.openai_model) or 0)
+                    out_tok = int(estimate_text_tokens(rendered_reply, bot.openai_model) or 0)
+                    price = _get_model_price(session, provider=provider, model=bot.openai_model)
+                    cost = float(
+                        estimate_cost_usd(
+                            model_price=price,
+                            input_tokens=in_tok,
+                            output_tokens=out_tok,
+                        )
+                        or 0.0
+                    )
+                    conv = get_conversation(session, conversation_id)
+                    msg = add_message_with_metrics(
+                        session,
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=rendered_reply,
+                        input_tokens_est=in_tok or None,
+                        output_tokens_est=out_tok or None,
+                        cost_usd_est=cost or None,
+                        llm_ttfb_ms=llm_ttfb_ms,
+                        llm_total_ms=llm_total_ms,
+                        total_ms=llm_total_ms,
+                    )
+                    if bool(conv.is_group):
+                        _mirror_group_message(session, conv=conv, msg=msg)
+                    update_conversation_metrics(
+                        session,
+                        conversation_id=conversation_id,
+                        add_input_tokens_est=in_tok,
+                        add_output_tokens_est=out_tok,
+                        add_cost_usd_est=cost,
+                        last_asr_ms=None,
+                        last_llm_ttfb_ms=llm_ttfb_ms,
+                        last_llm_total_ms=llm_total_ms,
+                        last_tts_first_audio_ms=None,
+                        last_total_ms=llm_total_ms,
+                    )
+                    outcome["assistant_persisted"] = True
+
+            outcome["rendered_reply"] = rendered_reply
+            outcome["llm_ttfb_ms"] = llm_ttfb_ms
+            outcome["llm_total_ms"] = llm_total_ms
+            outcome["followup_streamed"] = followup_streamed
+
+        except Exception:
+            # Ensure tool error is persisted if we can.
+            if not outcome["tool_result"]:
+                outcome["tool_result"] = {"ok": False, "error": {"message": "Isolated Workspace failed."}}
+            try:
+                with Session(engine) as session:
+                    bot = get_bot(session, bot_id)
+                    conv = get_conversation(session, conversation_id)
+                    msg = add_message_with_metrics(
+                        session,
+                        conversation_id=conversation_id,
+                        role="tool",
+                        content=json.dumps(
+                            {"tool": "give_command_to_data_agent", "result": outcome["tool_result"]},
+                            ensure_ascii=False,
+                        ),
+                        sender_bot_id=bot.id,
+                        sender_name=bot.name,
+                    )
+                    if bool(conv.is_group):
+                        _mirror_group_message(session, conv=conv, msg=msg)
+                outcome["tool_result_persisted"] = True
+            except Exception:
+                pass
+
+        return outcome
+
     def _estimate_wav_seconds(wav_bytes: bytes, sr: int) -> float:
         # Best-effort WAV duration extraction to avoid interrupting ongoing speech.
         # If parsing fails, fall back to a heuristic based on byte size.
@@ -5376,6 +5713,8 @@ def create_app() -> FastAPI:
                                     tool_name = tc.name
                                     if tool_name == "set_variable":
                                         tool_name = "set_metadata"
+                                    skip_tool_result_persist = False
+                                    skip_tool_result_persist = False
 
                                     await _ws_send_json(
                                         ws,
@@ -5660,196 +5999,39 @@ def create_app() -> FastAPI:
                                                             needs_followup_llm = True
                                                             rendered_reply = ""
                                     elif tool_name == "give_command_to_data_agent":
-                                        if not bool(getattr(bot, "enable_data_agent", False)):
+                                        what_to_do = str(patch.get("what_to_do") or "").strip()
+                                        if not what_to_do:
                                             tool_result = {
                                                 "ok": False,
-                                                "error": {"message": "Isolated Workspace is disabled for this bot."},
-                                            }
-                                            tool_failed = True
-                                            needs_followup_llm = True
-                                            rendered_reply = ""
-                                        elif not docker_available():
-                                            tool_result = {
-                                                "ok": False,
-                                                "error": {
-                                                    "message": "Docker is not available. Install Docker to use Isolated Workspace.",
-                                                },
+                                                "error": {"message": "Missing required tool arg: what_to_do"},
                                             }
                                             tool_failed = True
                                             needs_followup_llm = True
                                             rendered_reply = ""
                                         else:
-                                            what_to_do = str(patch.get("what_to_do") or "").strip()
-                                            if not what_to_do:
-                                                tool_result = {
-                                                    "ok": False,
-                                                    "error": {"message": "Missing required tool arg: what_to_do"},
-                                                }
-                                                tool_failed = True
-                                                needs_followup_llm = True
-                                                rendered_reply = ""
-                                            else:
-                                                # Ensure the per-conversation runtime exists (Docker) and run Codex CLI.
-                                                try:
-                                                    logger.info(
-                                                        "Isolated Workspace tool: start conv=%s bot=%s what_to_do=%s",
-                                                        conv_id,
-                                                        bot_id,
-                                                        (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
-                                                    )
-                                                    da = _data_agent_meta(meta_current)
-                                                    workspace_dir = (
-                                                        str(da.get("workspace_dir") or "").strip()
-                                                        or default_workspace_dir_for_conversation(conv_id)
-                                                    )
-                                                    container_id = str(da.get("container_id") or "").strip()
-                                                    session_id = str(da.get("session_id") or "").strip()
-
-                                                    api_key = _get_openai_api_key_for_bot(session, bot=bot)
-                                                    if not api_key:
-                                                        raise RuntimeError(
-                                                            "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
-                                                        )
-                                                    auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
-                                                    git_token = (
-                                                        _get_git_token_plaintext(session, provider="github")
-                                                        if _git_auth_mode(auth_json_raw) == "token"
-                                                        else ""
-                                                    )
-
-                                                    # Ensure the container exists and is running even if metadata has a stale id.
-                                                    ensured_container_id = await asyncio.to_thread(
-                                                        ensure_conversation_container,
-                                                        conversation_id=conv_id,
-                                                        workspace_dir=workspace_dir,
-                                                        openai_api_key=api_key,
-                                                        git_token=git_token,
-                                                        auth_json=auth_json_raw,
-                                                    )
-                                                    if ensured_container_id and ensured_container_id != container_id:
-                                                        container_id = ensured_container_id
-                                                        meta_current = merge_conversation_metadata(
-                                                            session,
-                                                            conversation_id=conv_id,
-                                                            patch={
-                                                                "data_agent.container_id": container_id,
-                                                                "data_agent.workspace_dir": workspace_dir,
-                                                            },
-                                                        )
-                                                    container_name, ports = _data_agent_container_info(
-                                                        conversation_id=conv_id,
-                                                        container_id=container_id,
-                                                    )
-                                                    if container_name or ports:
-                                                        meta_current = merge_conversation_metadata(
-                                                            session,
-                                                            conversation_id=conv_id,
-                                                            patch={
-                                                                "data_agent.container_name": container_name,
-                                                                "data_agent.ports": ports,
-                                                            },
-                                                        )
-
-                                                    ctx = _build_data_agent_conversation_context(
-                                                        session,
-                                                        bot=bot,
-                                                        conversation_id=conv_id,
-                                                        meta=meta_current,
-                                                    )
-                                                    api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                                                    auth_json = _merge_git_token_auth(auth_json_raw, git_token)
-                                                    sys_prompt = (
-                                                        (getattr(bot, "data_agent_system_prompt", "") or "").strip()
-                                                        or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
-                                                    )
-                                                    def _emit_tool_progress(text: str) -> None:
-                                                        t = (text or "").strip()
-                                                        if not t:
-                                                            return
-                                                        asyncio.run_coroutine_threadsafe(
-                                                            _ws_send_json(
-                                                                ws,
-                                                                {
-                                                                    "type": "tool_progress",
-                                                                    "req_id": req_id,
-                                                                    "name": tool_name,
-                                                                    "text": t,
-                                                                },
-                                                            ),
-                                                            loop,
-                                                        )
-
-                                                    task = asyncio.create_task(
-                                                        asyncio.to_thread(
-                                                            run_data_agent,
-                                                            conversation_id=conv_id,
-                                                            container_id=container_id,
-                                                            session_id=session_id,
-                                                            workspace_dir=workspace_dir,
-                                                            api_spec_text=api_spec_text,
-                                                            auth_json=auth_json,
-                                                            system_prompt=sys_prompt,
-                                                            conversation_context=ctx,
-                                                            what_to_do=what_to_do,
-                                                            on_stream=_emit_tool_progress,
-                                                        )
-                                                    )
-                                                    if wait_reply:
-                                                        await _send_interim(wait_reply, kind="wait")
-                                                    last_wait = time.time()
-                                                    while not task.done():
-                                                        if wait_reply and (time.time() - last_wait) >= 10.0:
-                                                            await _send_interim(wait_reply, kind="wait")
-                                                            last_wait = time.time()
-                                                        await asyncio.sleep(0.2)
-                                                    da_res = await task
-
-                                                    if da_res.session_id and da_res.session_id != session_id:
-                                                        meta_current = merge_conversation_metadata(
-                                                            session,
-                                                            conversation_id=conv_id,
-                                                            patch={"data_agent.session_id": da_res.session_id},
-                                                        )
-                                                    logger.info(
-                                                        "Isolated Workspace tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
-                                                        conv_id,
-                                                        bool(da_res.ok),
-                                                        da_res.container_id,
-                                                        da_res.session_id,
-                                                        da_res.output_file,
-                                                        da_res.error,
-                                                    )
-                                                    tool_result = {
-                                                        "ok": bool(da_res.ok),
-                                                        "result_text": da_res.result_text,
-                                                        "data_agent_container_id": da_res.container_id,
-                                                        "data_agent_container_name": container_name,
-                                                        "data_agent_ports": ports,
-                                                        "data_agent_session_id": da_res.session_id,
-                                                        "data_agent_output_file": da_res.output_file,
-                                                        "data_agent_debug_file": da_res.debug_file,
-                                                        "error": da_res.error,
-                                                    }
-                                                    tool_failed = not bool(da_res.ok)
-                                                    if (
-                                                        bool(getattr(bot, "data_agent_return_result_directly", False))
-                                                        and bool(da_res.ok)
-                                                        and str(da_res.result_text or "").strip()
-                                                    ):
-                                                        needs_followup_llm = False
-                                                        rendered_reply = str(da_res.result_text or "").strip()
-                                                    else:
-                                                        needs_followup_llm = True
-                                                        rendered_reply = ""
-                                                except Exception as exc:
-                                                    logger.exception("Isolated Workspace tool failed conv=%s bot=%s", conv_id, bot_id)
-                                                    tool_result = {
-                                                        "ok": False,
-                                                        "error": {"message": str(exc)},
-                                                    }
-                                                    tool_failed = True
-                                                    needs_followup_llm = True
-                                                    rendered_reply = ""
+                                            data_task = asyncio.create_task(
+                                                _run_data_agent_tool_persist(
+                                                    conversation_id=conv_id,
+                                                    bot_id=bot.id,
+                                                    what_to_do=what_to_do,
+                                                    req_id=req_id,
+                                                    ws=ws,
+                                                    wait_reply=wait_reply,
+                                                    send_wait=True,
+                                                    send_wait_cb=lambda t: _send_interim(t, kind="wait"),
+                                                    stream_followup=False,
+                                                )
+                                            )
+                                            outcome = await asyncio.shield(data_task)
+                                            tool_result = outcome.get("tool_result") or {}
+                                            tool_failed = bool(outcome.get("tool_failed"))
+                                            rendered_reply = str(outcome.get("rendered_reply") or "")
+                                            needs_followup_llm = False
+                                            if outcome.get("followup_streamed"):
+                                                followup_streamed = True
+                                            if outcome.get("assistant_persisted"):
+                                                followup_persisted = True
+                                            skip_tool_result_persist = bool(outcome.get("tool_result_persisted"))
                                     else:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
@@ -6133,12 +6315,13 @@ def create_app() -> FastAPI:
                                         rendered_reply = f"Host action failed: {msg}"
                                         needs_followup_llm = False
 
-                                    add_message_with_metrics(
-                                        session,
-                                        conversation_id=conv_id,
-                                        role="tool",
-                                        content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
-                                    )
+                                    if not skip_tool_result_persist:
+                                        add_message_with_metrics(
+                                            session,
+                                            conversation_id=conv_id,
+                                            role="tool",
+                                            content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                                        )
                                     if isinstance(tool_result, dict):
                                         meta_current = tool_result.get("metadata") or meta_current
 
@@ -7029,191 +7212,39 @@ def create_app() -> FastAPI:
                                                             needs_followup_llm = True
                                                             rendered_reply = ""
                                     elif tool_name == "give_command_to_data_agent":
-                                        if not bool(getattr(bot2, "enable_data_agent", False)):
+                                        what_to_do = str(patch.get("what_to_do") or "").strip()
+                                        if not what_to_do:
                                             tool_result = {
                                                 "ok": False,
-                                                "error": {"message": "Isolated Workspace is disabled for this bot."},
-                                            }
-                                            tool_failed = True
-                                            needs_followup_llm = True
-                                            rendered_reply = ""
-                                        elif not docker_available():
-                                            tool_result = {
-                                                "ok": False,
-                                                "error": {"message": "Docker is not available. Install Docker to use Isolated Workspace."},
+                                                "error": {"message": "Missing required tool arg: what_to_do"},
                                             }
                                             tool_failed = True
                                             needs_followup_llm = True
                                             rendered_reply = ""
                                         else:
-                                            what_to_do = str(patch.get("what_to_do") or "").strip()
-                                            if not what_to_do:
-                                                tool_result = {
-                                                    "ok": False,
-                                                    "error": {"message": "Missing required tool arg: what_to_do"},
-                                                }
-                                                tool_failed = True
-                                                needs_followup_llm = True
-                                                rendered_reply = ""
-                                            else:
-                                                try:
-                                                    logger.info(
-                                                        "Isolated Workspace tool: start conv=%s bot=%s what_to_do=%s",
-                                                        conv_id,
-                                                        bot_id,
-                                                        (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
-                                                    )
-                                                    da = _data_agent_meta(meta_current)
-                                                    workspace_dir = (
-                                                        str(da.get("workspace_dir") or "").strip()
-                                                        or default_workspace_dir_for_conversation(conv_id)
-                                                    )
-                                                    container_id = str(da.get("container_id") or "").strip()
-                                                    session_id = str(da.get("session_id") or "").strip()
-
-                                                    api_key = _get_openai_api_key_for_bot(session, bot=bot2)
-                                                    if not api_key:
-                                                        raise RuntimeError(
-                                                            "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
-                                                        )
-                                                    auth_json_raw = getattr(bot2, "data_agent_auth_json", "") or "{}"
-                                                    git_token = (
-                                                        _get_git_token_plaintext(session, provider="github")
-                                                        if _git_auth_mode(auth_json_raw) == "token"
-                                                        else ""
-                                                    )
-
-                                                    if not container_id:
-                                                        container_id = await asyncio.to_thread(
-                                                            ensure_conversation_container,
-                                                            conversation_id=conv_id,
-                                                            workspace_dir=workspace_dir,
-                                                            openai_api_key=api_key,
-                                                            git_token=git_token,
-                                                            auth_json=auth_json_raw,
-                                                        )
-                                                        meta_current = merge_conversation_metadata(
-                                                            session,
-                                                            conversation_id=conv_id,
-                                                            patch={
-                                                                "data_agent.container_id": container_id,
-                                                                "data_agent.workspace_dir": workspace_dir,
-                                                            },
-                                                        )
-                                                    container_name, ports = _data_agent_container_info(
-                                                        conversation_id=conv_id,
-                                                        container_id=container_id,
-                                                    )
-                                                    if container_name or ports:
-                                                        meta_current = merge_conversation_metadata(
-                                                            session,
-                                                            conversation_id=conv_id,
-                                                            patch={
-                                                                "data_agent.container_name": container_name,
-                                                                "data_agent.ports": ports,
-                                                            },
-                                                        )
-
-                                                    ctx = _build_data_agent_conversation_context(
-                                                        session,
-                                                        bot=bot2,
-                                                        conversation_id=conv_id,
-                                                        meta=meta_current,
-                                                    )
-                                                    api_spec_text = getattr(bot2, "data_agent_api_spec_text", "") or ""
-                                                    auth_json = _merge_git_token_auth(auth_json_raw, git_token)
-                                                    sys_prompt = (
-                                                        (getattr(bot2, "data_agent_system_prompt", "") or "").strip()
-                                                        or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
-                                                    )
-                                                    def _emit_tool_progress(text: str) -> None:
-                                                        t = (text or "").strip()
-                                                        if not t:
-                                                            return
-                                                        asyncio.run_coroutine_threadsafe(
-                                                            _ws_send_json(
-                                                                ws,
-                                                                {
-                                                                    "type": "tool_progress",
-                                                                    "req_id": req_id,
-                                                                    "name": tool_name,
-                                                                    "text": t,
-                                                                },
-                                                            ),
-                                                            loop,
-                                                        )
-
-                                                    task = asyncio.create_task(
-                                                        asyncio.to_thread(
-                                                            run_data_agent,
-                                                            conversation_id=conv_id,
-                                                            container_id=container_id,
-                                                            session_id=session_id,
-                                                            workspace_dir=workspace_dir,
-                                                            api_spec_text=api_spec_text,
-                                                            auth_json=auth_json,
-                                                            system_prompt=sys_prompt,
-                                                            conversation_context=ctx,
-                                                            what_to_do=what_to_do,
-                                                            on_stream=_emit_tool_progress,
-                                                        )
-                                                    )
-                                                    if wait_reply:
-                                                        await _send_interim(wait_reply, kind="wait")
-                                                    last_wait = time.time()
-                                                    while not task.done():
-                                                        if wait_reply and (time.time() - last_wait) >= 10.0:
-                                                            await _send_interim(wait_reply, kind="wait")
-                                                            last_wait = time.time()
-                                                        await asyncio.sleep(0.2)
-                                                    da_res = await task
-
-                                                    if da_res.session_id and da_res.session_id != session_id:
-                                                        meta_current = merge_conversation_metadata(
-                                                            session,
-                                                            conversation_id=conv_id,
-                                                            patch={"data_agent.session_id": da_res.session_id},
-                                                        )
-                                                    logger.info(
-                                                        "Isolated Workspace tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
-                                                        conv_id,
-                                                        bool(da_res.ok),
-                                                        da_res.container_id,
-                                                        da_res.session_id,
-                                                        da_res.output_file,
-                                                        da_res.error,
-                                                    )
-                                                    tool_result = {
-                                                        "ok": bool(da_res.ok),
-                                                        "result_text": da_res.result_text,
-                                                        "data_agent_container_id": da_res.container_id,
-                                                        "data_agent_container_name": container_name,
-                                                        "data_agent_ports": ports,
-                                                        "data_agent_session_id": da_res.session_id,
-                                                        "data_agent_output_file": da_res.output_file,
-                                                        "data_agent_debug_file": da_res.debug_file,
-                                                        "error": da_res.error,
-                                                    }
-                                                    tool_failed = not bool(da_res.ok)
-                                                    if (
-                                                        bool(getattr(bot2, "data_agent_return_result_directly", False))
-                                                        and bool(da_res.ok)
-                                                        and str(da_res.result_text or "").strip()
-                                                    ):
-                                                        needs_followup_llm = False
-                                                        rendered_reply = str(da_res.result_text or "").strip()
-                                                    else:
-                                                        needs_followup_llm = True
-                                                        rendered_reply = ""
-                                                except Exception as exc:
-                                                    logger.exception("Isolated Workspace tool failed conv=%s bot=%s", conv_id, bot_id)
-                                                    tool_result = {
-                                                        "ok": False,
-                                                        "error": {"message": str(exc)},
-                                                    }
-                                                    tool_failed = True
-                                                    needs_followup_llm = True
-                                                    rendered_reply = ""
+                                            data_task = asyncio.create_task(
+                                                _run_data_agent_tool_persist(
+                                                    conversation_id=conv_id,
+                                                    bot_id=bot2.id,
+                                                    what_to_do=what_to_do,
+                                                    req_id=req_id,
+                                                    ws=ws,
+                                                    wait_reply=wait_reply,
+                                                    send_wait=True,
+                                                    send_wait_cb=lambda t: _send_interim(t, kind="wait"),
+                                                    stream_followup=False,
+                                                )
+                                            )
+                                            outcome = await asyncio.shield(data_task)
+                                            tool_result = outcome.get("tool_result") or {}
+                                            tool_failed = bool(outcome.get("tool_failed"))
+                                            rendered_reply = str(outcome.get("rendered_reply") or "")
+                                            needs_followup_llm = False
+                                            if outcome.get("followup_streamed"):
+                                                followup_streamed = True
+                                            if outcome.get("assistant_persisted"):
+                                                followup_persisted = True
+                                            skip_tool_result_persist = bool(outcome.get("tool_result_persisted"))
                                     else:
                                         tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                         if not tool_cfg:
@@ -7502,12 +7533,13 @@ def create_app() -> FastAPI:
                                         rendered_reply = f"Host action failed: {msg}"
                                         needs_followup_llm = False
 
-                                    add_message_with_metrics(
-                                        session,
-                                        conversation_id=conv_id,
-                                        role="tool",
-                                        content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
-                                    )
+                                    if not skip_tool_result_persist:
+                                        add_message_with_metrics(
+                                            session,
+                                            conversation_id=conv_id,
+                                            role="tool",
+                                            content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                                        )
                                     if isinstance(tool_result, dict):
                                         meta_current = tool_result.get("metadata") or meta_current
 
@@ -8822,6 +8854,7 @@ def create_app() -> FastAPI:
                                 tool_name = tc.name
                                 if tool_name == "set_variable":
                                     tool_name = "set_metadata"
+                                skip_tool_result_persist = False
 
                                 tool_args = json.loads(tc.arguments_json or "{}")
                                 if not isinstance(tool_args, dict):
@@ -9064,183 +9097,38 @@ def create_app() -> FastAPI:
                                                         needs_followup_llm = True
                                                         final = ""
                                 elif tool_name == "give_command_to_data_agent":
-                                    if not bool(getattr(bot, "enable_data_agent", False)):
-                                        tool_result = {
-                                            "ok": False,
-                                            "error": {"message": "Isolated Workspace is disabled for this bot."},
-                                        }
-                                        tool_failed = True
-                                        needs_followup_llm = True
-                                        final = ""
-                                    elif not docker_available():
-                                        tool_result = {
-                                            "ok": False,
-                                            "error": {"message": "Docker is not available. Install Docker to use Isolated Workspace."},
-                                        }
+                                    what_to_do = str(patch.get("what_to_do") or "").strip()
+                                    if not what_to_do:
+                                        tool_result = {"ok": False, "error": {"message": "Missing required tool arg: what_to_do"}}
                                         tool_failed = True
                                         needs_followup_llm = True
                                         final = ""
                                     else:
-                                        what_to_do = str(patch.get("what_to_do") or "").strip()
-                                        if not what_to_do:
-                                            tool_result = {
-                                                "ok": False,
-                                                "error": {"message": "Missing required tool arg: what_to_do"},
-                                            }
-                                            tool_failed = True
-                                            needs_followup_llm = True
-                                            final = ""
-                                        else:
-                                            try:
-                                                logger.info(
-                                                    "Isolated Workspace tool: start conv=%s bot=%s what_to_do=%s",
-                                                    conv_id,
-                                                    bot_id,
-                                                    (what_to_do[:200] + "…") if len(what_to_do) > 200 else what_to_do,
-                                                )
-                                                da = _data_agent_meta(meta_current)
-                                                workspace_dir = (
-                                                    str(da.get("workspace_dir") or "").strip()
-                                                    or default_workspace_dir_for_conversation(conv_id)
-                                                )
-                                                container_id = str(da.get("container_id") or "").strip()
-                                                session_id = str(da.get("session_id") or "").strip()
-                                                auth_json_raw = getattr(bot, "data_agent_auth_json", "") or "{}"
-                                                git_token = (
-                                                    _get_git_token_plaintext(session, provider="github")
-                                                    if _git_auth_mode(auth_json_raw) == "token"
-                                                    else ""
-                                                )
-
-                                                if not container_id:
-                                                    api_key = _get_openai_api_key_for_bot(session, bot=bot)
-                                                    if not api_key:
-                                                        raise RuntimeError(
-                                                            "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
-                                                        )
-                                                    container_id = await asyncio.to_thread(
-                                                        ensure_conversation_container,
-                                                        conversation_id=conv_id,
-                                                        workspace_dir=workspace_dir,
-                                                        openai_api_key=api_key,
-                                                        git_token=git_token,
-                                                        auth_json=auth_json_raw,
-                                                    )
-                                                    meta_current = merge_conversation_metadata(
-                                                        session,
-                                                        conversation_id=conv_id,
-                                                        patch={
-                                                            "data_agent.container_id": container_id,
-                                                            "data_agent.workspace_dir": workspace_dir,
-                                                        },
-                                                    )
-                                                container_name, ports = _data_agent_container_info(
-                                                    conversation_id=conv_id,
-                                                    container_id=container_id,
-                                                )
-                                                if container_name or ports:
-                                                    meta_current = merge_conversation_metadata(
-                                                        session,
-                                                        conversation_id=conv_id,
-                                                        patch={
-                                                            "data_agent.container_name": container_name,
-                                                            "data_agent.ports": ports,
-                                                        },
-                                                    )
-
-                                                ctx = _build_data_agent_conversation_context(
-                                                    session,
-                                                    bot=bot,
-                                                    conversation_id=conv_id,
-                                                    meta=meta_current,
-                                                )
-                                                api_spec_text = getattr(bot, "data_agent_api_spec_text", "") or ""
-                                                auth_json = _merge_git_token_auth(auth_json_raw, git_token)
-                                                sys_prompt = (
-                                                    (getattr(bot, "data_agent_system_prompt", "") or "").strip()
-                                                    or DEFAULT_DATA_AGENT_SYSTEM_PROMPT
-                                                )
-                                                def _emit_tool_progress(text: str) -> None:
-                                                    t = (text or "").strip()
-                                                    if not t:
-                                                        return
-                                                    asyncio.run_coroutine_threadsafe(
-                                                        _public_send_interim(ws, req_id=req_id, kind="tool", text=t),
-                                                        loop,
-                                                    )
-
-                                                task = asyncio.create_task(
-                                                    asyncio.to_thread(
-                                                        run_data_agent,
-                                                        conversation_id=conv_id,
-                                                        container_id=container_id,
-                                                        session_id=session_id,
-                                                        workspace_dir=workspace_dir,
-                                                        api_spec_text=api_spec_text,
-                                                        auth_json=auth_json,
-                                                        system_prompt=sys_prompt,
-                                                        conversation_context=ctx,
-                                                        what_to_do=what_to_do,
-                                                        on_stream=_emit_tool_progress,
-                                                    )
-                                                )
-                                                if wait_reply:
-                                                    await _public_send_interim(
-                                                        ws, req_id=req_id, kind="wait", text=wait_reply
-                                                    )
-                                                last_wait = time.time()
-                                                while not task.done():
-                                                    if wait_reply and (time.time() - last_wait) >= 10.0:
-                                                        await _public_send_interim(
-                                                            ws, req_id=req_id, kind="wait", text=wait_reply
-                                                        )
-                                                        last_wait = time.time()
-                                                    await asyncio.sleep(0.2)
-                                                da_res = await task
-
-                                                if da_res.session_id and da_res.session_id != session_id:
-                                                    meta_current = merge_conversation_metadata(
-                                                        session,
-                                                        conversation_id=conv_id,
-                                                        patch={"data_agent.session_id": da_res.session_id},
-                                                    )
-                                                logger.info(
-                                                    "Isolated Workspace tool: done conv=%s ok=%s container_id=%s session_id=%s output_file=%s error=%s",
-                                                    conv_id,
-                                                    bool(da_res.ok),
-                                                    da_res.container_id,
-                                                    da_res.session_id,
-                                                    da_res.output_file,
-                                                    da_res.error,
-                                                )
-                                                tool_result = {
-                                                    "ok": bool(da_res.ok),
-                                                    "result_text": da_res.result_text,
-                                                    "data_agent_container_id": da_res.container_id,
-                                                    "data_agent_container_name": container_name,
-                                                    "data_agent_ports": ports,
-                                                    "data_agent_session_id": da_res.session_id,
-                                                    "data_agent_output_file": da_res.output_file,
-                                                    "data_agent_debug_file": da_res.debug_file,
-                                                    "error": da_res.error,
-                                                }
-                                                tool_failed = not bool(da_res.ok)
-                                                if (
-                                                    bool(getattr(bot, "data_agent_return_result_directly", False))
-                                                    and bool(da_res.ok)
-                                                    and str(da_res.result_text or "").strip()
-                                                ):
-                                                    needs_followup_llm = False
-                                                    final = str(da_res.result_text or "").strip()
-                                                else:
-                                                    needs_followup_llm = True
-                                                    final = ""
-                                            except Exception as exc:
-                                                logger.exception("Isolated Workspace tool failed conv=%s bot=%s", conv_id, bot_id)
-                                                tool_result = {"ok": False, "error": {"message": str(exc)}}
-                                                tool_failed = True
-                                                needs_followup_llm = True
-                                                final = ""
+                                        data_task = asyncio.create_task(
+                                            _run_data_agent_tool_persist(
+                                                conversation_id=conv_id,
+                                                bot_id=bot.id,
+                                                what_to_do=what_to_do,
+                                                req_id=req_id,
+                                                ws=ws,
+                                                wait_reply=wait_reply,
+                                                send_wait=True,
+                                                send_wait_cb=lambda t: _public_send_interim(
+                                                    ws, req_id=req_id, kind="wait", text=t
+                                                ),
+                                                stream_followup=True,
+                                            )
+                                        )
+                                        outcome = await asyncio.shield(data_task)
+                                        tool_result = outcome.get("tool_result") or {}
+                                        tool_failed = bool(outcome.get("tool_failed"))
+                                        final = str(outcome.get("rendered_reply") or "")
+                                        needs_followup_llm = False
+                                        if outcome.get("followup_streamed"):
+                                            followup_streamed = True
+                                        if outcome.get("assistant_persisted"):
+                                            followup_persisted = True
+                                        skip_tool_result_persist = bool(outcome.get("tool_result_persisted"))
                                 else:
                                     tool_cfg = get_integration_tool_by_name(session, bot_id=bot.id, name=tool_name)
                                     if not tool_cfg:
@@ -9515,12 +9403,13 @@ def create_app() -> FastAPI:
                                                     except Exception:
                                                         pass
 
-                                add_message_with_metrics(
-                                    session,
-                                    conversation_id=conv_id,
-                                    role="tool",
-                                    content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
-                                )
+                                if not skip_tool_result_persist:
+                                    add_message_with_metrics(
+                                        session,
+                                        conversation_id=conv_id,
+                                        role="tool",
+                                        content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                                    )
                                 if isinstance(tool_result, dict):
                                     meta_current = tool_result.get("metadata") or meta_current
 
