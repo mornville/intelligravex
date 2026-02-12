@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { apiDelete, apiGet, apiPost, BACKEND_URL } from '../api/client'
+import { type Dispatch, type SetStateAction, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { apiDelete, apiGet, apiPost, BACKEND_URL, downloadFile } from '../api/client'
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
 import MicTest, { type ChatCacheEntry } from '../components/MicTest'
@@ -49,6 +49,16 @@ type MessageCursor = {
   id: string
 }
 
+type FileTreeNode = {
+  name: string
+  path: string
+  is_dir: boolean
+  children: FileTreeNode[]
+  size_bytes?: number | null
+  mtime?: string
+  download_url?: string | null
+}
+
 function getOldestGroupCursor(items: ConversationMessage[]): MessageCursor | null {
   let oldest: MessageCursor | null = null
   for (const it of items) {
@@ -66,6 +76,126 @@ function getOldestGroupCursor(items: ConversationMessage[]): MessageCursor | nul
     }
   }
   return oldest
+}
+
+function fmtBytes(n: number): string {
+  if (!Number.isFinite(n)) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  return i === 0 ? `${v.toFixed(0)} ${units[i]}` : `${v.toFixed(1)} ${units[i]}`
+}
+
+function buildFileTree(items: ConversationFiles['items']): FileTreeNode {
+  const root: FileTreeNode = { name: '', path: '', is_dir: true, children: [] }
+  const nodes = new Map<string, FileTreeNode>()
+  nodes.set('', root)
+
+  function ensureNode(path: string, name: string, isDir: boolean, parent: FileTreeNode): FileTreeNode {
+    const existing = nodes.get(path)
+    if (existing) {
+      if (isDir) existing.is_dir = true
+      return existing
+    }
+    const node: FileTreeNode = { name, path, is_dir: isDir, children: [] }
+    nodes.set(path, node)
+    parent.children.push(node)
+    return node
+  }
+
+  for (const item of items) {
+    const parts = item.path.split('/').filter(Boolean)
+    let cur = root
+    let curPath = ''
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i]
+      curPath = curPath ? `${curPath}/${part}` : part
+      const isLast = i === parts.length - 1
+      const node = ensureNode(curPath, part, isLast ? item.is_dir : true, cur)
+      if (isLast) {
+        node.is_dir = item.is_dir
+        node.size_bytes = item.size_bytes
+        node.mtime = item.mtime
+        node.download_url = item.download_url ?? null
+      }
+      cur = node
+    }
+  }
+
+  function sortTree(node: FileTreeNode): void {
+    node.children.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    node.children.forEach(sortTree)
+  }
+
+  sortTree(root)
+  return root
+}
+
+function renderFileTree(
+  node: FileTreeNode,
+  depth: number,
+  expanded: Record<string, boolean>,
+  setExpanded: Dispatch<SetStateAction<Record<string, boolean>>>,
+  onDownload?: (downloadUrl: string, filename: string) => void,
+): React.ReactNode {
+  if (!node.children.length && node.path === '') return null
+  if (node.path === '') {
+    return node.children.map((child) => renderFileTree(child, depth, expanded, setExpanded, onDownload))
+  }
+  const isOpen = !!expanded[node.path]
+  const indent = depth * 16
+  const canDownload = Boolean(onDownload && node.download_url && !node.is_dir)
+  const size = node.is_dir ? '—' : node.size_bytes === null ? '—' : fmtBytes(node.size_bytes || 0)
+  const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '—'
+  const fallbackName = node.name || node.path.split('/').filter(Boolean).pop() || node.path || '(root)'
+  const nameNode = node.is_dir ? (
+    <div className="treeName mono">{fallbackName ? `${fallbackName}/` : fallbackName}</div>
+  ) : canDownload ? (
+    <button
+      type="button"
+      className="btn linkBtn treeName mono link"
+      title={fallbackName}
+      onClick={() => onDownload?.(node.download_url || '', fallbackName)}
+    >
+      {fallbackName}
+    </button>
+  ) : (
+    <div className="treeName mono">{fallbackName}</div>
+  )
+  return (
+    <div key={node.path}>
+      <div className="treeRow" style={{ paddingLeft: indent }}>
+        {node.is_dir ? (
+          <button
+            className="btn ghost treeToggle"
+            onClick={() => setExpanded((p) => ({ ...p, [node.path]: !isOpen }))}
+            aria-label={isOpen ? 'Collapse folder' : 'Expand folder'}
+          >
+            {isOpen ? 'v' : '>'}
+          </button>
+        ) : (
+          <span className="treeSpacer" />
+        )}
+        <div className="treeMain">
+          {nameNode}
+          <div className="treeMetaRow">
+            <span className="treeMeta mono">{size}</span>
+            <span className="treeMeta mono">{mtime}</span>
+          </div>
+        </div>
+      </div>
+      {node.is_dir && isOpen
+        ? node.children.map((child) => renderFileTree(child, depth + 1, expanded, setExpanded, onDownload))
+        : null}
+    </div>
+  )
 }
 
 export default function DashboardPage() {
@@ -174,11 +304,19 @@ export default function DashboardPage() {
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
   const [files, setFiles] = useState<ConversationFiles | null>(null)
   const [filesErr, setFilesErr] = useState<string | null>(null)
+  const [filesMsg, setFilesMsg] = useState<string | null>(null)
   const [filesLoading, setFilesLoading] = useState(false)
+  const [filesRecursive, setFilesRecursive] = useState(true)
+  const [filesHidden, setFilesHidden] = useState(false)
+  const [filesExpanded, setFilesExpanded] = useState<Record<string, boolean>>({})
   const [hostActions, setHostActions] = useState<HostAction[]>([])
   const [hostActionsErr, setHostActionsErr] = useState<string | null>(null)
   const [hostActionsLoading, setHostActionsLoading] = useState(false)
   const [hostActionApprovals, setHostActionApprovals] = useState<Record<string, boolean>>({})
+  const filesRequestSeqRef = useRef(0)
+  const filesLoadingSeqRef = useRef(0)
+  const filesNonSilentInFlightRef = useRef(false)
+  const filesMsgTimerRef = useRef<number | null>(null)
 
   function isNotFoundError(e: any) {
     return String(e?.message || e).includes('HTTP 404')
@@ -203,9 +341,15 @@ export default function DashboardPage() {
     setWorkspaceErr(null)
     setFiles(null)
     setFilesErr(null)
+    setFilesMsg(null)
+    setFilesExpanded({})
     setHostActions([])
     setHostActionsErr(null)
     setHostActionApprovals({})
+    if (filesMsgTimerRef.current) {
+      window.clearTimeout(filesMsgTimerRef.current)
+      filesMsgTimerRef.current = null
+    }
     if (selectedType === 'group') {
       clearGroupConversation()
     } else {
@@ -711,49 +855,6 @@ export default function DashboardPage() {
     }
   }
 
-  useEffect(() => {
-    const convId = selectedType === 'group' ? selectedGroupId : assistantConversationId
-    if (!convId) {
-      setWorkspaceStatus(null)
-      setFiles(null)
-      return
-    }
-    void (async () => {
-      setWorkspaceErr(null)
-      try {
-        const s = await apiGet<DataAgentStatus>(`/api/conversations/${convId}/data-agent`)
-        setWorkspaceStatus(s)
-      } catch (e: any) {
-        if (isNotFoundError(e) && convId === (selectedType === 'group' ? selectedGroupId : assistantConversationId)) {
-          clearActiveConversationState()
-          return
-        }
-        setWorkspaceErr(String(e?.message || e))
-      }
-    })()
-  }, [selectedType, selectedGroupId, assistantConversationId])
-
-  useEffect(() => {
-    const convId = selectedType === 'group' ? selectedGroupId : assistantConversationId
-    if (!convId) return
-    void (async () => {
-      setFilesLoading(true)
-      setFilesErr(null)
-      try {
-        const f = await apiGet<ConversationFiles>(`/api/conversations/${convId}/files?path=`)
-        setFiles(f)
-      } catch (e: any) {
-        if (isNotFoundError(e) && convId === (selectedType === 'group' ? selectedGroupId : assistantConversationId)) {
-          clearActiveConversationState()
-          return
-        }
-        setFilesErr(String(e?.message || e))
-      } finally {
-        setFilesLoading(false)
-      }
-    })()
-  }, [selectedType, selectedGroupId, assistantConversationId])
-
   const visibleGroupMessages = groupMessages.filter((m) => m.role !== 'tool' && m.role !== 'system')
   const activeConversationId = selectedType === 'group' ? selectedGroupId : assistantConversationId
   const activeBotId =
@@ -771,6 +872,17 @@ export default function DashboardPage() {
     selectedType === 'group'
       ? groupBots.some((b) => bots.find((bot) => bot.id === b.id)?.enable_host_actions)
       : Boolean(activeBot?.enable_host_actions)
+
+  useEffect(() => {
+    if (!activeConversationId) {
+      setWorkspaceStatus(null)
+      setFiles(null)
+      return
+    }
+    setFilesExpanded({})
+    void loadWorkspaceStatus(activeConversationId)
+    void loadFiles(activeConversationId, filesRecursive, filesHidden)
+  }, [activeConversationId])
 
   useEffect(() => {
     if (!activeConversationId) return
@@ -791,7 +903,121 @@ export default function DashboardPage() {
     return () => window.clearInterval(id)
   }, [activeConversationId, isVisible])
 
-  const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
+  async function loadWorkspaceStatus(convId?: string | null) {
+    const id = convId || activeConversationId
+    if (!id) return
+    setWorkspaceErr(null)
+    try {
+      const s = await apiGet<DataAgentStatus>(`/api/conversations/${id}/data-agent`)
+      setWorkspaceStatus(s)
+    } catch (e: any) {
+      if (isNotFoundError(e) && id === activeConversationId) {
+        clearActiveConversationState()
+        return
+      }
+      setWorkspaceErr(String(e?.message || e))
+    }
+  }
+
+  async function loadFiles(convId?: string | null, recursive?: boolean, includeHidden?: boolean, silent?: boolean) {
+    const id = convId || activeConversationId
+    if (!id) return
+    if (silent && filesNonSilentInFlightRef.current) return
+    const rec = recursive ?? filesRecursive
+    const hidden = includeHidden ?? filesHidden
+    const params = new URLSearchParams()
+    if (rec) params.set('recursive', '1')
+    if (hidden) params.set('include_hidden', '1')
+    const seq = ++filesRequestSeqRef.current
+    const loadingSeq = !silent ? ++filesLoadingSeqRef.current : 0
+    if (!silent) {
+      filesNonSilentInFlightRef.current = true
+      setFilesLoading(true)
+      setFilesErr(null)
+    }
+    try {
+      const f = await apiGet<ConversationFiles>(`/api/conversations/${id}/files?${params.toString()}`)
+      if (seq !== filesRequestSeqRef.current) return
+      setFiles(f)
+      setFilesRecursive(rec)
+      setFilesHidden(hidden)
+      if (silent) setFilesErr(null)
+    } catch (e: any) {
+      if (seq !== filesRequestSeqRef.current) return
+      if (isNotFoundError(e) && id === activeConversationId) {
+        clearActiveConversationState()
+        return
+      }
+      setFilesErr(String(e?.message || e))
+    } finally {
+      if (!silent && loadingSeq === filesLoadingSeqRef.current) {
+        filesNonSilentInFlightRef.current = false
+        setFilesLoading(false)
+      }
+    }
+  }
+
+  async function handleFileDownload(downloadUrl: string, filename: string) {
+    setFilesErr(null)
+    setFilesMsg(null)
+    try {
+      await downloadFile(downloadUrl, filename || 'download')
+      setFilesMsg(`Downloaded ${filename || 'file'}.`)
+      if (filesMsgTimerRef.current) window.clearTimeout(filesMsgTimerRef.current)
+      filesMsgTimerRef.current = window.setTimeout(() => setFilesMsg(null), 2500)
+    } catch (e: any) {
+      setFilesErr(String(e?.message || e))
+    }
+  }
+
+  useEffect(() => {
+    if (!activeConversationId || !isVisible) return
+    const id = window.setInterval(() => {
+      void loadWorkspaceStatus(activeConversationId)
+    }, 15000)
+    return () => window.clearInterval(id)
+  }, [activeConversationId, isVisible])
+
+  useEffect(() => {
+    if (!activeConversationId || !isVisible || !workspaceStatus?.running) return
+    void loadFiles(activeConversationId, filesRecursive, filesHidden, true)
+    const id = window.setInterval(() => {
+      void loadFiles(activeConversationId, filesRecursive, filesHidden, true)
+    }, 15000)
+    return () => window.clearInterval(id)
+  }, [activeConversationId, filesHidden, filesRecursive, isVisible, workspaceStatus?.running])
+
+  useEffect(() => {
+    return () => {
+      if (filesMsgTimerRef.current) {
+        window.clearTimeout(filesMsgTimerRef.current)
+      }
+    }
+  }, [])
+
+  const fileItems = (files?.items || []).filter((it) => it.path && it.path !== '.')
+  const fileTree = useMemo(() => buildFileTree(fileItems), [fileItems])
+  const workspaceStatusLabel = !activeConversationId
+    ? '—'
+    : !workspaceStatus
+      ? 'loading'
+      : !workspaceStatus.docker_available
+        ? 'docker unavailable'
+        : workspaceStatus.exists
+          ? workspaceStatus.running
+            ? 'running'
+            : workspaceStatus.status || 'stopped'
+          : 'not started'
+
+  useEffect(() => {
+    if (!fileItems.length) return
+    if (Object.keys(filesExpanded).length) return
+    const next: Record<string, boolean> = {}
+    for (const child of fileTree.children) {
+      if (child.is_dir) next[child.path] = true
+    }
+    setFilesExpanded(next)
+  }, [fileTree, fileItems.length, filesExpanded])
 
   async function reloadLists() {
     if (reloadListsInFlight.current) return
@@ -859,19 +1085,10 @@ export default function DashboardPage() {
     return () => window.clearInterval(id)
   }, [loading, isVisible])
 
-  async function refreshFiles(convId?: string) {
+  async function refreshFiles(convId?: string | null) {
     const id = convId || activeConversationId
     if (!id) return
-    setFilesLoading(true)
-    setFilesErr(null)
-    try {
-      const f = await apiGet<ConversationFiles>(`/api/conversations/${id}/files?path=`)
-      setFiles(f)
-    } catch (e: any) {
-      setFilesErr(String(e?.message || e))
-    } finally {
-      setFilesLoading(false)
-    }
+    await loadFiles(id, filesRecursive, filesHidden)
   }
 
   async function loadHostActions(convId?: string) {
@@ -1523,7 +1740,7 @@ export default function DashboardPage() {
           <div className="workspaceHeader">
             <div>
               <h3>Workspace</h3>
-              <div className="muted">Container: {workspaceStatus?.running ? 'running' : 'idle'}</div>
+              <div className="muted">Container: {workspaceStatusLabel}</div>
             </div>
           </div>
           <div className="workspaceBody">
@@ -1532,11 +1749,13 @@ export default function DashboardPage() {
               <div className="workspaceTitle">Status</div>
               <div className="workspaceRow">
                 <strong>Runtime</strong>
-                <span>{workspaceStatus?.exists ? 'Isolated Workspace' : '—'}</span>
+                <span>
+                  {workspaceStatus?.exists ? 'Isolated Workspace' : workspaceStatus?.docker_available ? 'Not started' : '—'}
+                </span>
               </div>
               <div className="workspaceRow">
                 <strong>Status</strong>
-                <span>{workspaceStatus?.running ? 'running' : workspaceStatus?.status || 'idle'}</span>
+                <span>{workspaceStatusLabel}</span>
               </div>
               <div className="workspaceRow">
                 <strong>Container</strong>
@@ -1617,24 +1836,62 @@ export default function DashboardPage() {
               )}
             </div>
             <div className="workspaceCard">
-              <div className="workspaceTitle">Files</div>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="workspaceTitle">Files</div>
+                <button
+                  className="btn iconBtn"
+                  onClick={() => void loadFiles(activeConversationId || undefined, filesRecursive, filesHidden)}
+                  disabled={!activeConversationId || filesLoading}
+                  aria-label="Refresh files"
+                >
+                  {filesLoading ? <LoadingSpinner label="Refreshing" /> : '⟳'}
+                </button>
+              </div>
+              {filesErr ? <div className="alert" style={{ marginTop: 8 }}>{filesErr}</div> : null}
+              {filesMsg ? (
+                <div
+                  className="alert"
+                  style={{ marginTop: 8, borderColor: 'rgba(80, 200, 160, 0.4)', background: 'rgba(80, 200, 160, 0.1)' }}
+                >
+                  {filesMsg}
+                </div>
+              ) : null}
+              <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={filesRecursive}
+                    disabled={!activeConversationId}
+                    onChange={(e) => void loadFiles(activeConversationId || undefined, e.target.checked, filesHidden)}
+                  />{' '}
+                  recursive
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={filesHidden}
+                    disabled={!activeConversationId}
+                    onChange={(e) => void loadFiles(activeConversationId || undefined, filesRecursive, e.target.checked)}
+                  />{' '}
+                  hidden
+                </label>
+                <div className="spacer" />
+                <div className="muted mono">{files?.items ? `${fileItems.length} items` : '—'}</div>
+              </div>
               {filesLoading ? (
-                <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                   <LoadingSpinner label="Loading files" />
                   <span>Loading files…</span>
                 </div>
-              ) : filesErr ? (
-                <div className="alert">{filesErr}</div>
               ) : (
-                <div className="workspaceFiles">
+                <div className="workspaceFiles" style={{ marginTop: 8 }}>
                   {!files ? <div className="muted">No workspace yet.</div> : null}
-                  {files && visibleFiles.length === 0 ? <div className="muted">No files yet.</div> : null}
-                  {visibleFiles.map((f) => (
-                    <div key={f.path} className="workspaceRow">
-                      <strong>{f.name}</strong>
-                      <span>{f.is_dir ? 'folder' : f.size_bytes ? `${f.size_bytes} B` : '—'}</span>
+                  {files && fileItems.length === 0 ? <div className="muted">No files yet.</div> : null}
+                  {files && fileItems.length > 0 ? (
+                    <div className="tree">
+                      {renderFileTree(fileTree, 0, filesExpanded, setFilesExpanded, handleFileDownload)}
                     </div>
-                  ))}
+                  ) : null}
                 </div>
               )}
             </div>
