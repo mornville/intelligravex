@@ -78,6 +78,8 @@ def _apply_light_migrations(engine) -> None:
             return
         existing = {r[1] for r in rows}  # name at index=1
 
+        added_last_message_cols = ("last_message_at" not in existing) or ("last_message_preview" not in existing)
+
         def add_col(name: str, ddl: str) -> None:
             if name in existing:
                 return
@@ -91,12 +93,47 @@ def _apply_light_migrations(engine) -> None:
         add_col("last_llm_total_ms", "INTEGER")
         add_col("last_tts_first_audio_ms", "INTEGER")
         add_col("last_total_ms", "INTEGER")
+        add_col("last_message_at", "TEXT")
+        add_col("last_message_preview", "TEXT NOT NULL DEFAULT ''")
         add_col("metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         add_col("external_id", "TEXT")
         add_col("client_key_id", "TEXT")
         add_col("is_group", "INTEGER NOT NULL DEFAULT 0")
         add_col("group_title", "TEXT NOT NULL DEFAULT ''")
         add_col("group_bots_json", "TEXT NOT NULL DEFAULT '[]'")
+
+        if added_last_message_cols:
+            try:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE conversation
+                        SET last_message_at = (
+                            SELECT created_at
+                            FROM conversationmessage
+                            WHERE conversationmessage.conversation_id = conversation.id
+                              AND role IN ('user','assistant')
+                            ORDER BY created_at DESC, id DESC
+                            LIMIT 1
+                        ),
+                        last_message_preview = (
+                            SELECT substr(
+                                replace(replace(trim(content), char(10), ' '), char(13), ' '),
+                                1,
+                                200
+                            )
+                            FROM conversationmessage
+                            WHERE conversationmessage.conversation_id = conversation.id
+                              AND role IN ('user','assistant')
+                            ORDER BY created_at DESC, id DESC
+                            LIMIT 1
+                        )
+                        WHERE last_message_at IS NULL
+                        """
+                    )
+                )
+            except Exception:
+                logger.info("init_db: last_message backfill skipped (best-effort)")
 
         # Bot
         rows = conn.execute(text("PRAGMA table_info(bot)")).fetchall()

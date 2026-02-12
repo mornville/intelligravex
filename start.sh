@@ -77,6 +77,15 @@ pip_start="$(date +%s)"
 python -m pip install -U pip >/dev/null
 log_step "Upgrading pip done ($(( $(date +%s) - pip_start ))s)"
 
+log_step "Ensuring setuptools"
+if ! python - <<'PY' >/dev/null 2>&1
+import pkg_resources  # provided by setuptools
+PY
+then
+  python -m pip install -U "setuptools<81" >/dev/null
+fi
+log_step "Ensuring setuptools done"
+
 cmd="run"
 subcmd=""
 if [[ "$#" -gt 0 ]]; then

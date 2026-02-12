@@ -82,6 +82,9 @@ export type ConversationSummary = {
   last_llm_total_ms: number | null
   last_tts_first_audio_ms: number | null
   last_total_ms: number | null
+  last_message_at?: string | null
+  last_message_preview?: string
+  unread_count?: number
   created_at: string
   updated_at: string
 }
@@ -135,6 +138,9 @@ export type GroupConversationSummary = {
   title: string
   default_bot_id: UUID
   group_bots: GroupBot[]
+  last_message_at?: string | null
+  last_message_preview?: string
+  unread_count?: number
   created_at: string
   updated_at: string
 }

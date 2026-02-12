@@ -106,6 +106,7 @@ export default function DashboardPage() {
   const groupScrollRef = useRef<HTMLDivElement | null>(null)
   const groupNearBottomRef = useRef(true)
   const groupPendingScrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
+  const groupMarkReadTimerRef = useRef<number | null>(null)
   const groupUploadRef = useRef<HTMLInputElement | null>(null)
   const groupUploadFolderRef = useRef<HTMLInputElement | null>(null)
   const [groupUploadMenuOpen, setGroupUploadMenuOpen] = useState(false)
@@ -162,10 +163,7 @@ export default function DashboardPage() {
   const [uploadErr, setUploadErr] = useState<string | null>(null)
   const [previewByConversationId, setPreviewByConversationId] = useState<Record<string, string>>({})
   const [unseenByConversationId, setUnseenByConversationId] = useState<Record<string, number>>({})
-  const [lastUpdatedByConversationId, setLastUpdatedByConversationId] = useState<Record<string, string>>({})
   const [assistantStage, setAssistantStage] = useState<'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'>('idle')
-  const lastUpdatedRef = useRef<Record<string, string>>({})
-  const unseenRef = useRef<Record<string, number>>({})
   const selectionRef = useRef<{ type: 'assistant' | 'group'; groupId: string | null; convId: string } | null>(null)
   const [chatCache, setChatCache] = useState<Record<string, ChatCacheEntry>>({})
   const bcRef = useRef<BroadcastChannel | null>(null)
@@ -239,18 +237,14 @@ export default function DashboardPage() {
           }))
         }
         setWidgetBotId(w?.bot_id || null)
-        const initialUpdated: Record<string, string> = {}
         const initialUnseen: Record<string, number> = {}
         c.items.forEach((item) => {
-          initialUpdated[item.id] = item.updated_at
+          initialUnseen[item.id] = item.unread_count || 0
         })
         g.items.forEach((item) => {
-          initialUpdated[item.id] = item.updated_at
+          initialUnseen[item.id] = item.unread_count || 0
         })
-        setLastUpdatedByConversationId(initialUpdated)
         setUnseenByConversationId(initialUnseen)
-        unseenRef.current = initialUnseen
-        lastUpdatedRef.current = initialUpdated
         let latestType: 'assistant' | 'group' | null = null
         let latestBotId: string | null = null
         let latestGroupId: string | null = null
@@ -421,14 +415,6 @@ export default function DashboardPage() {
   }, [selectedBotId])
 
   useEffect(() => {
-    lastUpdatedRef.current = lastUpdatedByConversationId
-  }, [lastUpdatedByConversationId])
-
-  useEffect(() => {
-    unseenRef.current = unseenByConversationId
-  }, [unseenByConversationId])
-
-  useEffect(() => {
     selectionRef.current = { type: selectedType, groupId: selectedGroupId, convId: selectedConversationId }
   }, [selectedType, selectedGroupId, selectedConversationId])
 
@@ -462,47 +448,6 @@ export default function DashboardPage() {
     })
     return merged
   }
-
-  useEffect(() => {
-    if (loading) return
-    const ids = new Set<string>()
-    if (showBots) {
-      filteredBots.forEach((b) => {
-        const latest = latestConversationByBot.get(b.id)
-        if (latest?.id) ids.add(latest.id)
-      })
-    }
-    if (showGroups) {
-      filteredGroups.forEach((g) => {
-        if (g.id) ids.add(g.id)
-      })
-    }
-    const missing = Array.from(ids).filter((id) => !(id in previewByConversationId))
-    if (!missing.length) return
-    let canceled = false
-    void (async () => {
-      const results: Record<string, string> = {}
-      await Promise.all(
-        missing.map(async (id) => {
-          try {
-            const d = await apiGet<{ messages: ConversationMessage[] }>(
-              `/api/conversations/${id}/messages?limit=5&order=desc&include_tools=1`,
-            )
-            const msgs = Array.isArray(d.messages) ? d.messages : []
-            const m = msgs.find((msg) => msg.role !== 'tool' && msg.role !== 'system') || null
-            results[id] = m ? clipPreview(m.content || '') : ''
-          } catch {
-            results[id] = ''
-          }
-        }),
-      )
-      if (canceled) return
-      setPreviewByConversationId((prev) => ({ ...prev, ...results }))
-    })()
-    return () => {
-      canceled = true
-    }
-  }, [loading, showBots, showGroups, filteredBots, filteredGroups, latestConversationByBot, previewByConversationId])
 
   useEffect(() => {
     if (selectedType !== 'group' || !selectedGroupId) return
@@ -557,6 +502,21 @@ export default function DashboardPage() {
     return () => el.removeEventListener('scroll', onScroll)
   }, [groupHasMore, groupLoadingOlder, selectedGroupId])
 
+  useEffect(() => {
+    if (selectedType !== 'group' || !selectedGroupId) return
+    if (!groupMessages.length || !isVisible) return
+    if (groupMarkReadTimerRef.current) window.clearTimeout(groupMarkReadTimerRef.current)
+    groupMarkReadTimerRef.current = window.setTimeout(() => {
+      void apiPost(`/api/conversations/${selectedGroupId}/read`, {})
+    }, 400)
+    return () => {
+      if (groupMarkReadTimerRef.current) {
+        window.clearTimeout(groupMarkReadTimerRef.current)
+        groupMarkReadTimerRef.current = null
+      }
+    }
+  }, [groupMessages.length, selectedGroupId, selectedType, isVisible])
+
 
   useEffect(() => {
     const active = selectedType === 'group' ? selectedGroupId : selectedConversationId
@@ -597,8 +557,6 @@ export default function DashboardPage() {
       if (payload.type === 'message' && payload.message) {
         setGroupMessages((prev) => mergeGroupMessages(prev, [payload.message]))
         if (selectedGroupId) {
-          const ts = payload.message.created_at || new Date().toISOString()
-          setLastUpdatedByConversationId((prev) => ({ ...prev, [selectedGroupId]: ts }))
           setUnseenByConversationId((prev) => ({ ...prev, [selectedGroupId]: 0 }))
           const preview = clipPreview(payload.message.content || '')
           if (preview) {
@@ -815,6 +773,11 @@ export default function DashboardPage() {
       : Boolean(activeBot?.enable_host_actions)
 
   useEffect(() => {
+    if (!activeConversationId) return
+    setUnseenByConversationId((prev) => ({ ...prev, [activeConversationId]: 0 }))
+  }, [activeConversationId])
+
+  useEffect(() => {
     if (!activeConversationId) {
       setHostActions([])
       setHostActionApprovals({})
@@ -855,43 +818,15 @@ export default function DashboardPage() {
       }
       const sel = selectionRef.current
       const active = sel?.type === 'group' ? sel?.groupId : sel?.convId
-      const nextUpdated: Record<string, string> = { ...lastUpdatedRef.current }
-      const nextUnseen: Record<string, number> = { ...unseenRef.current }
-      const updatedPreviewIds: string[] = []
+      const nextUnseen: Record<string, number> = {}
       c.items.forEach((item) => {
-        const prev = nextUpdated[item.id]
-        if (prev && item.updated_at > prev) {
-          updatedPreviewIds.push(item.id)
-        }
-        nextUpdated[item.id] = item.updated_at
-        if (item.id === active) {
-          nextUnseen[item.id] = 0
-        } else if (prev && item.updated_at > prev) {
-          nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
-        }
+        const count = item.unread_count || 0
+        nextUnseen[item.id] = item.id === active ? 0 : count
       })
       g.items.forEach((item) => {
-        const prev = nextUpdated[item.id]
-        if (prev && item.updated_at > prev) {
-          updatedPreviewIds.push(item.id)
-        }
-        nextUpdated[item.id] = item.updated_at
-        if (item.id === active) {
-          nextUnseen[item.id] = 0
-        } else if (prev && item.updated_at > prev) {
-          nextUnseen[item.id] = (nextUnseen[item.id] || 0) + 1
-        }
+        const count = item.unread_count || 0
+        nextUnseen[item.id] = item.id === active ? 0 : count
       })
-      if (updatedPreviewIds.length) {
-        setPreviewByConversationId((prev) => {
-          const next = { ...prev }
-          updatedPreviewIds.forEach((id) => {
-            delete next[id]
-          })
-          return next
-        })
-      }
-      setLastUpdatedByConversationId(nextUpdated)
       setUnseenByConversationId(nextUnseen)
     } catch {
       // ignore
@@ -1191,8 +1126,12 @@ export default function DashboardPage() {
                   </div>
                   {filteredBots.map((b) => {
                     const latest = latestConversationByBot.get(b.id)
-                    const preview = latest?.id ? previewByConversationId[latest.id] : ''
-                    const unseen = latest?.id ? unseenByConversationId[latest.id] || 0 : 0
+                    const preview = latest?.id
+                      ? previewByConversationId[latest.id] || latest?.last_message_preview || ''
+                      : ''
+                    const unseen = latest?.id
+                      ? unseenByConversationId[latest.id] ?? latest?.unread_count ?? 0
+                      : 0
                     const isActive = selectedType === 'assistant' && selectedBotId === b.id
                     const showTyping = isActive && ['init', 'recording', 'asr', 'llm', 'tts'].includes(assistantStage)
                     return (
@@ -1236,8 +1175,8 @@ export default function DashboardPage() {
                     </button>
                   </div>
                   {filteredGroups.map((g) => {
-                    const preview = previewByConversationId[g.id] || ''
-                    const unseen = unseenByConversationId[g.id] || 0
+                    const preview = previewByConversationId[g.id] || g.last_message_preview || ''
+                    const unseen = unseenByConversationId[g.id] ?? g.unread_count ?? 0
                     const showTyping =
                       selectedType === 'group' && selectedGroupId === g.id && Object.keys(workingBots).length > 0
                     return (

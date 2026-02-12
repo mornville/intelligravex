@@ -8,7 +8,7 @@ import {
   UserIcon,
   WrenchScrewdriverIcon,
 } from '@heroicons/react/24/solid'
-import { apiGet, BACKEND_URL, downloadFile } from '../api/client'
+import { apiGet, apiPost, BACKEND_URL, downloadFile } from '../api/client'
 import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
@@ -183,6 +183,7 @@ export default function MicTest({
   const startTokenRef = useRef<number | undefined>(startToken)
   const cacheRef = useRef<Record<string, ChatCacheEntry> | undefined>(cache)
   const conversationIdRef = useRef<string | null>(null)
+  const markReadTimerRef = useRef<number | null>(null)
   const reqToConversationRef = useRef<Record<string, string>>({})
   const pendingInitReqIdRef = useRef<string | null>(null)
   const isNearBottomRef = useRef(true)
@@ -718,6 +719,21 @@ export default function MicTest({
     const lastId = items.length ? items[items.length - 1]?.id : undefined
     onCacheUpdate(conversationId, { items, lastAt, lastId })
   }, [items, conversationId, onCacheUpdate])
+
+  useEffect(() => {
+    if (!conversationId || !isVisible) return
+    if (!items.length) return
+    if (markReadTimerRef.current) window.clearTimeout(markReadTimerRef.current)
+    markReadTimerRef.current = window.setTimeout(() => {
+      void apiPost(`/api/conversations/${conversationId}/read`, {})
+    }, 400)
+    return () => {
+      if (markReadTimerRef.current) {
+        window.clearTimeout(markReadTimerRef.current)
+        markReadTimerRef.current = null
+      }
+    }
+  }, [items.length, conversationId, isVisible])
 
   useEffect(() => {
     if (!conversationId) return

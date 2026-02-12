@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import hashlib
 import json
 from typing import List, Optional
@@ -9,7 +10,17 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from voicebot.crypto import CryptoBox, build_hint
-from voicebot.models import ApiKey, Bot, ClientKey, Conversation, ConversationMessage, IntegrationTool, GitToken
+from sqlalchemy import and_, func, or_
+from voicebot.models import (
+    ApiKey,
+    Bot,
+    ClientKey,
+    Conversation,
+    ConversationMessage,
+    ConversationReadState,
+    IntegrationTool,
+    GitToken,
+)
 
 
 class NotFoundError(RuntimeError):
@@ -266,8 +277,27 @@ def get_or_create_conversation_by_external_id(
     return conv
 
 
-def touch_conversation(session: Session, conv: Conversation) -> None:
+def _clean_preview(text: str, max_len: int = 200) -> str:
+    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= max_len:
+        return cleaned
+    return f"{cleaned[: max_len - 3]}..."
+
+
+def touch_conversation(
+    session: Session,
+    conv: Conversation,
+    *,
+    last_message_at: Optional[dt.datetime] = None,
+    last_message_preview: Optional[str] = None,
+) -> None:
     conv.updated_at = dt.datetime.now(dt.timezone.utc)
+    if last_message_at is not None:
+        conv.last_message_at = last_message_at
+    if last_message_preview is not None:
+        conv.last_message_preview = last_message_preview
     session.add(conv)
     session.commit()
 
@@ -398,7 +428,15 @@ def add_message(
     session.refresh(msg)
     conv = session.get(Conversation, conversation_id)
     if conv:
-        touch_conversation(session, conv)
+        if role in ("user", "assistant"):
+            touch_conversation(
+                session,
+                conv,
+                last_message_at=msg.created_at,
+                last_message_preview=_clean_preview(content),
+            )
+        else:
+            touch_conversation(session, conv)
     return msg
 
 
@@ -441,8 +479,77 @@ def add_message_with_metrics(
     session.refresh(msg)
     conv = session.get(Conversation, conversation_id)
     if conv:
-        touch_conversation(session, conv)
+        if role in ("user", "assistant"):
+            touch_conversation(
+                session,
+                conv,
+                last_message_at=msg.created_at,
+                last_message_preview=_clean_preview(content),
+            )
+        else:
+            touch_conversation(session, conv)
     return msg
+
+
+def mark_conversation_read(
+    session: Session,
+    *,
+    conversation_id: UUID,
+    viewer_id: str,
+    read_at: Optional[dt.datetime] = None,
+) -> ConversationReadState:
+    now = read_at or dt.datetime.now(dt.timezone.utc)
+    stmt = (
+        select(ConversationReadState)
+        .where(ConversationReadState.conversation_id == conversation_id)
+        .where(ConversationReadState.viewer_id == viewer_id)
+    )
+    state = session.exec(stmt).first()
+    if state:
+        state.last_read_at = now
+        state.updated_at = now
+    else:
+        state = ConversationReadState(
+            conversation_id=conversation_id,
+            viewer_id=viewer_id,
+            last_read_at=now,
+            updated_at=now,
+        )
+        session.add(state)
+    session.commit()
+    session.refresh(state)
+    return state
+
+
+def count_unread_by_conversation(
+    session: Session,
+    *,
+    conversation_ids: List[UUID],
+    viewer_id: str,
+) -> dict[UUID, int]:
+    if not conversation_ids:
+        return {}
+    stmt = (
+        select(ConversationMessage.conversation_id, func.count(ConversationMessage.id))
+        .outerjoin(
+            ConversationReadState,
+            and_(
+                ConversationReadState.conversation_id == ConversationMessage.conversation_id,
+                ConversationReadState.viewer_id == viewer_id,
+            ),
+        )
+        .where(ConversationMessage.conversation_id.in_(conversation_ids))
+        .where(ConversationMessage.role.in_(["user", "assistant"]))
+        .where(
+            or_(
+                ConversationReadState.last_read_at.is_(None),
+                ConversationMessage.created_at > ConversationReadState.last_read_at,
+            )
+        )
+        .group_by(ConversationMessage.conversation_id)
+    )
+    rows = list(session.exec(stmt))
+    return {row[0]: int(row[1] or 0) for row in rows}
 
 
 def list_messages(session: Session, *, conversation_id: UUID) -> List[ConversationMessage]:

@@ -80,6 +80,7 @@ export default function GroupConversationPage() {
   const wsRef = useRef<WebSocket | null>(null)
   const autoScrollLockRef = useRef(false)
   const lastScrollTopRef = useRef(0)
+  const markReadTimerRef = useRef<number | null>(null)
   const [groupList, setGroupList] = useState<GroupConversationSummary[]>([])
   const [groupListErr, setGroupListErr] = useState<string | null>(null)
   const [groupListLoading, setGroupListLoading] = useState(false)
@@ -197,6 +198,20 @@ export default function GroupConversationPage() {
       }
     })()
   }, [groupId])
+
+  useEffect(() => {
+    if (!groupId || !messages.length) return
+    if (markReadTimerRef.current) window.clearTimeout(markReadTimerRef.current)
+    markReadTimerRef.current = window.setTimeout(() => {
+      void apiPost(`/api/conversations/${groupId}/read`, {})
+    }, 400)
+    return () => {
+      if (markReadTimerRef.current) {
+        window.clearTimeout(markReadTimerRef.current)
+        markReadTimerRef.current = null
+      }
+    }
+  }, [messages.length, groupId])
 
   useEffect(() => {
     void (async () => {

@@ -100,11 +100,13 @@ def web(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind host (use 127.0.0.1 for localhost-only)."),
     port: int = typer.Option(8000, "--port"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on file changes (dev only)."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
 ) -> None:
     """
     Run the bot configuration UI + test API server.
     """
-    configure_logging(level=logging.INFO)
+    level = logging.DEBUG if verbose else logging.INFO
+    configure_logging(level=level)
     logging.getLogger("voicebot.cli").info("web: starting uvicorn (host=%s port=%s reload=%s)", host, port, reload)
     try:
         import uvicorn

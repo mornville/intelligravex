@@ -4,6 +4,7 @@ import datetime as dt
 from typing import Optional
 from uuid import UUID, uuid4
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -84,8 +85,24 @@ class Conversation(SQLModel, table=True):
     last_tts_first_audio_ms: Optional[int] = Field(default=None)
     last_total_ms: Optional[int] = Field(default=None)
 
+    # Last non-tool/system message preview (for list UI + notifications)
+    last_message_at: Optional[dt.datetime] = Field(default=None, index=True)
+    last_message_preview: str = Field(default="")
+
     created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+
+class ConversationReadState(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    conversation_id: UUID = Field(foreign_key="conversation.id", index=True)
+    viewer_id: str = Field(index=True)
+    last_read_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "viewer_id", name="uq_conversation_read_state"),
+    )
 
 
 class ConversationMessage(SQLModel, table=True):

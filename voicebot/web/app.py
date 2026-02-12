@@ -73,7 +73,9 @@ from voicebot.store import (
     get_conversation,
     list_conversations,
     count_conversations,
+    count_unread_by_conversation,
     list_messages,
+    mark_conversation_read,
     update_bot,
     list_integration_tools,
     create_integration_tool,
@@ -743,6 +745,8 @@ def _reset_conversation_state(session: Session, conv: Conversation, keep_meta: d
     conv.last_llm_total_ms = None
     conv.last_tts_first_audio_ms = None
     conv.last_total_ms = None
+    conv.last_message_at = None
+    conv.last_message_preview = ""
     conv.metadata_json = json.dumps(keep_meta or {}, ensure_ascii=False)
     conv.updated_at = dt.datetime.now(dt.timezone.utc)
     session.add(conv)
@@ -1743,6 +1747,19 @@ def create_app() -> FastAPI:
         if not sep:
             return False
         return secrets.compare_digest(user, basic_user) and secrets.compare_digest(pwd, basic_pass)
+
+    def _viewer_id_from_request(request: Request) -> str:
+        auth_header = (request.headers.get("authorization") or "").strip()
+        if auth_header.lower().startswith("basic "):
+            token = auth_header.split(" ", 1)[1].strip()
+            try:
+                decoded = base64.b64decode(token).decode("utf-8")
+            except Exception:
+                decoded = ""
+            user, sep, _ = decoded.partition(":")
+            if sep and user:
+                return f"basic:{user}"
+        return "local"
 
     def _ws_auth_header(ws: WebSocket) -> str:
         header = (ws.headers.get("authorization") or "").strip()
@@ -3684,8 +3701,7 @@ def create_app() -> FastAPI:
             "type": "function",
             "name": "request_host_action",
             "description": (
-                "Queue a host action for user approval. Use this when a task requires running local shell commands or AppleScript. "
-                "The action will appear in the Action Queue and only runs after user confirmation."
+                "Use this when a task requires running local shell commands or AppleScript."
             ),
             "parameters": {
                 "type": "object",
@@ -3703,7 +3719,7 @@ def create_app() -> FastAPI:
                     },
                     "next_reply": {
                         "type": "string",
-                        "description": "Optional reply to the user after queuing the action.",
+                        "description": "Keep this empty",
                     },
                 },
                 "required": ["action"],
@@ -10218,6 +10234,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/conversations")
     def api_list_conversations(
+        request: Request,
         page: int = 1,
         page_size: int = 50,
         bot_id: Optional[UUID] = None,
@@ -10236,6 +10253,12 @@ def create_app() -> FastAPI:
             include_groups=include_groups,
             limit=page_size,
             offset=offset,
+        )
+        viewer_id = _viewer_id_from_request(request)
+        unread_map = count_unread_by_conversation(
+            session,
+            conversation_ids=[c.id for c in convs],
+            viewer_id=viewer_id,
         )
         bots_by_id = {b.id: b for b in list_bots(session)}
         items = []
@@ -10256,6 +10279,9 @@ def create_app() -> FastAPI:
                     "last_llm_total_ms": c.last_llm_total_ms,
                     "last_tts_first_audio_ms": c.last_tts_first_audio_ms,
                     "last_total_ms": c.last_total_ms,
+                    "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
+                    "last_message_preview": c.last_message_preview or "",
+                    "unread_count": int(unread_map.get(c.id, 0)),
                     "created_at": c.created_at.isoformat(),
                     "updated_at": c.updated_at.isoformat(),
                 }
@@ -10263,10 +10289,20 @@ def create_app() -> FastAPI:
         return {"items": items, "page": page, "page_size": page_size, "total": total}
 
     @app.get("/api/conversations/{conversation_id}")
-    def api_conversation_detail(conversation_id: UUID, session: Session = Depends(get_session)) -> dict:
+    def api_conversation_detail(
+        conversation_id: UUID,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> dict:
         conv = get_conversation(session, conversation_id)
         bot = get_bot(session, conv.bot_id)
         msgs_raw = list_messages(session, conversation_id=conversation_id)
+        viewer_id = _viewer_id_from_request(request)
+        unread_map = count_unread_by_conversation(
+            session,
+            conversation_ids=[conversation_id],
+            viewer_id=viewer_id,
+        )
 
         def _safe_json_loads(s: str) -> dict | None:
             try:
@@ -10337,6 +10373,9 @@ def create_app() -> FastAPI:
                 "last_llm_total_ms": conv.last_llm_total_ms,
                 "last_tts_first_audio_ms": conv.last_tts_first_audio_ms,
                 "last_total_ms": conv.last_total_ms,
+                "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
+                "last_message_preview": conv.last_message_preview or "",
+                "unread_count": int(unread_map.get(conversation_id, 0)),
                 "created_at": conv.created_at.isoformat(),
                 "updated_at": conv.updated_at.isoformat(),
             },
@@ -10463,6 +10502,17 @@ def create_app() -> FastAPI:
             )
         return {"conversation_id": str(conversation_id), "messages": messages}
 
+    @app.post("/api/conversations/{conversation_id}/read")
+    def api_conversation_mark_read(
+        conversation_id: UUID,
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> dict:
+        _ = get_conversation(session, conversation_id)
+        viewer_id = _viewer_id_from_request(request)
+        mark_conversation_read(session, conversation_id=conversation_id, viewer_id=viewer_id)
+        return {"ok": True}
+
     def _group_message_payload(m: ConversationMessage) -> dict | None:
         if m.role == "tool":
             return None
@@ -10534,9 +10584,15 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/group-conversations")
-    def api_list_group_conversations(session: Session = Depends(get_session)) -> dict:
+    def api_list_group_conversations(request: Request, session: Session = Depends(get_session)) -> dict:
         stmt = select(Conversation).where(Conversation.is_group == True).order_by(Conversation.updated_at.desc())  # noqa: E712
         convs = list(session.exec(stmt))
+        viewer_id = _viewer_id_from_request(request)
+        unread_map = count_unread_by_conversation(
+            session,
+            conversation_ids=[c.id for c in convs],
+            viewer_id=viewer_id,
+        )
         items = []
         for c in convs:
             bots = _group_bots_from_conv(c)
@@ -10546,6 +10602,9 @@ def create_app() -> FastAPI:
                     "title": c.group_title or "",
                     "default_bot_id": str(c.bot_id),
                     "group_bots": bots,
+                    "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
+                    "last_message_preview": c.last_message_preview or "",
+                    "unread_count": int(unread_map.get(c.id, 0)),
                     "created_at": c.created_at.isoformat(),
                     "updated_at": c.updated_at.isoformat(),
                 }
