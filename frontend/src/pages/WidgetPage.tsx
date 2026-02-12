@@ -25,6 +25,9 @@ type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 't
 type WidgetMode = 'mic' | 'text'
 
 const CONVERSATION_STORAGE_PREFIX = 'igx_widget_conversation_'
+const WIDGET_ONBOARDING_PROMPTED_KEY = 'igx_widget_onboarding_prompted'
+const WIDGET_ONBOARDING_DONE_KEY = 'igx_widget_onboarding_done'
+const WIDGET_VOICE_SETUP_PROMPTED_KEY = 'igx_widget_voice_setup_prompted'
 
 function wsBase(): string {
   const u = new URL(BACKEND_URL)
@@ -71,6 +74,26 @@ function writeStoredConversation(botId: string, conversationId: string | null) {
   }
 }
 
+function readStorageFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeStorageFlag(key: string, value: boolean) {
+  try {
+    if (value) {
+      localStorage.setItem(key, '1')
+    } else {
+      localStorage.removeItem(key)
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
 export default function WidgetPage() {
   const [status, setStatus] = useState<WidgetStatus | null>(null)
   const [statusErr, setStatusErr] = useState<string | null>(null)
@@ -88,6 +111,9 @@ export default function WidgetPage() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [modeSaving, setModeSaving] = useState(false)
+  const [onboardingPending, setOnboardingPending] = useState(false)
+  const [showRefreshTooltip, setShowRefreshTooltip] = useState(false)
+  const [voiceSetupPending, setVoiceSetupPending] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const recorderRef = useRef<Recorder | null>(null)
@@ -102,6 +128,8 @@ export default function WidgetPage() {
   const lastMessageIdRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const resumeAttemptRef = useRef<string | null>(null)
+  const onboardingTriggeredRef = useRef(false)
+  const prevLlmReadyRef = useRef<boolean | null>(null)
 
   useEffect(() => {
     document.body.classList.add('widgetBody')
@@ -162,6 +190,70 @@ export default function WidgetPage() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    if (!onboardingPending) return
+    let canceled = false
+    async function pollStatus() {
+      try {
+        const res = await apiGet<WidgetStatus>('/api/status')
+        if (!canceled) setStatus(res)
+      } catch {
+        // ignore polling errors
+      }
+    }
+    void pollStatus()
+    const timer = window.setInterval(() => {
+      void pollStatus()
+    }, 2000)
+    return () => {
+      canceled = true
+      window.clearInterval(timer)
+    }
+  }, [onboardingPending])
+
+  useEffect(() => {
+    if (!status) return
+    const llmReadyNow = Boolean(status.llm_key_configured ?? status.openai_key_configured)
+    const previouslyReady = prevLlmReadyRef.current
+    prevLlmReadyRef.current = llmReadyNow
+    const alreadyDone = readStorageFlag(WIDGET_ONBOARDING_DONE_KEY)
+
+    if (!llmReadyNow && !alreadyDone) {
+      setOnboardingPending(true)
+      if (!onboardingTriggeredRef.current) {
+        onboardingTriggeredRef.current = true
+        if (!readStorageFlag(WIDGET_ONBOARDING_PROMPTED_KEY)) {
+          writeStorageFlag(WIDGET_ONBOARDING_PROMPTED_KEY, true)
+          void openDashboardSilently()
+        }
+      }
+      return
+    }
+
+    if (llmReadyNow && !alreadyDone) {
+      writeStorageFlag(WIDGET_ONBOARDING_DONE_KEY, true)
+    }
+    if (llmReadyNow && previouslyReady === false) {
+      setOnboardingPending(false)
+      setShowRefreshTooltip(true)
+    }
+  }, [status])
+
+  useEffect(() => {
+    if (!status) return
+    if (widgetMode !== 'mic') return
+    if (status.openai_key_configured) {
+      setVoiceSetupPending(false)
+      writeStorageFlag(WIDGET_VOICE_SETUP_PROMPTED_KEY, false)
+      return
+    }
+    setVoiceSetupPending(true)
+    if (!readStorageFlag(WIDGET_VOICE_SETUP_PROMPTED_KEY)) {
+      writeStorageFlag(WIDGET_VOICE_SETUP_PROMPTED_KEY, true)
+      void openDashboardSilently()
+    }
+  }, [status, widgetMode])
 
   useEffect(() => {
     if (!botId) return
@@ -460,6 +552,14 @@ export default function WidgetPage() {
     }
   }
 
+  async function openDashboardSilently() {
+    try {
+      await apiPost('/api/open-dashboard', { path: '/dashboard' })
+    } catch {
+      // ignore auto-open failures
+    }
+  }
+
   async function startNewConversation() {
     if (recording) {
       await stopRecording()
@@ -531,6 +631,18 @@ export default function WidgetPage() {
   const micClass = `widgetMic ${recording ? 'recording' : ''} ${busy ? 'busy' : ''}`
   const textClass = `widgetTextCard ${busy ? 'busy' : ''}`
   const micCardClass = `${textClass} widgetMicOnly`
+  const onboardingTooltip = showRefreshTooltip
+    ? 'Setup complete. Go ahead and refresh your mic overlay; you will be able to use it.'
+    : onboardingPending
+    ? 'Finish setup in the dashboard (add a key or local model). Then refresh your mic overlay.'
+    : voiceSetupPending
+    ? 'Opening dashboard to set up your OpenAI voice key...'
+    : null
+  const fallbackHint = isTextMode
+    ? !llmReady
+      ? 'Open dashboard to add an LLM key.'
+      : null
+    : null
 
   return (
     <div className="widgetRoot">
@@ -612,13 +724,11 @@ export default function WidgetPage() {
                 {botName ? <div className="widgetMenuHint">Assistant: {botName}</div> : null}
               </div>
             ) : null}
-            {isTextMode ? (
-              !llmReady ? <div className="widgetHint">Open dashboard to add an LLM key.</div> : null
-            ) : (
-              !status?.openai_key_configured ? (
-                <div className="widgetHint">Open dashboard to add your OpenAI key for voice.</div>
-              ) : null
-            )}
+            {onboardingTooltip ? (
+              <div className="widgetTooltip">{onboardingTooltip}</div>
+            ) : fallbackHint ? (
+              <div className="widgetHint">{fallbackHint}</div>
+            ) : null}
             {statusErr ? <div className="widgetError">{statusErr}</div> : null}
             {err ? <div className="widgetError">{err}</div> : null}
           </>
