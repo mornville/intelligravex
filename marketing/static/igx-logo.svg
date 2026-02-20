@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="igxGlow" x1="72" y1="80" x2="440" y2="432" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#64F0FF"/>
+      <stop offset="1" stop-color="#9B8BFF"/>
+    </linearGradient>
+  </defs>
+  <rect x="56" y="56" width="400" height="400" rx="88" fill="#0B1220" stroke="#FFFFFF" stroke-opacity="0.12"/>
+  <rect x="72" y="72" width="368" height="368" rx="76" fill="#0F172A" stroke="#FFFFFF" stroke-opacity="0.08"/>
+  <text x="256" y="302" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="140" font-weight="700" fill="url(#igxGlow)">IGX</text>
+</svg>

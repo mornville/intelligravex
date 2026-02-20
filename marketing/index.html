@@ -83,8 +83,79 @@
             IGX Studio gives you Agents that handle real work on your Mac while you decide exactly what they can access.
           </p>
         </div>
-        <div class="media-tabs">
-          <div class="media-tab-list" data-media-tabs>
+        <div class="feature-matrix">
+          <div class="feature-matrix-head">
+            <h3>Feature matrix</h3>
+          </div>
+          <div class="feature-matrix-grid">
+            <div class="feature-tile wide">
+              <div class="matrix-title">Local LLM runtime</div>
+              <div class="matrix-sub">0 API keys, 0 data export</div>
+            </div>
+            <div class="feature-tile">
+              <div class="matrix-title">Summarization</div>
+              <div class="matrix-sub">10× less context drift</div>
+            </div>
+            <div class="feature-tile">
+              <div class="matrix-title">System tools</div>
+              <div class="matrix-sub">1‑click enablement</div>
+            </div>
+            <div class="feature-tile tall">
+              <div class="matrix-title">HTTP request tool (ad‑hoc)</div>
+              <div class="matrix-sub">0 setup, any endpoint</div>
+            </div>
+            <div class="feature-tile">
+              <div class="matrix-title">Integration tools</div>
+              <div class="matrix-sub">Any API in minutes</div>
+            </div>
+            <div class="feature-tile wide">
+              <div class="matrix-title">Response mapper</div>
+              <div class="matrix-sub">Persistent memory updates</div>
+            </div>
+            <div class="feature-tile">
+              <div class="matrix-title">Codex post‑processing</div>
+              <div class="matrix-sub">Cleaner outputs</div>
+            </div>
+            <div class="feature-tile">
+              <div class="matrix-title">Isolated Workspace</div>
+              <div class="matrix-sub">1 sandbox per chat</div>
+            </div>
+            <div class="feature-tile">
+              <div class="matrix-title">Approvals</div>
+              <div class="matrix-sub">Human‑in‑the‑loop control</div>
+            </div>
+            <div class="feature-tile">
+              <div class="matrix-title">Teams (Agent Swarms)</div>
+              <div class="matrix-sub">Parallel workstreams</div>
+            </div>
+          </div>
+        </div>
+        <div class="media-tabs" data-carousel="media">
+          <div class="media-panel" data-media-panel>
+            <div class="media-panel-frame">
+              <img class="media-panel-img" data-media-image src="static/dashboard.png" alt="Agents dashboard" />
+              <video class="media-panel-video" data-media-video controls preload="metadata" poster="static/team-work-thumb.png">
+                <source src="static/team-work.mov" type="video/quicktime" />
+              </video>
+              <div class="carousel-controls">
+                <button class="carousel-btn" type="button" data-carousel-prev="media" aria-label="Previous highlight">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </button>
+                <button class="carousel-btn" type="button" data-carousel-next="media" aria-label="Next highlight">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="media-panel-caption">
+              <h3 data-media-title>Dedicated Dashboard</h3>
+              <p data-media-body>Spin up multiple Agents fast and organize them into teams.</p>
+            </div>
+          </div>
+          <div class="media-tab-list carousel-track" data-media-tabs>
             <button
               class="media-tab active"
               data-media-tab
@@ -156,18 +227,6 @@
                 <div class="media-tab-body">Create multiple Agents and let them talk together on tasks.</div>
               </div>
             </button>
-          </div>
-          <div class="media-panel" data-media-panel>
-            <div class="media-panel-frame">
-              <img class="media-panel-img" data-media-image src="static/dashboard.png" alt="Agents dashboard" />
-              <video class="media-panel-video" data-media-video controls preload="metadata" poster="static/team-work-thumb.png">
-                <source src="static/team-work.mov" type="video/quicktime" />
-              </video>
-            </div>
-            <div class="media-panel-caption">
-              <h3 data-media-title>Dedicated Dashboard</h3>
-              <p data-media-body>Spin up multiple Agents fast and organize them into teams.</p>
-            </div>
           </div>
         </div>
       </section>
@@ -256,8 +315,29 @@
           </p>
         </div>
 
-        <div class="dev-showcase">
-          <div class="dev-tab-list" data-dev-tabs>
+        <div class="dev-showcase" data-carousel="devs">
+          <div class="dev-panel" data-dev-panel>
+            <div class="dev-panel-frame">
+              <img class="dev-panel-img" data-dev-image src="static/agent-configs.png" alt="Agent configs" />
+              <div class="carousel-controls">
+                <button class="carousel-btn" type="button" data-carousel-prev="devs" aria-label="Previous workflow">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </button>
+                <button class="carousel-btn" type="button" data-carousel-next="devs" aria-label="Next workflow">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="dev-panel-caption">
+              <h3 data-dev-title>Agent configs</h3>
+              <p data-dev-body>Tune language, voice, tools, and behavior per Agent.</p>
+            </div>
+          </div>
+          <div class="dev-tab-list carousel-track" data-dev-tabs>
             <button
               class="dev-tab active"
               data-dev-tab
@@ -349,16 +429,6 @@
                 <div class="dev-tab-body">Schemas + response mapping.</div>
               </div>
             </button>
-          </div>
-
-          <div class="dev-panel" data-dev-panel>
-            <div class="dev-panel-frame">
-              <img class="dev-panel-img" data-dev-image src="static/agent-configs.png" alt="Agent configs" />
-            </div>
-            <div class="dev-panel-caption">
-              <h3 data-dev-title>Agent configs</h3>
-              <p data-dev-body>Tune language, voice, tools, and behavior per Agent.</p>
-            </div>
           </div>
         </div>
 

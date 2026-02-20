@@ -1,8 +1,20 @@
+<p align="center">
+  <img src="marketing/static/igx-logo.svg" width="120" alt="IGX logo" />
+</p>
+<p align="center">
+  <a href="https://gravex-agent.vercel.app">gravex-agent.vercel.app</a>
+</p>
+
 # Gravex
 
 **Local‑first automation agents** that run on your machine - not in a black box.
 
 Gravex gives you a dashboard to create agents, run real tasks, and keep files, configs, and context on-device. Use local LLMs or OpenAI, add tools, and scale from one agent to teams.
+
+## Default Assistants
+
+- **GravexStudio Guide** (system helper)
+- **IGX Showcase** (demo agent)
 
 ## Run Locally (No Overlay)
 
@@ -28,26 +40,25 @@ First‑time setup in the UI:
 - Local models work without API keys.
 - You control what each agent can access.
 
-## Features (At a Glance)
+## Features
 
 - Dedicated dashboard to spin up agents and teams fast.
-- Permissioned actions with explicit approvals.
-- Built‑in system tools + HTTP integrations (schemas + response mapping).
+- Local LLM runtime with **0 API keys** and **0 data export**.
+- Summarization to keep context stable with less drift.
+- System tools with 1‑click enablement and approvals.
+- HTTP request tool (ad‑hoc) for zero‑setup API calls.
+- Integration tools + response mapper for schema‑driven APIs.
+- Codex post‑processing for cleaner structured outputs.
 - Isolated Workspaces per agent (optional, Docker).
 - Local or OpenAI models for chat and automation.
 - Always‑on mic overlay (macOS‑only).
 
-## Default Assistants
-
-- **GravexStudio Guide** (system helper)
-- **IGX Showcase** (demo agent)
-
 ## Screenshots
 
-![Dashboard](marketing/static/dashboard.png)
-![Agent configs](marketing/static/agent-configs.png)
-![System tools](marketing/static/system-tools.png)
-![Local LLM setup](marketing/static/local-llm-setup.png)
+<img src="marketing/static/dashboard.png" width="520" alt="Dashboard" style="border-radius:12px;border:1px solid rgba(255,255,255,0.12);margin:8px 0;" />
+<img src="marketing/static/agent-configs.png" width="520" alt="Agent configs" style="border-radius:12px;border:1px solid rgba(255,255,255,0.12);margin:8px 0;" />
+<img src="marketing/static/system-tools.png" width="520" alt="System tools" style="border-radius:12px;border:1px solid rgba(255,255,255,0.12);margin:8px 0;" />
+<img src="marketing/static/local-llm-setup.png" width="520" alt="Local LLM setup" style="border-radius:12px;border:1px solid rgba(255,255,255,0.12);margin:8px 0;" />
 
 ## Desktop Build (Optional)
 

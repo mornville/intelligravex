@@ -145,15 +145,23 @@ if (featureButtons.length > 0 && featurePanel) {
 
 const mediaTabs = Array.from(document.querySelectorAll('[data-media-tab]'))
 const mediaPanel = document.querySelector('[data-media-panel]')
+const mediaCarousel = document.querySelector('[data-carousel="media"]')
+const mediaPrev = document.querySelector('[data-carousel-prev="media"]')
+const mediaNext = document.querySelector('[data-carousel-next="media"]')
 if (mediaTabs.length > 0 && mediaPanel) {
   const imgEl = mediaPanel.querySelector('[data-media-image]')
   const videoEl = mediaPanel.querySelector('[data-media-video]')
   const titleEl = mediaPanel.querySelector('[data-media-title]')
   const bodyEl = mediaPanel.querySelector('[data-media-body]')
+  let mediaIndex = 0
+  let mediaPaused = false
+  let mediaTimer = null
 
-  const setActive = (index) => {
+  const setActive = (index, options = {}) => {
     const tab = mediaTabs[index]
     if (!tab) return
+    const { scroll = true } = options
+    mediaIndex = index
     mediaTabs.forEach((btn, i) => btn.classList.toggle('active', i === index))
     const title = tab.dataset.title || ''
     const body = tab.dataset.body || ''
@@ -186,6 +194,9 @@ if (mediaTabs.length > 0 && mediaPanel) {
         videoEl.pause()
       }
     }
+    if (scroll && tab instanceof HTMLElement) {
+      tab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+    }
   }
 
   mediaTabs.forEach((tab, index) => {
@@ -194,19 +205,62 @@ if (mediaTabs.length > 0 && mediaPanel) {
   })
 
   const initial = mediaTabs.findIndex((tab) => tab.classList.contains('active'))
-  setActive(initial >= 0 ? initial : 0)
+  setActive(initial >= 0 ? initial : 0, { scroll: false })
+
+  const runMedia = () => {
+    if (mediaPaused) return
+    setActive((mediaIndex + 1) % mediaTabs.length)
+  }
+
+  const restartMediaTimer = () => {
+    if (mediaTimer) window.clearInterval(mediaTimer)
+    mediaTimer = window.setInterval(runMedia, 5000)
+  }
+
+  if (mediaPrev) {
+    mediaPrev.addEventListener('click', () => {
+      setActive((mediaIndex - 1 + mediaTabs.length) % mediaTabs.length)
+      restartMediaTimer()
+    })
+  }
+
+  if (mediaNext) {
+    mediaNext.addEventListener('click', () => {
+      setActive((mediaIndex + 1) % mediaTabs.length)
+      restartMediaTimer()
+    })
+  }
+
+  if (mediaCarousel) {
+    mediaCarousel.addEventListener('mouseenter', () => {
+      mediaPaused = true
+    })
+    mediaCarousel.addEventListener('mouseleave', () => {
+      mediaPaused = false
+    })
+  }
+
+  restartMediaTimer()
 }
 
 const devTabs = Array.from(document.querySelectorAll('[data-dev-tab]'))
 const devPanel = document.querySelector('[data-dev-panel]')
+const devCarousel = document.querySelector('[data-carousel="devs"]')
+const devPrev = document.querySelector('[data-carousel-prev="devs"]')
+const devNext = document.querySelector('[data-carousel-next="devs"]')
 if (devTabs.length > 0 && devPanel) {
   const imgEl = devPanel.querySelector('[data-dev-image]')
   const titleEl = devPanel.querySelector('[data-dev-title]')
   const bodyEl = devPanel.querySelector('[data-dev-body]')
+  let devIndex = 0
+  let devPaused = false
+  let devTimer = null
 
-  const setActive = (index) => {
+  const setActive = (index, options = {}) => {
     const tab = devTabs[index]
     if (!tab) return
+    const { scroll = true } = options
+    devIndex = index
     devTabs.forEach((btn, i) => btn.classList.toggle('active', i === index))
     const title = tab.dataset.title || ''
     const body = tab.dataset.body || ''
@@ -218,6 +272,9 @@ if (devTabs.length > 0 && devPanel) {
       imgEl.src = src
       imgEl.alt = title || 'Preview'
     }
+    if (scroll && tab instanceof HTMLElement) {
+      tab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+    }
   }
 
   devTabs.forEach((tab, index) => {
@@ -226,5 +283,40 @@ if (devTabs.length > 0 && devPanel) {
   })
 
   const initial = devTabs.findIndex((tab) => tab.classList.contains('active'))
-  setActive(initial >= 0 ? initial : 0)
+  setActive(initial >= 0 ? initial : 0, { scroll: false })
+
+  const runDev = () => {
+    if (devPaused) return
+    setActive((devIndex + 1) % devTabs.length)
+  }
+
+  const restartDevTimer = () => {
+    if (devTimer) window.clearInterval(devTimer)
+    devTimer = window.setInterval(runDev, 5000)
+  }
+
+  if (devPrev) {
+    devPrev.addEventListener('click', () => {
+      setActive((devIndex - 1 + devTabs.length) % devTabs.length)
+      restartDevTimer()
+    })
+  }
+
+  if (devNext) {
+    devNext.addEventListener('click', () => {
+      setActive((devIndex + 1) % devTabs.length)
+      restartDevTimer()
+    })
+  }
+
+  if (devCarousel) {
+    devCarousel.addEventListener('mouseenter', () => {
+      devPaused = true
+    })
+    devCarousel.addEventListener('mouseleave', () => {
+      devPaused = false
+    })
+  }
+
+  restartDevTimer()
 }

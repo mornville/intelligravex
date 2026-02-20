@@ -15,6 +15,7 @@ import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
 import type { Bot, DataAgentStatus, ConversationFiles, ConversationMessage, Citation } from '../types'
 import LoadingSpinner from './LoadingSpinner'
+import MarkdownText from './MarkdownText'
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
 
@@ -1110,7 +1111,9 @@ export default function MicTest({
               <RoleIcon role={role} />
             </div>
             <div className={bubbleClass}>
-              <div className="bubbleText">{bubbleText}</div>
+              <div className="bubbleText">
+                {typeof bubbleText === 'string' ? <MarkdownText content={bubbleText} /> : bubbleText}
+              </div>
               {role === 'assistant' && citations.length ? (
                 <div className="citationBlock">
                   <div className="citationTitle">Sources</div>

@@ -3,6 +3,7 @@ import { apiDelete, apiGet, apiPost, BACKEND_URL, downloadFile } from '../api/cl
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
 import MicTest, { type ChatCacheEntry } from '../components/MicTest'
+import MarkdownText from '../components/MarkdownText'
 import KeysPage from './KeysPage'
 import DeveloperPage from './DeveloperPage'
 import BotSettingsModal from '../components/BotSettingsModal'
@@ -2150,7 +2151,9 @@ function GroupMessageRow({ m }: { m: ConversationMessage }) {
         <div className="bubbleMeta" style={{ marginBottom: 6 }}>
           <span>{label}</span> <span className="muted">• {fmtIso(m.created_at)}</span>
         </div>
-        <div className="bubbleText">{body}</div>
+        <div className="bubbleText">
+          <MarkdownText content={String(body || '')} />
+        </div>
         {isAssistant && citations.length ? (
           <div className="citationBlock">
             <div className="citationTitle">Sources</div>

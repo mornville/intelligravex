@@ -75,6 +75,7 @@ async def process_talk_tool_calls(
             return
     with Session(engine) as session:
         bot = get_bot(session, bot_id)
+        conv = get_conversation(session, conv_id) if conv_id else None
         meta_current = _get_conversation_meta(session, conversation_id=conv_id)
         disabled_tools = _disabled_tool_names(bot)
 
@@ -142,6 +143,14 @@ async def process_talk_tool_calls(
                 tool_result = {
                     "ok": False,
                     "error": {"message": tool_error, "status_code": 500},
+                }
+                tool_failed = True
+                needs_followup_llm = True
+                rendered_reply = ""
+            elif tool_name in {"request_host_action", "capture_screenshot", "summarize_screenshot"} and not conv:
+                tool_result = {
+                    "ok": False,
+                    "error": {"message": "Conversation not found."},
                 }
                 tool_failed = True
                 needs_followup_llm = True

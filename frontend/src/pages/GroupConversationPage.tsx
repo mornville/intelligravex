@@ -9,6 +9,7 @@ import {
   WrenchScrewdriverIcon,
 } from '@heroicons/react/24/solid'
 import LoadingSpinner from '../components/LoadingSpinner'
+import MarkdownText from '../components/MarkdownText'
 import { apiDelete, apiGet, apiPost } from '../api/client'
 import type {
   ConversationFiles,
@@ -756,7 +757,9 @@ function GroupMessageRow({ m }: { m: ConversationMessage }) {
         <div className="bubbleMeta" style={{ marginBottom: 6 }}>
           <span>{label}</span> <span className="muted">• {fmtIso(m.created_at)}</span>
         </div>
-        <div className="bubbleText">{body}</div>
+        <div className="bubbleText">
+          <MarkdownText content={String(body || '')} />
+        </div>
         {isAssistant && citations.length ? (
           <div className="citationBlock">
             <div className="citationTitle">Sources</div>

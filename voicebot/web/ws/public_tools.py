@@ -21,6 +21,7 @@ async def process_public_tool_calls(
     provider: str,
     history,
 ):
+    conv = get_conversation(session, conv_id) if conv_id else None
     meta_current = _get_conversation_meta(session, conversation_id=conv_id)
     disabled_tools = _disabled_tool_names(bot)
     final = ""
@@ -75,6 +76,14 @@ async def process_public_tool_calls(
             tool_result = {
                 "ok": False,
                 "error": {"message": f"Tool '{tool_name}' is disabled for this bot."},
+            }
+            tool_failed = True
+            needs_followup_llm = True
+            final = ""
+        elif tool_name in {"request_host_action", "capture_screenshot"} and not conv:
+            tool_result = {
+                "ok": False,
+                "error": {"message": "Conversation not found."},
             }
             tool_failed = True
             needs_followup_llm = True

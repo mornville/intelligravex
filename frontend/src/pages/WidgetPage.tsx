@@ -4,6 +4,7 @@ import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import LoadingSpinner from '../components/LoadingSpinner'
+import MarkdownText from '../components/MarkdownText'
 import type { WidgetConfig } from '../types'
 import { Cog6ToothIcon, MicrophoneIcon } from '@heroicons/react/24/solid'
 
@@ -663,7 +664,7 @@ export default function WidgetPage() {
     if (!content) return null
     return (
       <div key={msg.id} className={`widgetMessage ${role}`}>
-        {content}
+        <MarkdownText content={content} />
       </div>
     )
   }
@@ -717,7 +718,11 @@ export default function WidgetPage() {
                       <div className="widgetEmpty">No messages yet.</div>
                     ) : null}
                     {messages.map((msg) => renderMessage(msg))}
-                    {assistantText ? <div className="widgetMessage assistant pending">{assistantText}</div> : null}
+                    {assistantText ? (
+                      <div className="widgetMessage assistant pending">
+                        <MarkdownText content={assistantText} />
+                      </div>
+                    ) : null}
                   </div>
                   <div className="widgetTextInputRow">
                     <input

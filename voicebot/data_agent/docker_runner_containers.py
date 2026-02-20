@@ -17,7 +17,15 @@ from .docker_runner_ports import (
     sync_container_ports_from_docker,
 )
 
-_ROOT_DIR = Path(__file__).resolve().parents[3]
+def _find_repo_root() -> Path:
+    candidate = Path(__file__).resolve()
+    for parent in candidate.parents:
+        if (parent / "packaging" / "data-agent" / "Dockerfile").exists():
+            return parent
+    return candidate.parents[2]
+
+
+_ROOT_DIR = _find_repo_root()
 _DATA_AGENT_DIR = _ROOT_DIR / "packaging" / "data-agent"
 _DATA_AGENT_DOCKERFILE = _DATA_AGENT_DIR / "Dockerfile"
 

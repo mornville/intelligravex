@@ -1720,6 +1720,92 @@ label {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+.bubbleText .markdown {
+  white-space: normal;
+}
+.bubbleText .markdown > *:last-child {
+  margin-bottom: 0;
+}
+.bubbleText .markdown p {
+  margin: 0 0 0.65rem;
+}
+.bubbleText .markdown h1,
+.bubbleText .markdown h2,
+.bubbleText .markdown h3,
+.bubbleText .markdown h4 {
+  line-height: 1.2;
+  font-weight: 600;
+}
+.bubbleText .markdown h1 {
+  font-size: 1.2rem;
+  margin: 0.9rem 0 0.75rem;
+}
+.bubbleText .markdown h2 {
+  font-size: 1.05rem;
+  margin: 0.8rem 0 0.55rem;
+}
+.bubbleText .markdown h3 {
+  font-size: 0.98rem;
+  margin: 0.7rem 0 0.5rem;
+}
+.bubbleText .markdown h4 {
+  font-size: 0.92rem;
+  margin: 0.6rem 0 0.45rem;
+}
+.bubbleText .markdown ul,
+.bubbleText .markdown ol {
+  margin: 0 0 0.65rem;
+  padding-left: 1.2rem;
+}
+.bubbleText .markdown li + li {
+  margin-top: 0.25rem;
+}
+.bubbleText .markdown blockquote {
+  margin: 0 0 0.65rem;
+  padding: 0.6rem 0.9rem;
+  border-left: 3px solid rgba(148, 163, 184, 0.6);
+  background: rgba(15, 23, 42, 0.35);
+  border-radius: 10px;
+}
+.bubbleText .markdown a {
+  color: rgba(125, 211, 252, 0.95);
+  text-decoration: underline;
+}
+.bubbleText .markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 0.65rem;
+  font-size: 0.9rem;
+}
+.bubbleText .markdown th,
+.bubbleText .markdown td {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  padding: 0.45rem 0.6rem;
+}
+.bubbleText .markdown th {
+  background: rgba(15, 23, 42, 0.35);
+}
+.bubbleText .markdown .md-pre {
+  margin: 0 0 0.65rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(8, 12, 22, 0.7);
+  overflow: auto;
+  white-space: pre;
+}
+.bubbleText .markdown .md-code {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9rem;
+}
+.bubbleText .markdown .md-inline-code {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.18);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
 .bubble.assistant.interim {
   background: rgba(148, 163, 184, 0.16);
   border-color: rgba(148, 163, 184, 0.35);
