@@ -5,6 +5,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const location = useLocation()
   const isLanding = location.pathname === '/'
   const hideTopbar =
+    isLanding ||
     location.pathname.startsWith('/groups/') ||
     location.pathname.startsWith('/dashboard') ||
     location.pathname === '/bots' ||
@@ -85,7 +86,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           </nav>
         </header>
       )}
-      <main className={`content ${hideTopbar ? 'chatContent' : ''}`}>
+      <main className={`content ${hideTopbar ? 'chatContent' : ''} ${isLanding ? 'landingContent' : ''}`}>
         {children}
       </main>
     </div>

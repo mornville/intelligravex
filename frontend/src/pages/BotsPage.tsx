@@ -189,8 +189,8 @@ export default function BotsPage() {
                 <div className="assistantStat">
                   <div className="muted">Latency</div>
                   <div className="mono">
-                    {(b.stats?.avg_llm_ttfb_ms ?? null) === null ? '—' : `${b.stats?.avg_llm_ttfb_ms}ms`} /{' '}
-                    {(b.stats?.avg_llm_total_ms ?? null) === null ? '—' : `${b.stats?.avg_llm_total_ms}ms`}
+                    {(b.stats?.avg_llm_ttfb_ms ?? null) === null ? '-' : `${b.stats?.avg_llm_ttfb_ms}ms`} /{' '}
+                    {(b.stats?.avg_llm_total_ms ?? null) === null ? '-' : `${b.stats?.avg_llm_total_ms}ms`}
                   </div>
                 </div>
               </div>

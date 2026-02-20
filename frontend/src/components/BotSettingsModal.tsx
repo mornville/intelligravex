@@ -728,7 +728,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
                       <input
                         value={preferredRepoCachePath}
                         onChange={(e) => setPreferredRepoCachePath(e.target.value)}
-                        placeholder="/Users/you/.igx_repo_cache/candorverse.git"
+                        placeholder="/Users/you/.igx_repo_cache/xxxx.git"
                       />
                       <div className="muted">
                         This is a shared bare mirror on the host. Each conversation will clone from it instead of the
@@ -740,7 +740,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
                       <input
                         value={preferredRepoSourcePath}
                         onChange={(e) => setPreferredRepoSourcePath(e.target.value)}
-                        placeholder="/Users/you/Desktop/candor/candorverse"
+                        placeholder="/Users/you/Desktop/xxx/xxxx"
                       />
                       <div className="muted">
                         Optional: a local working repo to use as a reference source for fast clones per conversation.

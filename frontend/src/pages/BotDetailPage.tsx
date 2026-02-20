@@ -477,7 +477,7 @@ Rules:
           <div>
             <h2>{bot?.name || 'Assistant'}</h2>
             <div className="muted">
-              {bot?.openai_model || '—'} · {bot?.llm_provider || 'openai'}
+              {bot?.openai_model || '-'} · {bot?.llm_provider || 'openai'}
             </div>
           </div>
           <div className="chatHeaderActions">
@@ -882,7 +882,7 @@ Rules:
                         <input
                           value={preferredRepoCachePath}
                           onChange={(e) => setPreferredRepoCachePath(e.target.value)}
-                          placeholder="/Users/you/.igx_repo_cache/candorverse.git"
+                          placeholder="/Users/you/.igx_repo_cache/xxxxxx.git"
                         />
                         <div className="muted">
                           This is a shared bare mirror on the host. Each conversation will clone from it instead of the
@@ -894,7 +894,7 @@ Rules:
                         <input
                           value={preferredRepoSourcePath}
                           onChange={(e) => setPreferredRepoSourcePath(e.target.value)}
-                          placeholder="/Users/you/Desktop/candor/candorverse"
+                          placeholder="/Users/you/Desktop/xxxx/xxxxxxx"
                         />
                         <div className="muted">
                           Optional: a local working repo to use as a reference source for fast clones per conversation.

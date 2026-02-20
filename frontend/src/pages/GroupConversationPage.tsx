@@ -697,7 +697,7 @@ export default function GroupConversationPage() {
               <div className="workspaceTitle">Status</div>
               <div className="workspaceRow">
                 <strong>Runtime</strong>
-                <span>{agentStatus?.exists ? 'Isolated Workspace' : '—'}</span>
+                <span>{agentStatus?.exists ? 'Isolated Workspace' : '-'}</span>
               </div>
               <div className="workspaceRow">
                 <strong>Status</strong>
@@ -705,7 +705,7 @@ export default function GroupConversationPage() {
               </div>
               <div className="workspaceRow">
                 <strong>Container</strong>
-                <span>{agentStatus?.container_name || '—'}</span>
+                <span>{agentStatus?.container_name || '-'}</span>
               </div>
             </div>
             <div className="workspaceCard">
@@ -722,7 +722,7 @@ export default function GroupConversationPage() {
                   {visibleFiles.map((f) => (
                     <div key={f.path} className="workspaceRow">
                       <strong>{f.name}</strong>
-                      <span>{f.is_dir ? 'folder' : f.size_bytes ? `${f.size_bytes} B` : '—'}</span>
+                      <span>{f.is_dir ? 'folder' : f.size_bytes ? `${f.size_bytes} B` : '-'}</span>
                     </div>
                   ))}
                 </div>

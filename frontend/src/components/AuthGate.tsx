@@ -348,10 +348,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                 Docker is required to run the Isolated Workspace. {status?.docker_available ? 'Docker detected.' : 'Docker not detected.'}
               </div>
               <div className="muted" style={{ marginBottom: 10 }}>
-                The first run will download a prebuilt container image.
+                The first run will build a local container image.
               </div>
               <div className="muted" style={{ marginBottom: 12 }}>
-                You can pre-download it now to avoid a wait later.
+                You can build it now to avoid a wait later.
               </div>
               {pullMessage ? <div className="alert" style={{ borderColor: 'rgba(80, 200, 160, 0.4)', background: 'rgba(80, 200, 160, 0.1)' }}>{pullMessage}</div> : null}
               {!status?.docker_available ? (
@@ -361,7 +361,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               ) : null}
               <div className="row gap">
                 <button className="btn" onClick={() => void pullDataAgentImage()} disabled={pullingImage || !status?.docker_available}>
-                  {pullingImage ? 'Downloading…' : 'Download Isolated Workspace'}
+                  {pullingImage ? 'Building (Docker)…' : 'Build Isolated Workspace (Docker)'}
                 </button>
                 <button className="btn" onClick={() => void refreshStatus()} disabled={checkingStatus}>
                   {checkingStatus ? 'Checking…' : 'Recheck'}

@@ -369,8 +369,8 @@ export default function KeysPage() {
               <tbody>
                 <tr>
                   <td>{gitStatus.provider}</td>
-                  <td className="mono">{gitStatus.hint || '—'}</td>
-                  <td>{gitStatus.updated_at ? fmtIso(gitStatus.updated_at) : '—'}</td>
+                  <td className="mono">{gitStatus.hint || '-'}</td>
+                  <td>{gitStatus.updated_at ? fmtIso(gitStatus.updated_at) : '-'}</td>
                 </tr>
               </tbody>
             </table>

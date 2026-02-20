@@ -217,7 +217,7 @@ export default function ConversationsPage() {
                 >
                   <div className="groupTitle">{g.title}</div>
                   <div className="groupMeta">
-                    Default: {defaultBot ? `${defaultBot.name} (@${defaultBot.slug})` : '—'} • {g.group_bots.length} assistants
+                    Default: {defaultBot ? `${defaultBot.name} (@${defaultBot.slug})` : '-'} • {g.group_bots.length} assistants
                   </div>
                   <div className="groupMembers">
                     {g.group_bots.map((b) => (

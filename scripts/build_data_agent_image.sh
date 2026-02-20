@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${IGX_DATA_AGENT_IMAGE:-ghcr.io/mornville/data-agent:latest}"
+IMAGE="${IGX_DATA_AGENT_IMAGE:-igx-data-agent:local}"
 DOCKERFILE="${ROOT_DIR}/packaging/data-agent/Dockerfile"
 
 if [[ ! -f "${DOCKERFILE}" ]]; then

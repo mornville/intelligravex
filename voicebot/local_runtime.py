@@ -86,6 +86,26 @@ class LocalRuntimeManager:
                 return False
             return self._state.state == STATE_READY
 
+    def stop(self, *, reset_state: bool = True) -> None:
+        proc: subprocess.Popen | None = None
+        with self._lock:
+            proc = self._proc
+            self._proc = None
+            self._worker = None
+            if reset_state:
+                self._state = LocalRuntimeState(state=STATE_IDLE, message="")
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3.0)
+                except Exception:
+                    proc.kill()
+        except Exception:
+            pass
+
     def _refresh_ready_state(self) -> None:
         with self._lock:
             if not self._proc:

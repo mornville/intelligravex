@@ -79,7 +79,7 @@ function getOldestGroupCursor(items: ConversationMessage[]): MessageCursor | nul
 }
 
 function fmtBytes(n: number): string {
-  if (!Number.isFinite(n)) return '—'
+  if (!Number.isFinite(n)) return '-'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let v = n
   let i = 0
@@ -152,8 +152,8 @@ function renderFileTree(
   const isOpen = !!expanded[node.path]
   const indent = depth * 16
   const canDownload = Boolean(onDownload && node.download_url && !node.is_dir)
-  const size = node.is_dir ? '—' : node.size_bytes === null ? '—' : fmtBytes(node.size_bytes || 0)
-  const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '—'
+  const size = node.is_dir ? '-' : node.size_bytes === null ? '-' : fmtBytes(node.size_bytes || 0)
+  const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '-'
   const fallbackName = node.name || node.path.split('/').filter(Boolean).pop() || node.path || '(root)'
   const nameNode = node.is_dir ? (
     <div className="treeName mono">{fallbackName ? `${fallbackName}/` : fallbackName}</div>
@@ -247,6 +247,7 @@ export default function DashboardPage() {
   const [showKeysModal, setShowKeysModal] = useState(false)
   const [showDeveloperModal, setShowDeveloperModal] = useState(false)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [resettingOnboarding, setResettingOnboarding] = useState(false)
   const [showCreateAssistant, setShowCreateAssistant] = useState(false)
   const [creatingAssistant, setCreatingAssistant] = useState(false)
   const [assistantErr, setAssistantErr] = useState<string | null>(null)
@@ -998,7 +999,7 @@ export default function DashboardPage() {
   const fileItems = (files?.items || []).filter((it) => it.path && it.path !== '.')
   const fileTree = useMemo(() => buildFileTree(fileItems), [fileItems])
   const workspaceStatusLabel = !activeConversationId
-    ? '—'
+    ? '-'
     : !workspaceStatus
       ? 'loading'
       : !workspaceStatus.docker_available
@@ -1274,6 +1275,20 @@ export default function DashboardPage() {
     }
   }
 
+  async function resetOnboarding() {
+    const ok = window.confirm('Remove all keys and restart onboarding? This clears stored API keys and client keys.')
+    if (!ok) return
+    setResettingOnboarding(true)
+    try {
+      await apiPost('/api/onboarding/reset', {})
+      window.location.reload()
+    } catch (e: any) {
+      window.alert(String(e?.message || e))
+    } finally {
+      setResettingOnboarding(false)
+    }
+  }
+
   function toggleSelected(botId: string) {
     setGroupSelected((prev) => (prev.includes(botId) ? prev.filter((id) => id !== botId) : [...prev, botId]))
   }
@@ -1473,7 +1488,7 @@ export default function DashboardPage() {
             )}
             {selectedType === 'assistant' ? (
               <button
-                className="btn navPill"
+                className={`btn navPill ${!selectedConversationId ? 'attentionBtn' : ''}`}
                 onClick={() => {
                   setStartToken((t) => t + 1)
                 }}
@@ -1541,6 +1556,16 @@ export default function DashboardPage() {
                     }}
                   >
                     Settings
+                  </button>
+                  <button
+                    className="settingsItem danger"
+                    disabled={resettingOnboarding}
+                    onClick={() => {
+                      setSettingsOpen(false)
+                      void resetOnboarding()
+                    }}
+                  >
+                    {resettingOnboarding ? 'Resetting onboarding…' : 'Reset onboarding'}
                   </button>
                 </div>
               ) : null}
@@ -1750,7 +1775,7 @@ export default function DashboardPage() {
               <div className="workspaceRow">
                 <strong>Runtime</strong>
                 <span>
-                  {workspaceStatus?.exists ? 'Isolated Workspace' : workspaceStatus?.docker_available ? 'Not started' : '—'}
+                  {workspaceStatus?.exists ? 'Isolated Workspace' : workspaceStatus?.docker_available ? 'Not started' : '-'}
                 </span>
               </div>
               <div className="workspaceRow">
@@ -1764,7 +1789,7 @@ export default function DashboardPage() {
                     {workspaceStatus.container_name}
                   </span>
                 ) : (
-                  <span>—</span>
+                  <span>-</span>
                 )}
               </div>
             </div>
@@ -1876,7 +1901,7 @@ export default function DashboardPage() {
                   hidden
                 </label>
                 <div className="spacer" />
-                <div className="muted mono">{files?.items ? `${fileItems.length} items` : '—'}</div>
+                <div className="muted mono">{files?.items ? `${fileItems.length} items` : '-'}</div>
               </div>
               {filesLoading ? (
                 <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>

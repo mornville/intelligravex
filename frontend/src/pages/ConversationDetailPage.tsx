@@ -14,7 +14,7 @@ function safeJson(s: string): any {
 }
 
 function fmtBytes(n: number): string {
-  if (!Number.isFinite(n)) return '—'
+  if (!Number.isFinite(n)) return '-'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let v = n
   let i = 0
@@ -241,23 +241,23 @@ export default function ConversationDetailPage() {
                 </div>
                 <div className="summaryItem">
                   <div className="muted">Container name</div>
-                  <div className="mono">{agentStatus.container_name || '—'}</div>
+                  <div className="mono">{agentStatus.container_name || '-'}</div>
                 </div>
                 <div className="summaryItem">
                   <div className="muted">Container id</div>
-                  <div className="mono">{agentStatus.container_id || '—'}</div>
+                  <div className="mono">{agentStatus.container_id || '-'}</div>
                 </div>
                 <div className="summaryItem">
                   <div className="muted">Workspace</div>
-                  <div className="mono">{agentStatus.workspace_dir || '—'}</div>
+                  <div className="mono">{agentStatus.workspace_dir || '-'}</div>
                 </div>
                 <div className="summaryItem">
                   <div className="muted">Session id</div>
-                  <div className="mono">{agentStatus.session_id || '—'}</div>
+                  <div className="mono">{agentStatus.session_id || '-'}</div>
                 </div>
                 <div className="summaryItem">
                   <div className="muted">Started</div>
-                  <div className="mono">{agentStatus.started_at ? fmtIso(agentStatus.started_at) : '—'}</div>
+                  <div className="mono">{agentStatus.started_at ? fmtIso(agentStatus.started_at) : '-'}</div>
                 </div>
               </div>
             )}
@@ -327,7 +327,7 @@ export default function ConversationDetailPage() {
               </label>
               <div className="spacer" />
               <div className="muted mono">
-                {files?.items ? `${visibleItems.length} items` : '—'}
+                {files?.items ? `${visibleItems.length} items` : '-'}
               </div>
             </div>
             {!files ? (
@@ -353,7 +353,7 @@ export default function ConversationDetailPage() {
                     </tr>
                   ) : (
                     visibleItems.map((it) => {
-                      const size = it.size_bytes === null ? '—' : fmtBytes(it.size_bytes)
+                      const size = it.size_bytes === null ? '-' : fmtBytes(it.size_bytes)
                       return (
                         <tr key={`${it.path}_${it.name}`}>
                           <td className="mono">
@@ -375,7 +375,7 @@ export default function ConversationDetailPage() {
                                 Download
                               </button>
                             ) : (
-                              <span className="muted">—</span>
+                              <span className="muted">-</span>
                             )}
                           </td>
                         </tr>
@@ -438,7 +438,7 @@ function MessageRow({ m }: { m: ConversationMessage }) {
       ) : null}
       {showMetrics ? (
         <div className="bubbleMeta mono">
-          tok in {m.metrics.in ?? '—'} • out {m.metrics.out ?? '—'} • cost {m.metrics.cost ?? '—'} • ASR {fmtMs(m.metrics.asr)} •
+          tok in {m.metrics.in ?? '-'} • out {m.metrics.out ?? '-'} • cost {m.metrics.cost ?? '-'} • ASR {fmtMs(m.metrics.asr)} •
           LLM 1st {fmtMs(m.metrics.llm1)} • LLM {fmtMs(m.metrics.llm)} • TTS 1st {fmtMs(m.metrics.tts1)} • total {fmtMs(m.metrics.total)}
         </div>
       ) : null}

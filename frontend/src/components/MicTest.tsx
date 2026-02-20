@@ -13,7 +13,7 @@ import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
-import type { DataAgentStatus, ConversationFiles, ConversationMessage, Citation } from '../types'
+import type { Bot, DataAgentStatus, ConversationFiles, ConversationMessage, Citation } from '../types'
 import LoadingSpinner from './LoadingSpinner'
 
 type Stage = 'disconnected' | 'idle' | 'init' | 'recording' | 'asr' | 'llm' | 'tts' | 'error'
@@ -141,6 +141,7 @@ export default function MicTest({
   const [speak, setSpeak] = useState(true)
   const [testFlag, setTestFlag] = useState(true)
   const [debug, setDebug] = useState(false)
+  const [botProvider, setBotProvider] = useState<string>('openai')
   const [err, setErr] = useState<string | null>(null)
   const [containerStatus, setContainerStatus] = useState<DataAgentStatus | null>(null)
   const [containerErr, setContainerErr] = useState<string | null>(null)
@@ -154,6 +155,7 @@ export default function MicTest({
   const [filesHidden, setFilesHidden] = useState(false)
   const [showToolMessages, setShowToolMessages] = useState(false)
   const [showWsSettings, setShowWsSettings] = useState(false)
+  const [showControlMenu, setShowControlMenu] = useState(false)
   const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({})
   const [items, setItems] = useState<ChatItem[]>([])
   const [recording, setRecording] = useState(false)
@@ -415,15 +417,34 @@ export default function MicTest({
     [connectionStage],
   )
   const canRecord = useMemo(() => {
+    if (botProvider === 'local') return false
     if (layout === 'whatsapp') return connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
     return speak && connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
-  }, [layout, speak, conversationId, activeStage, connectionStage])
+  }, [layout, speak, conversationId, activeStage, connectionStage, botProvider])
 
   useEffect(() => {
     return () => {
       if (downloadMsgTimerRef.current) window.clearTimeout(downloadMsgTimerRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const bot = await apiGet<Bot>(`/api/bots/${botId}`)
+        if (!alive) return
+        const provider = (bot.llm_provider || 'openai').toLowerCase()
+        setBotProvider(provider)
+        if (provider === 'local') setSpeak(false)
+      } catch {
+        if (alive) setBotProvider('openai')
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [botId])
 
   useEffect(() => {
     const token = getBasicAuthToken()
@@ -902,6 +923,19 @@ export default function MicTest({
     }
   }
 
+  async function stopActiveRequest() {
+    const ws = wsRef.current
+    const reqId = activeReqIdRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN || !reqId) return
+    try {
+      ws.send(JSON.stringify({ type: 'stop', req_id: reqId }))
+    } catch {
+      // ignore
+    }
+    if (conversationId) setConversationStage(conversationId, 'idle')
+    finalizeTurn(reqId)
+  }
+
   async function initConversation() {
     ignoreInitialConversationRef.current = true
     if (!(await ensureWsOpen())) return
@@ -909,6 +943,7 @@ export default function MicTest({
     if (!ws) return
     if (!canInit) return
     setErr(null)
+    await stopActiveRequest()
     setConversationId(null)
     setItems([])
     draftAssistantIdRef.current = null
@@ -1026,7 +1061,7 @@ export default function MicTest({
   )
 
   const statusLabel = !containerStatus
-    ? '—'
+    ? '-'
     : !containerStatus.docker_available
       ? 'docker unavailable'
       : containerStatus.exists
@@ -1161,7 +1196,7 @@ export default function MicTest({
             hidden
           </label>
           <div className="spacer" />
-          <div className="muted mono">{files?.items ? `${modalItems.length} items` : '—'}</div>
+          <div className="muted mono">{files?.items ? `${modalItems.length} items` : '-'}</div>
         </div>
         {!files ? (
           <div className="muted" style={{ marginTop: 10 }}>
@@ -1179,12 +1214,18 @@ export default function MicTest({
       </aside>
     ) : null
 
+  const voiceDisabled = botProvider === 'local'
   const micButton = recording ? (
     <button className="iconBtn danger" onClick={() => void stopRecording()} title="Stop recording">
       Stop
     </button>
   ) : (
-    <button className="iconBtn" onClick={() => void startRecording()} disabled={!canRecord} title="Record">
+    <button
+      className="iconBtn"
+      onClick={() => void startRecording()}
+      disabled={!canRecord}
+      title={voiceDisabled ? 'Voice input disabled for local models' : 'Record'}
+    >
       <MicrophoneIcon />
     </button>
   )
@@ -1192,7 +1233,14 @@ export default function MicTest({
     <button
       className={`iconBtn ${speak ? 'active' : ''}`}
       onClick={() => setSpeak((v) => !v)}
-      title={speak ? 'Voice output on' : 'Voice output off'}
+      disabled={voiceDisabled}
+      title={
+        voiceDisabled
+          ? 'Voice output disabled for local models'
+          : speak
+            ? 'Voice output on'
+            : 'Voice output off'
+      }
     >
       {speak ? <SpeakerWaveIcon /> : <SpeakerXMarkIcon />}
     </button>
@@ -1247,22 +1295,36 @@ export default function MicTest({
                 ws: {wsStatusLabel}
               </div>
               <div className="spacer" />
-              <button
-                className="btn ghost"
-                type="button"
-                onClick={() => setShowWsSettings((v) => !v)}
-                aria-pressed={showWsSettings}
-              >
-                WS settings: {showWsSettings ? 'on' : 'off'}
-              </button>
-              <button
-                className="btn ghost"
-                type="button"
-                onClick={() => setShowToolMessages((v) => !v)}
-                aria-pressed={showToolMessages}
-              >
-                More info: {showToolMessages ? 'on' : 'off'}
-              </button>
+              <div className="settingsWrapper">
+                <button
+                  className="settingsBtn"
+                  type="button"
+                  onClick={() => setShowControlMenu((v) => !v)}
+                  aria-label="Conversation controls"
+                >
+                  <WrenchScrewdriverIcon aria-hidden="true" />
+                </button>
+                {showControlMenu ? (
+                  <div className="settingsMenu">
+                    <button
+                      className="settingsItem"
+                      type="button"
+                      onClick={() => setShowWsSettings((v) => !v)}
+                      aria-pressed={showWsSettings}
+                    >
+                      {showWsSettings ? '✓ ' : ''}WS settings
+                    </button>
+                    <button
+                      className="settingsItem"
+                      type="button"
+                      onClick={() => setShowToolMessages((v) => !v)}
+                      aria-pressed={showToolMessages}
+                    >
+                      {showToolMessages ? '✓ ' : ''}More info
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
             {showWsSettings ? (
               <div className="row gap" style={{ marginTop: 6 }}>
@@ -1370,10 +1432,41 @@ export default function MicTest({
         <label className="check">
           <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} /> debug
         </label>
-        <button className="btn ghost" type="button" onClick={() => setShowToolMessages((v) => !v)} aria-pressed={showToolMessages}>
-          More info: {showToolMessages ? 'on' : 'off'}
-        </button>
-        <button className="btn" onClick={() => void initConversation()} disabled={!canInit}>
+        <div className="settingsWrapper">
+          <button
+            className="settingsBtn"
+            type="button"
+            onClick={() => setShowControlMenu((v) => !v)}
+            aria-label="Conversation controls"
+          >
+            <WrenchScrewdriverIcon aria-hidden="true" />
+          </button>
+          {showControlMenu ? (
+            <div className="settingsMenu">
+              <button
+                className="settingsItem"
+                type="button"
+                onClick={() => setShowWsSettings((v) => !v)}
+                aria-pressed={showWsSettings}
+              >
+                {showWsSettings ? '✓ ' : ''}WS settings
+              </button>
+              <button
+                className="settingsItem"
+                type="button"
+                onClick={() => setShowToolMessages((v) => !v)}
+                aria-pressed={showToolMessages}
+              >
+                {showToolMessages ? '✓ ' : ''}More info
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <button
+          className={`btn ${!conversationId ? 'attentionBtn' : ''}`}
+          onClick={() => void initConversation()}
+          disabled={!canInit}
+        >
           {conversationId ? 'New conversation' : 'Start conversation'}
         </button>
         <button className="btn" onClick={() => setShowFilesPane((p) => !p)} disabled={!conversationId}>
@@ -1461,7 +1554,7 @@ function normalizeToolEventForDisplay(msg: any): any {
 }
 
 function fmtBytes(n: number): string {
-  if (!Number.isFinite(n)) return '—'
+  if (!Number.isFinite(n)) return '-'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let v = n
   let i = 0
@@ -1563,8 +1656,8 @@ function renderTree(
   const isOpen = !!expanded[node.path]
   const indent = depth * 16
   const canDownload = Boolean(onDownload && node.download_url && !node.is_dir)
-  const size = node.is_dir ? '—' : node.size_bytes === null ? '—' : fmtBytes(node.size_bytes || 0)
-  const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '—'
+  const size = node.is_dir ? '-' : node.size_bytes === null ? '-' : fmtBytes(node.size_bytes || 0)
+  const mtime = node.mtime ? new Date(node.mtime).toLocaleString() : '-'
   const fallbackName = node.name || node.path.split('/').filter(Boolean).pop() || node.path || '(root)'
   const nameNode = node.is_dir ? (
     <div className="treeName mono">{fallbackName ? `${fallbackName}/` : fallbackName}</div>
