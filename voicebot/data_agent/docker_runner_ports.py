@@ -152,6 +152,7 @@ def reserve_container_ports(
     conversation_id: UUID,
     container_name: str,
     container_id: str = "",
+    extra: int = 0,
 ) -> list[dict[str, int]]:
     name = (container_name or "").strip()
     cid = (container_id or "").strip()
@@ -163,6 +164,12 @@ def reserve_container_ports(
         if existing:
             return existing
         count = _ports_per_container()
+        try:
+            extra_int = int(extra)
+        except Exception:
+            extra_int = 0
+        if extra_int > 0:
+            count = min(50, count + extra_int)
         if count <= 0:
             return []
         start, end = _port_range()

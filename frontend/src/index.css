@@ -2124,11 +2124,11 @@ label {
 .chatLayout {
   height: 100%;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 320px) minmax(0, 1fr);
   background: linear-gradient(180deg, rgba(8, 10, 15, 0.9), rgba(10, 12, 18, 0.85));
 }
 .chatLayout.withWorkspace {
-  grid-template-columns: 320px minmax(0, 1fr) auto;
+  grid-template-columns: var(--sidebar-width, 320px) minmax(0, 1fr) auto;
 }
 .singleTabBlock {
   min-height: 100vh;
@@ -2156,6 +2156,47 @@ label {
   background: rgba(12, 14, 20, 0.85);
   min-width: 0;
   min-height: 0;
+  position: relative;
+}
+.chatSidebar.collapsed {
+  width: 64px;
+}
+.sidebarResizeHandle {
+  position: absolute;
+  right: -5px;
+  top: 0;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.02), rgba(148, 163, 184, 0.08), rgba(148, 163, 184, 0.02));
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.chatSidebar:hover .sidebarResizeHandle {
+  opacity: 1;
+}
+.chatSidebar.collapsed .sidebarResizeHandle {
+  display: none;
+}
+.chatSidebar.collapsed .chatSidebarHeader {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 14px 10px;
+}
+.chatSidebar.collapsed .chatBrand,
+.chatSidebar.collapsed .chatSearch,
+.chatSidebar.collapsed .chatFilters,
+.chatSidebar.collapsed .chatSidebarScroll,
+.chatSidebar.collapsed .chatSectionLabelRow {
+  display: none;
+}
+.chatSidebar.collapsed .collapseBtn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 12px;
 }
 .chatSidebarHeader {
   padding: 16px;
@@ -2698,6 +2739,7 @@ label {
   width: 280px;
   transition: width 180ms ease;
   min-height: 0;
+  position: relative;
 }
 .chatWorkspace.collapsed {
   width: 64px;
@@ -2709,6 +2751,24 @@ label {
   align-items: flex-start;
   gap: 10px;
 }
+.workspaceResizeHandle {
+  position: absolute;
+  left: -5px;
+  top: 0;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.02), rgba(148, 163, 184, 0.08), rgba(148, 163, 184, 0.02));
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.chatWorkspace:hover .workspaceResizeHandle {
+  opacity: 1;
+}
+.chatWorkspace.collapsed .workspaceResizeHandle {
+  display: none;
+}
 .workspaceBody {
   padding: 0 16px 16px;
   display: grid;
@@ -2719,6 +2779,20 @@ label {
 }
 .chatWorkspace.collapsed .workspaceBody {
   display: none;
+}
+.chatWorkspace.collapsed .workspaceHeader {
+  justify-content: center;
+  align-items: center;
+}
+.chatWorkspace.collapsed .workspaceHeader h3,
+.chatWorkspace.collapsed .workspaceHeader .muted {
+  display: none;
+}
+.chatWorkspace.collapsed .collapseBtn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 12px;
 }
 .workspaceCard {
   border-radius: 12px;
@@ -2753,6 +2827,10 @@ label {
   padding: 4px 10px;
   font-size: 12px;
   cursor: pointer;
+}
+.collapseBtn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .widgetRoot {

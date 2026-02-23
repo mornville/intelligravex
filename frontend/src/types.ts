@@ -171,6 +171,8 @@ export type DataAgentStatus = {
   finished_at?: string
   workspace_dir?: string
   session_id?: string
+  ports?: { host: number; container: number }[]
+  ide_port?: number
   error?: string
 }
 

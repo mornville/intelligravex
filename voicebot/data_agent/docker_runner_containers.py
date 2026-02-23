@@ -307,7 +307,15 @@ def ensure_conversation_container(
         except Exception:
             pass
 
-    ports = reserve_container_ports(conversation_id=conversation_id, container_name=name)
+    ports = reserve_container_ports(conversation_id=conversation_id, container_name=name, extra=1)
+    ide_port = 0
+    for mapping in ports:
+        try:
+            host_port = int(mapping.get("host") or 0)
+        except Exception:
+            host_port = 0
+        if host_port > ide_port:
+            ide_port = host_port
     cmd = [
         "docker",
         "run",
@@ -321,6 +329,8 @@ def ensure_conversation_container(
         "-e",
         "PYTHONUNBUFFERED=1",
     ]
+    if ide_port > 0:
+        cmd.extend(["-e", f"IGX_IDE_PORT={ide_port}"])
     for mapping in ports:
         host_port = int(mapping.get("host") or 0)
         container_port = int(mapping.get("container") or 0)
@@ -341,7 +351,13 @@ def ensure_conversation_container(
             image,
             "sh",
             "-lc",
-            "mkdir -p /work/.codex && tail -f /dev/null",
+            "mkdir -p /work/.codex; "
+            "ln -s /work /workspace 2>/dev/null || true; "
+            "if [ -n \"${IGX_IDE_PORT:-}\" ]; then "
+            "openvscode-server --host 0.0.0.0 --port \"${IGX_IDE_PORT}\" --without-connection-token --accept-server-license-terms --folder /workspace "
+            ">/work/.openvscode-server.log 2>&1 & "
+            "fi; "
+            "tail -f /dev/null",
         ]
     )
     p = _run(cmd, timeout_s=30.0)

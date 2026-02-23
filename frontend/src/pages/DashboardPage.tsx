@@ -1,4 +1,4 @@
-import { type Dispatch, type SetStateAction, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { apiDelete, apiGet, apiPost, BACKEND_URL, downloadFile } from '../api/client'
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -24,6 +24,8 @@ import type {
 import { fmtIso } from '../utils/format'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
   Cog6ToothIcon,
   CpuChipIcon,
   PaperClipIcon,
@@ -41,6 +43,27 @@ type MentionState = {
   index: number
   start: number
   end: number
+}
+
+const WORKSPACE_WIDTH_KEY = 'igx_workspace_width'
+const WORKSPACE_COLLAPSED_KEY = 'igx_workspace_collapsed'
+const DEFAULT_WORKSPACE_WIDTH = 320
+const MIN_WORKSPACE_WIDTH = 240
+const MAX_WORKSPACE_WIDTH = 640
+const SIDEBAR_WIDTH_KEY = 'igx_sidebar_width'
+const SIDEBAR_COLLAPSED_KEY = 'igx_sidebar_collapsed'
+const DEFAULT_SIDEBAR_WIDTH = 320
+const MIN_SIDEBAR_WIDTH = 220
+const MAX_SIDEBAR_WIDTH = 420
+
+function clampWorkspaceWidth(next: number) {
+  if (Number.isNaN(next)) return DEFAULT_WORKSPACE_WIDTH
+  return Math.min(MAX_WORKSPACE_WIDTH, Math.max(MIN_WORKSPACE_WIDTH, next))
+}
+
+function clampSidebarWidth(next: number) {
+  if (Number.isNaN(next)) return DEFAULT_SIDEBAR_WIDTH
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, next))
 }
 
 const PAGE_SIZE = 10
@@ -304,6 +327,17 @@ export default function DashboardPage() {
 
   const [workspaceStatus, setWorkspaceStatus] = useState<DataAgentStatus | null>(null)
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
+  const [workspaceIDEOpen, setWorkspaceIDEOpen] = useState(false)
+  const [workspaceWidth, setWorkspaceWidth] = useState(DEFAULT_WORKSPACE_WIDTH)
+  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false)
+  const workspaceResizeActiveRef = useRef(false)
+  const workspaceResizeStartXRef = useRef(0)
+  const workspaceResizeStartWidthRef = useRef(DEFAULT_WORKSPACE_WIDTH)
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const sidebarResizeActiveRef = useRef(false)
+  const sidebarResizeStartXRef = useRef(0)
+  const sidebarResizeStartWidthRef = useRef(DEFAULT_SIDEBAR_WIDTH)
   const [files, setFiles] = useState<ConversationFiles | null>(null)
   const [filesErr, setFilesErr] = useState<string | null>(null)
   const [filesMsg, setFilesMsg] = useState<string | null>(null)
@@ -341,6 +375,7 @@ export default function DashboardPage() {
   function clearActiveConversationState() {
     setWorkspaceStatus(null)
     setWorkspaceErr(null)
+    setWorkspaceIDEOpen(false)
     setFiles(null)
     setFilesErr(null)
     setFilesMsg(null)
@@ -358,6 +393,48 @@ export default function DashboardPage() {
       clearAssistantConversation()
     }
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const savedWidth = window.localStorage.getItem(WORKSPACE_WIDTH_KEY)
+    const parsedWidth = savedWidth ? Number(savedWidth) : Number.NaN
+    if (!Number.isNaN(parsedWidth)) {
+      setWorkspaceWidth(clampWorkspaceWidth(parsedWidth))
+    }
+    const savedCollapsed = window.localStorage.getItem(WORKSPACE_COLLAPSED_KEY)
+    if (savedCollapsed === '1') {
+      setWorkspaceCollapsed(true)
+    }
+    const savedSidebar = window.localStorage.getItem(SIDEBAR_WIDTH_KEY)
+    const parsedSidebar = savedSidebar ? Number(savedSidebar) : Number.NaN
+    if (!Number.isNaN(parsedSidebar)) {
+      setSidebarWidth(clampSidebarWidth(parsedSidebar))
+    }
+    const savedSidebarCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY)
+    if (savedSidebarCollapsed === '1') {
+      setSidebarCollapsed(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(WORKSPACE_WIDTH_KEY, String(workspaceWidth))
+  }, [workspaceWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(WORKSPACE_COLLAPSED_KEY, workspaceCollapsed ? '1' : '0')
+  }, [workspaceCollapsed])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))
+  }, [sidebarWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0')
+  }, [sidebarCollapsed])
 
   useEffect(() => {
     void (async () => {
@@ -1010,6 +1087,9 @@ export default function DashboardPage() {
             ? 'running'
             : workspaceStatus.status || 'stopped'
           : 'not started'
+  const workspacePorts = workspaceStatus?.ports || []
+  const workspaceIdePort = workspaceStatus?.ide_port || workspacePorts[0]?.host || 0
+  const workspaceIdeUrl = workspaceIdePort ? `http://127.0.0.1:${workspaceIdePort}/` : ''
 
   useEffect(() => {
     if (!fileItems.length) return
@@ -1290,6 +1370,56 @@ export default function DashboardPage() {
     }
   }
 
+  function beginWorkspaceResize(e: ReactMouseEvent<HTMLDivElement>) {
+    if (workspaceCollapsed) return
+    e.preventDefault()
+    workspaceResizeActiveRef.current = true
+    workspaceResizeStartXRef.current = e.clientX
+    workspaceResizeStartWidthRef.current = workspaceWidth
+    const handleMove = (ev: MouseEvent) => {
+      if (!workspaceResizeActiveRef.current) return
+      const delta = workspaceResizeStartXRef.current - ev.clientX
+      const next = clampWorkspaceWidth(workspaceResizeStartWidthRef.current + delta)
+      setWorkspaceWidth(next)
+    }
+    const handleUp = () => {
+      workspaceResizeActiveRef.current = false
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+  }
+
+  function beginSidebarResize(e: ReactMouseEvent<HTMLDivElement>) {
+    if (sidebarCollapsed) return
+    e.preventDefault()
+    sidebarResizeActiveRef.current = true
+    sidebarResizeStartXRef.current = e.clientX
+    sidebarResizeStartWidthRef.current = sidebarWidth
+    const handleMove = (ev: MouseEvent) => {
+      if (!sidebarResizeActiveRef.current) return
+      const delta = ev.clientX - sidebarResizeStartXRef.current
+      const next = clampSidebarWidth(sidebarResizeStartWidthRef.current + delta)
+      setSidebarWidth(next)
+    }
+    const handleUp = () => {
+      sidebarResizeActiveRef.current = false
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+  }
+
   function toggleSelected(botId: string) {
     setGroupSelected((prev) => (prev.includes(botId) ? prev.filter((id) => id !== botId) : [...prev, botId]))
   }
@@ -1315,12 +1445,26 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="chatLayout withWorkspace">
-      <aside className="chatSidebar">
+    <div
+      className="chatLayout withWorkspace"
+      style={{ ['--sidebar-width' as any]: `${(sidebarCollapsed ? 64 : sidebarWidth)}px` }}
+    >
+      <aside className={`chatSidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="sidebarResizeHandle" onMouseDown={beginSidebarResize} />
         <div className="chatSidebarHeader">
-          <div className="chatBrand">
-            <span className="chatBrandDot" />
-            GravexStudio
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div className="chatBrand">
+              <span className="chatBrandDot" />
+              GravexStudio
+            </div>
+            <button
+              className="collapseBtn"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {sidebarCollapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+            </button>
           </div>
           <input
             className="chatSearch"
@@ -1762,12 +1906,24 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      <aside className="chatWorkspace">
+      <aside
+        className={`chatWorkspace ${workspaceCollapsed ? 'collapsed' : ''}`}
+        style={!workspaceCollapsed ? { width: workspaceWidth } : undefined}
+      >
+          <div className="workspaceResizeHandle" onMouseDown={beginWorkspaceResize} />
           <div className="workspaceHeader">
             <div>
               <h3>Workspace</h3>
               <div className="muted">Container: {workspaceStatusLabel}</div>
             </div>
+            <button
+              className="collapseBtn"
+              onClick={() => setWorkspaceCollapsed((v) => !v)}
+              aria-label={workspaceCollapsed ? 'Expand workspace' : 'Collapse workspace'}
+              title={workspaceCollapsed ? 'Expand workspace' : 'Collapse workspace'}
+            >
+              {workspaceCollapsed ? <ChevronLeftIcon /> : <ChevronRightIcon />}
+            </button>
           </div>
           <div className="workspaceBody">
             {workspaceErr ? <div className="alert">{workspaceErr}</div> : null}
@@ -1793,6 +1949,45 @@ export default function DashboardPage() {
                   <span>-</span>
                 )}
               </div>
+            </div>
+            <div className="workspaceCard">
+              <div className="workspaceTitle">IDE (VS Code)</div>
+              {!activeConversationId ? (
+                <div className="muted">Select a conversation to enable the IDE.</div>
+              ) : !workspaceStatus?.running ? (
+                <div className="muted">Start the Isolated Workspace to enable the IDE.</div>
+              ) : !workspaceIdePort ? (
+                <div className="muted">IDE port not assigned yet.</div>
+              ) : (
+                <>
+                  <div className="workspaceRow">
+                    <strong>Port</strong>
+                    <span className="mono">{workspaceIdePort}</span>
+                  </div>
+                  <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                    <a className="btn" href={workspaceIdeUrl} target="_blank" rel="noreferrer">
+                      Open IDE
+                    </a>
+                    <button className="btn" onClick={() => setWorkspaceIDEOpen((v) => !v)}>
+                      {workspaceIDEOpen ? 'Hide' : 'Embed'}
+                    </button>
+                  </div>
+                  {workspaceIDEOpen ? (
+                    <iframe
+                      title="Workspace IDE"
+                      src={workspaceIdeUrl}
+                      style={{
+                        width: '100%',
+                        height: 520,
+                        marginTop: 10,
+                        borderRadius: 10,
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgba(10, 12, 16, 0.5)',
+                      }}
+                    />
+                  ) : null}
+                </>
+              )}
             </div>
             <div className="workspaceCard">
               <div className="workspaceTitle">Action queue</div>

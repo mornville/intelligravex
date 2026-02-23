@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type MouseEvent as ReactMouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
   Cog6ToothIcon,
   CpuChipIcon,
   MicrophoneIcon,
@@ -30,6 +32,26 @@ type MentionState = {
 }
 
 const PAGE_SIZE = 10
+const WORKSPACE_WIDTH_KEY = 'igx_workspace_width'
+const WORKSPACE_COLLAPSED_KEY = 'igx_workspace_collapsed'
+const DEFAULT_WORKSPACE_WIDTH = 320
+const MIN_WORKSPACE_WIDTH = 240
+const MAX_WORKSPACE_WIDTH = 640
+const SIDEBAR_WIDTH_KEY = 'igx_sidebar_width'
+const SIDEBAR_COLLAPSED_KEY = 'igx_sidebar_collapsed'
+const DEFAULT_SIDEBAR_WIDTH = 320
+const MIN_SIDEBAR_WIDTH = 220
+const MAX_SIDEBAR_WIDTH = 420
+
+function clampWorkspaceWidth(next: number) {
+  if (Number.isNaN(next)) return DEFAULT_WORKSPACE_WIDTH
+  return Math.min(MAX_WORKSPACE_WIDTH, Math.max(MIN_WORKSPACE_WIDTH, next))
+}
+
+function clampSidebarWidth(next: number) {
+  if (Number.isNaN(next)) return DEFAULT_SIDEBAR_WIDTH
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, next))
+}
 
 type MessageCursor = {
   created_at: string
@@ -86,7 +108,17 @@ export default function GroupConversationPage() {
   const [groupListErr, setGroupListErr] = useState<string | null>(null)
   const [groupListLoading, setGroupListLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [workspaceOpen, setWorkspaceOpen] = useState(true)
+  const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false)
+  const [workspaceWidth, setWorkspaceWidth] = useState(DEFAULT_WORKSPACE_WIDTH)
+  const workspaceResizeActiveRef = useRef(false)
+  const workspaceResizeStartXRef = useRef(0)
+  const workspaceResizeStartWidthRef = useRef(DEFAULT_WORKSPACE_WIDTH)
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const sidebarResizeActiveRef = useRef(false)
+  const sidebarResizeStartXRef = useRef(0)
+  const sidebarResizeStartWidthRef = useRef(DEFAULT_SIDEBAR_WIDTH)
+  const [workspaceIDEOpen, setWorkspaceIDEOpen] = useState(false)
   const [agentStatus, setAgentStatus] = useState<DataAgentStatus | null>(null)
   const [agentErr, setAgentErr] = useState<string | null>(null)
   const [files, setFiles] = useState<ConversationFiles | null>(null)
@@ -100,12 +132,55 @@ export default function GroupConversationPage() {
   function clearConversationState() {
     setAgentStatus(null)
     setAgentErr(null)
+    setWorkspaceIDEOpen(false)
     setFiles(null)
     setFilesErr(null)
     setMessages([])
     setHasMore(true)
     setOldestCursor(null)
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const savedWidth = window.localStorage.getItem(WORKSPACE_WIDTH_KEY)
+    const parsedWidth = savedWidth ? Number(savedWidth) : Number.NaN
+    if (!Number.isNaN(parsedWidth)) {
+      setWorkspaceWidth(clampWorkspaceWidth(parsedWidth))
+    }
+    const savedCollapsed = window.localStorage.getItem(WORKSPACE_COLLAPSED_KEY)
+    if (savedCollapsed === '1') {
+      setWorkspaceCollapsed(true)
+    }
+    const savedSidebar = window.localStorage.getItem(SIDEBAR_WIDTH_KEY)
+    const parsedSidebar = savedSidebar ? Number(savedSidebar) : Number.NaN
+    if (!Number.isNaN(parsedSidebar)) {
+      setSidebarWidth(clampSidebarWidth(parsedSidebar))
+    }
+    const savedSidebarCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY)
+    if (savedSidebarCollapsed === '1') {
+      setSidebarCollapsed(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(WORKSPACE_WIDTH_KEY, String(workspaceWidth))
+  }, [workspaceWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(WORKSPACE_COLLAPSED_KEY, workspaceCollapsed ? '1' : '0')
+  }, [workspaceCollapsed])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))
+  }, [sidebarWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0')
+  }, [sidebarCollapsed])
 
   function wsBase() {
     try {
@@ -363,6 +438,9 @@ export default function GroupConversationPage() {
     return out
   }, [bots, messages])
   const workspaceEnabled = Boolean(agentStatus?.exists || agentStatus?.running)
+  const workspacePorts = agentStatus?.ports || []
+  const workspaceIdePort = agentStatus?.ide_port || workspacePorts[0]?.host || 0
+  const workspaceIdeUrl = workspaceIdePort ? `http://127.0.0.1:${workspaceIdePort}/` : ''
   const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
   const mentionOptions = useMemo(() => {
@@ -412,6 +490,56 @@ export default function GroupConversationPage() {
       el.focus()
       el.setSelectionRange(nextPos, nextPos)
     })
+  }
+
+  function beginWorkspaceResize(e: ReactMouseEvent<HTMLDivElement>) {
+    if (workspaceCollapsed) return
+    e.preventDefault()
+    workspaceResizeActiveRef.current = true
+    workspaceResizeStartXRef.current = e.clientX
+    workspaceResizeStartWidthRef.current = workspaceWidth
+    const handleMove = (ev: MouseEvent) => {
+      if (!workspaceResizeActiveRef.current) return
+      const delta = workspaceResizeStartXRef.current - ev.clientX
+      const next = clampWorkspaceWidth(workspaceResizeStartWidthRef.current + delta)
+      setWorkspaceWidth(next)
+    }
+    const handleUp = () => {
+      workspaceResizeActiveRef.current = false
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+  }
+
+  function beginSidebarResize(e: ReactMouseEvent<HTMLDivElement>) {
+    if (sidebarCollapsed) return
+    e.preventDefault()
+    sidebarResizeActiveRef.current = true
+    sidebarResizeStartXRef.current = e.clientX
+    sidebarResizeStartWidthRef.current = sidebarWidth
+    const handleMove = (ev: MouseEvent) => {
+      if (!sidebarResizeActiveRef.current) return
+      const delta = ev.clientX - sidebarResizeStartXRef.current
+      const next = clampSidebarWidth(sidebarResizeStartWidthRef.current + delta)
+      setSidebarWidth(next)
+    }
+    const handleUp = () => {
+      sidebarResizeActiveRef.current = false
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
   }
 
   async function sendMessage() {
@@ -509,12 +637,26 @@ export default function GroupConversationPage() {
   }
 
   return (
-    <div className={`chatLayout ${workspaceEnabled ? 'withWorkspace' : ''}`}>
-      <aside className="chatSidebar">
+    <div
+      className={`chatLayout ${workspaceEnabled ? 'withWorkspace' : ''}`}
+      style={{ ['--sidebar-width' as any]: `${(sidebarCollapsed ? 64 : sidebarWidth)}px` }}
+    >
+      <aside className={`chatSidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="sidebarResizeHandle" onMouseDown={beginSidebarResize} />
         <div className="chatSidebarHeader">
-          <div className="chatBrand">
-            <span className="chatBrandDot" />
-            GravexStudio
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div className="chatBrand">
+              <span className="chatBrandDot" />
+              GravexStudio
+            </div>
+            <button
+              className="collapseBtn"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {sidebarCollapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+            </button>
           </div>
           <input className="chatSearch" placeholder="Search assistants or conversations" />
         </div>
@@ -682,14 +824,23 @@ export default function GroupConversationPage() {
       </main>
 
       {workspaceEnabled ? (
-        <aside className={`chatWorkspace ${workspaceOpen ? '' : 'collapsed'}`}>
+        <aside
+          className={`chatWorkspace ${workspaceCollapsed ? 'collapsed' : ''}`}
+          style={!workspaceCollapsed ? { width: workspaceWidth } : undefined}
+        >
+          <div className="workspaceResizeHandle" onMouseDown={beginWorkspaceResize} />
           <div className="workspaceHeader">
             <div>
               <h3>Workspace</h3>
               <div className="muted">Container: {agentStatus?.running ? 'running' : 'idle'}</div>
             </div>
-            <button className="collapseBtn" onClick={() => setWorkspaceOpen((v) => !v)}>
-              {workspaceOpen ? 'Collapse' : 'Expand'}
+            <button
+              className="collapseBtn"
+              onClick={() => setWorkspaceCollapsed((v) => !v)}
+              aria-label={workspaceCollapsed ? 'Expand workspace' : 'Collapse workspace'}
+              title={workspaceCollapsed ? 'Expand workspace' : 'Collapse workspace'}
+            >
+              {workspaceCollapsed ? <ChevronLeftIcon /> : <ChevronRightIcon />}
             </button>
           </div>
           <div className="workspaceBody">
@@ -708,6 +859,43 @@ export default function GroupConversationPage() {
                 <strong>Container</strong>
                 <span>{agentStatus?.container_name || '-'}</span>
               </div>
+            </div>
+            <div className="workspaceCard">
+              <div className="workspaceTitle">IDE (VS Code)</div>
+              {!agentStatus?.running ? (
+                <div className="muted">Start the Isolated Workspace to enable the IDE.</div>
+              ) : !workspaceIdePort ? (
+                <div className="muted">IDE port not assigned yet.</div>
+              ) : (
+                <>
+                  <div className="workspaceRow">
+                    <strong>Port</strong>
+                    <span className="mono">{workspaceIdePort}</span>
+                  </div>
+                  <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                    <a className="btn" href={workspaceIdeUrl} target="_blank" rel="noreferrer">
+                      Open IDE
+                    </a>
+                    <button className="btn" onClick={() => setWorkspaceIDEOpen((v) => !v)}>
+                      {workspaceIDEOpen ? 'Hide' : 'Embed'}
+                    </button>
+                  </div>
+                  {workspaceIDEOpen ? (
+                    <iframe
+                      title="Workspace IDE"
+                      src={workspaceIdeUrl}
+                      style={{
+                        width: '100%',
+                        height: 520,
+                        marginTop: 10,
+                        borderRadius: 10,
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgba(10, 12, 16, 0.5)',
+                      }}
+                    />
+                  ) : null}
+                </>
+              )}
             </div>
             <div className="workspaceCard">
               <div className="workspaceTitle">Files</div>

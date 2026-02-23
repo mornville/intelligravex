@@ -58,6 +58,17 @@ def ensure_data_agent_container(
         )
     if container_id:
         container_name, ports = data_agent_container_info(ctx, conversation_id=conversation_id, container_id=container_id)
+        ide_port = 0
+        if ports:
+            for item in ports:
+                try:
+                    host = int((item or {}).get("host") or 0)
+                except Exception:
+                    host = 0
+                if host > ide_port:
+                    ide_port = host
+            if ide_port:
+                ports = [p for p in ports if int((p or {}).get("host") or 0) != ide_port]
         meta_current = ctx.merge_conversation_metadata(
             session,
             conversation_id=conversation_id,
@@ -67,6 +78,7 @@ def ensure_data_agent_container(
                 "data_agent.session_id": session_id,
                 "data_agent.container_name": container_name,
                 "data_agent.ports": ports,
+                "data_agent.ide_port": ide_port,
             },
         )
     return container_id, session_id, workspace_dir
