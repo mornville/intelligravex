@@ -2751,6 +2751,9 @@ label {
   align-items: flex-start;
   gap: 10px;
 }
+.workspaceHeader.fullIde {
+  padding: 10px 12px;
+}
 .workspaceResizeHandle {
   position: absolute;
   left: -5px;
@@ -2776,6 +2779,13 @@ label {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+}
+.workspaceBody.fullIde {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  padding: 8px 12px 12px;
 }
 .chatWorkspace.collapsed .workspaceBody {
   display: none;
@@ -2831,6 +2841,42 @@ label {
 .collapseBtn svg {
   width: 16px;
   height: 16px;
+}
+
+.resizeShield {
+  position: fixed;
+  inset: 0;
+  cursor: col-resize;
+  z-index: 9999;
+  background: transparent;
+}
+
+.ideFrame {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 12, 16, 0.5);
+}
+.workspaceBody.fullIde .ideFrame {
+  flex: 1;
+  min-height: 0;
+}
+.workspaceCard.ideCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.workspaceCard.ideCard.full {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+}
+.workspaceCard.ideCard.full .ideFrame {
+  flex: 1;
+  min-height: 0;
+}
+.workspaceCard.ideCard.full .workspaceTitle {
+  display: none;
 }
 
 .widgetRoot {

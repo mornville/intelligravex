@@ -13,4 +13,7 @@ export default defineConfig({
     // Allow accessing preview server from LAN hostnames.
     allowedHosts: ['localhost', '127.0.0.1'],
   },
+  build: {
+    chunkSizeWarningLimit: 800,
+  },
 })

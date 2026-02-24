@@ -24,10 +24,15 @@ import type {
 import { fmtIso } from '../utils/format'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import {
+  ArrowsPointingInIcon,
+  ArrowsPointingOutIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Cog6ToothIcon,
   CpuChipIcon,
+  EyeIcon,
+  EyeSlashIcon,
+  ArrowTopRightOnSquareIcon,
   PaperClipIcon,
   PlusIcon,
   TrashIcon,
@@ -49,12 +54,12 @@ const WORKSPACE_WIDTH_KEY = 'igx_workspace_width'
 const WORKSPACE_COLLAPSED_KEY = 'igx_workspace_collapsed'
 const DEFAULT_WORKSPACE_WIDTH = 320
 const MIN_WORKSPACE_WIDTH = 240
-const MAX_WORKSPACE_WIDTH = 640
+const MAX_WORKSPACE_WIDTH = 900
 const SIDEBAR_WIDTH_KEY = 'igx_sidebar_width'
 const SIDEBAR_COLLAPSED_KEY = 'igx_sidebar_collapsed'
 const DEFAULT_SIDEBAR_WIDTH = 320
 const MIN_SIDEBAR_WIDTH = 220
-const MAX_SIDEBAR_WIDTH = 420
+const MAX_SIDEBAR_WIDTH = 520
 
 function clampWorkspaceWidth(next: number) {
   if (Number.isNaN(next)) return DEFAULT_WORKSPACE_WIDTH
@@ -328,11 +333,13 @@ export default function DashboardPage() {
   const [workspaceStatus, setWorkspaceStatus] = useState<DataAgentStatus | null>(null)
   const [workspaceErr, setWorkspaceErr] = useState<string | null>(null)
   const [workspaceIDEOpen, setWorkspaceIDEOpen] = useState(false)
+  const [workspaceIDEFull, setWorkspaceIDEFull] = useState(false)
   const [workspaceWidth, setWorkspaceWidth] = useState(DEFAULT_WORKSPACE_WIDTH)
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false)
   const workspaceResizeActiveRef = useRef(false)
   const workspaceResizeStartXRef = useRef(0)
   const workspaceResizeStartWidthRef = useRef(DEFAULT_WORKSPACE_WIDTH)
+  const [resizeMode, setResizeMode] = useState<'workspace' | 'sidebar' | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const sidebarResizeActiveRef = useRef(false)
@@ -376,6 +383,7 @@ export default function DashboardPage() {
     setWorkspaceStatus(null)
     setWorkspaceErr(null)
     setWorkspaceIDEOpen(false)
+    setWorkspaceIDEFull(false)
     setFiles(null)
     setFilesErr(null)
     setFilesMsg(null)
@@ -1089,7 +1097,7 @@ export default function DashboardPage() {
           : 'not started'
   const workspacePorts = workspaceStatus?.ports || []
   const workspaceIdePort = workspaceStatus?.ide_port || workspacePorts[0]?.host || 0
-  const workspaceIdeUrl = workspaceIdePort ? `http://127.0.0.1:${workspaceIdePort}/` : ''
+  const workspaceIdeUrl = activeConversationId ? `/ide/${activeConversationId}/` : ''
 
   useEffect(() => {
     if (!fileItems.length) return
@@ -1374,6 +1382,7 @@ export default function DashboardPage() {
     if (workspaceCollapsed) return
     e.preventDefault()
     workspaceResizeActiveRef.current = true
+    setResizeMode('workspace')
     workspaceResizeStartXRef.current = e.clientX
     workspaceResizeStartWidthRef.current = workspaceWidth
     const handleMove = (ev: MouseEvent) => {
@@ -1388,6 +1397,7 @@ export default function DashboardPage() {
       window.removeEventListener('mouseup', handleUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      setResizeMode(null)
     }
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
@@ -1399,6 +1409,7 @@ export default function DashboardPage() {
     if (sidebarCollapsed) return
     e.preventDefault()
     sidebarResizeActiveRef.current = true
+    setResizeMode('sidebar')
     sidebarResizeStartXRef.current = e.clientX
     sidebarResizeStartWidthRef.current = sidebarWidth
     const handleMove = (ev: MouseEvent) => {
@@ -1413,6 +1424,7 @@ export default function DashboardPage() {
       window.removeEventListener('mouseup', handleUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      setResizeMode(null)
     }
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
@@ -1449,6 +1461,7 @@ export default function DashboardPage() {
       className="chatLayout withWorkspace"
       style={{ ['--sidebar-width' as any]: `${(sidebarCollapsed ? 64 : sidebarWidth)}px` }}
     >
+      {resizeMode ? <div className="resizeShield" /> : null}
       <aside className={`chatSidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebarResizeHandle" onMouseDown={beginSidebarResize} />
         <div className="chatSidebarHeader">
@@ -1911,10 +1924,10 @@ export default function DashboardPage() {
         style={!workspaceCollapsed ? { width: workspaceWidth } : undefined}
       >
           <div className="workspaceResizeHandle" onMouseDown={beginWorkspaceResize} />
-          <div className="workspaceHeader">
+          <div className={`workspaceHeader ${workspaceIDEFull ? 'fullIde' : ''}`}>
             <div>
               <h3>Workspace</h3>
-              <div className="muted">Container: {workspaceStatusLabel}</div>
+              {!workspaceIDEFull ? <div className="muted">Container: {workspaceStatusLabel}</div> : null}
             </div>
             <button
               className="collapseBtn"
@@ -1925,33 +1938,35 @@ export default function DashboardPage() {
               {workspaceCollapsed ? <ChevronLeftIcon /> : <ChevronRightIcon />}
             </button>
           </div>
-          <div className="workspaceBody">
+          <div className={`workspaceBody ${workspaceIDEFull ? 'fullIde' : ''}`}>
             {workspaceErr ? <div className="alert">{workspaceErr}</div> : null}
-            <div className="workspaceCard">
-              <div className="workspaceTitle">Status</div>
-              <div className="workspaceRow">
-                <strong>Runtime</strong>
-                <span>
-                  {workspaceStatus?.exists ? 'Isolated Workspace' : workspaceStatus?.docker_available ? 'Not started' : '-'}
-                </span>
-              </div>
-              <div className="workspaceRow">
-                <strong>Status</strong>
-                <span>{workspaceStatusLabel}</span>
-              </div>
-              <div className="workspaceRow">
-                <strong>Container</strong>
-                {workspaceStatus?.container_name ? (
-                  <span className="truncate" title={workspaceStatus.container_name}>
-                    {workspaceStatus.container_name}
+            {!workspaceIDEFull ? (
+              <div className="workspaceCard">
+                <div className="workspaceTitle">Status</div>
+                <div className="workspaceRow">
+                  <strong>Runtime</strong>
+                  <span>
+                    {workspaceStatus?.exists ? 'Isolated Workspace' : workspaceStatus?.docker_available ? 'Not started' : '-'}
                   </span>
-                ) : (
-                  <span>-</span>
-                )}
+                </div>
+                <div className="workspaceRow">
+                  <strong>Status</strong>
+                  <span>{workspaceStatusLabel}</span>
+                </div>
+                <div className="workspaceRow">
+                  <strong>Container</strong>
+                  {workspaceStatus?.container_name ? (
+                    <span className="truncate" title={workspaceStatus.container_name}>
+                      {workspaceStatus.container_name}
+                    </span>
+                  ) : (
+                    <span>-</span>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="workspaceCard">
-              <div className="workspaceTitle">IDE (VS Code)</div>
+            ) : null}
+            <div className={`workspaceCard ideCard ${workspaceIDEFull ? 'full' : ''}`}>
+              {!workspaceIDEFull ? <div className="workspaceTitle">IDE (VS Code)</div> : null}
               {!activeConversationId ? (
                 <div className="muted">Select a conversation to enable the IDE.</div>
               ) : !workspaceStatus?.running ? (
@@ -1960,162 +1975,185 @@ export default function DashboardPage() {
                 <div className="muted">IDE port not assigned yet.</div>
               ) : (
                 <>
-                  <div className="workspaceRow">
-                    <strong>Port</strong>
-                    <span className="mono">{workspaceIdePort}</span>
-                  </div>
+                  {!workspaceIDEFull ? (
+                    <div className="workspaceRow">
+                      <strong>Port</strong>
+                      <span className="mono">{workspaceIdePort}</span>
+                    </div>
+                  ) : null}
                   <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                    <a className="btn" href={workspaceIdeUrl} target="_blank" rel="noreferrer">
-                      Open IDE
+                    <a
+                      className="iconBtn small"
+                      href={workspaceIdeUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open IDE in new tab"
+                      title="Open IDE in new tab"
+                    >
+                      <ArrowTopRightOnSquareIcon />
                     </a>
-                    <button className="btn" onClick={() => setWorkspaceIDEOpen((v) => !v)}>
-                      {workspaceIDEOpen ? 'Hide' : 'Embed'}
+                    <button
+                      className="iconBtn small"
+                      onClick={() => setWorkspaceIDEOpen((v) => !v)}
+                      aria-label={workspaceIDEOpen ? 'Hide IDE' : 'Embed IDE'}
+                      title={workspaceIDEOpen ? 'Hide IDE' : 'Embed IDE'}
+                    >
+                      {workspaceIDEOpen ? <EyeSlashIcon /> : <EyeIcon />}
+                    </button>
+                    <button
+                      className="iconBtn small"
+                      onClick={() => {
+                        setWorkspaceIDEFull((v) => !v)
+                        if (!workspaceIDEOpen) setWorkspaceIDEOpen(true)
+                      }}
+                      aria-label={workspaceIDEFull ? 'Exit full screen' : 'Full screen'}
+                      title={workspaceIDEFull ? 'Exit full screen' : 'Full screen'}
+                    >
+                      {workspaceIDEFull ? <ArrowsPointingInIcon /> : <ArrowsPointingOutIcon />}
                     </button>
                   </div>
                   {workspaceIDEOpen ? (
                     <iframe
                       title="Workspace IDE"
                       src={workspaceIdeUrl}
-                      style={{
-                        width: '100%',
-                        height: 520,
-                        marginTop: 10,
-                        borderRadius: 10,
-                        border: '1px solid rgba(255,255,255,0.08)',
-                        background: 'rgba(10, 12, 16, 0.5)',
-                      }}
+                      className="ideFrame"
+                      style={{ height: workspaceIDEFull ? '100%' : 520, marginTop: 10 }}
                     />
                   ) : null}
                 </>
               )}
             </div>
-            <div className="workspaceCard">
-              <div className="workspaceTitle">Action queue</div>
-              {!hostActionsEnabled ? (
-                <div className="muted">Enable Host Actions in settings to queue actions.</div>
-              ) : hostActionsLoading ? (
-                <div className="muted">
-                  <LoadingSpinner label="Loading actions" />
-                </div>
-              ) : hostActionsErr ? (
-                <div className="alert">{hostActionsErr}</div>
-              ) : hostActions.length === 0 ? (
-                <div className="muted">No pending actions.</div>
-              ) : (
-                <div className="workspaceFiles">
-                  {hostActions.map((a) => {
-                    const label = formatHostActionLabel(a)
-                    const requiresApproval = hostActionRequiresApproval(a)
-                    const isApproved = Boolean(hostActionApprovals[a.id])
-                    return (
-                      <div key={a.id} className="workspaceRow" style={{ alignItems: 'flex-start', gap: 10 }}>
-                        <div style={{ flex: 1 }}>
-                          <strong>{label.title}</strong>
-                          <div className="muted" title={label.detail}>
-                            {label.detail}
-                          </div>
-                          <div className="muted" style={{ marginTop: 2 }}>
-                            {a.status}
-                          </div>
-                        </div>
-                        <div>
-                          {a.status === 'pending' ? (
-                            requiresApproval ? (
-                              <div
-                                style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}
-                              >
-                                <label className="muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={isApproved}
-                                    onChange={(e) =>
-                                      setHostActionApprovals((prev) => ({
-                                        ...prev,
-                                        [a.id]: e.currentTarget.checked,
-                                      }))
-                                    }
-                                  />
-                                  Approve
-                                </label>
-                                {isApproved ? (
+            {!workspaceIDEFull ? (
+              <>
+                <div className="workspaceCard">
+                  <div className="workspaceTitle">Action queue</div>
+                  {!hostActionsEnabled ? (
+                    <div className="muted">Enable Host Actions in settings to queue actions.</div>
+                  ) : hostActionsLoading ? (
+                    <div className="muted">
+                      <LoadingSpinner label="Loading actions" />
+                    </div>
+                  ) : hostActionsErr ? (
+                    <div className="alert">{hostActionsErr}</div>
+                  ) : hostActions.length === 0 ? (
+                    <div className="muted">No pending actions.</div>
+                  ) : (
+                    <div className="workspaceFiles">
+                      {hostActions.map((a) => {
+                        const label = formatHostActionLabel(a)
+                        const requiresApproval = hostActionRequiresApproval(a)
+                        const isApproved = Boolean(hostActionApprovals[a.id])
+                        return (
+                          <div key={a.id} className="workspaceRow" style={{ alignItems: 'flex-start', gap: 10 }}>
+                            <div style={{ flex: 1 }}>
+                              <strong>{label.title}</strong>
+                              <div className="muted" title={label.detail}>
+                                {label.detail}
+                              </div>
+                              <div className="muted" style={{ marginTop: 2 }}>
+                                {a.status}
+                              </div>
+                            </div>
+                            <div>
+                              {a.status === 'pending' ? (
+                                requiresApproval ? (
+                                  <div
+                                    style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}
+                                  >
+                                    <label className="muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={isApproved}
+                                        onChange={(e) =>
+                                          setHostActionApprovals((prev) => ({
+                                            ...prev,
+                                            [a.id]: e.currentTarget.checked,
+                                          }))
+                                        }
+                                      />
+                                      Approve
+                                    </label>
+                                    {isApproved ? (
+                                      <button className="btn" onClick={() => void runHostAction(a)}>
+                                        Run
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                ) : (
                                   <button className="btn" onClick={() => void runHostAction(a)}>
                                     Run
                                   </button>
-                                ) : null}
-                              </div>
-                            ) : (
-                              <button className="btn" onClick={() => void runHostAction(a)}>
-                                Run
-                              </button>
-                            )
-                          ) : null}
-                        </div>
-                      </div>
-                    )
-                  })}
+                                )
+                              ) : null}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div className="workspaceCard">
-              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                <div className="workspaceTitle">Files</div>
-                <button
-                  className="btn iconBtn"
-                  onClick={() => void loadFiles(activeConversationId || undefined, filesRecursive, filesHidden)}
-                  disabled={!activeConversationId || filesLoading}
-                  aria-label="Refresh files"
-                >
-                  {filesLoading ? <LoadingSpinner label="Refreshing" /> : '⟳'}
-                </button>
-              </div>
-              {filesErr ? <div className="alert" style={{ marginTop: 8 }}>{filesErr}</div> : null}
-              {filesMsg ? (
-                <div
-                  className="alert"
-                  style={{ marginTop: 8, borderColor: 'rgba(80, 200, 160, 0.4)', background: 'rgba(80, 200, 160, 0.1)' }}
-                >
-                  {filesMsg}
-                </div>
-              ) : null}
-              <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={filesRecursive}
-                    disabled={!activeConversationId}
-                    onChange={(e) => void loadFiles(activeConversationId || undefined, e.target.checked, filesHidden)}
-                  />{' '}
-                  recursive
-                </label>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={filesHidden}
-                    disabled={!activeConversationId}
-                    onChange={(e) => void loadFiles(activeConversationId || undefined, filesRecursive, e.target.checked)}
-                  />{' '}
-                  hidden
-                </label>
-                <div className="spacer" />
-                <div className="muted mono">{files?.items ? `${fileItems.length} items` : '-'}</div>
-              </div>
-              {filesLoading ? (
-                <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                  <LoadingSpinner label="Loading files" />
-                  <span>Loading files…</span>
-                </div>
-              ) : (
-                <div className="workspaceFiles" style={{ marginTop: 8 }}>
-                  {!files ? <div className="muted">No workspace yet.</div> : null}
-                  {files && fileItems.length === 0 ? <div className="muted">No files yet.</div> : null}
-                  {files && fileItems.length > 0 ? (
-                    <div className="tree">
-                      {renderFileTree(fileTree, 0, filesExpanded, setFilesExpanded, handleFileDownload)}
+                <div className="workspaceCard">
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div className="workspaceTitle">Files</div>
+                    <button
+                      className="btn iconBtn"
+                      onClick={() => void loadFiles(activeConversationId || undefined, filesRecursive, filesHidden)}
+                      disabled={!activeConversationId || filesLoading}
+                      aria-label="Refresh files"
+                    >
+                      {filesLoading ? <LoadingSpinner label="Refreshing" /> : '⟳'}
+                    </button>
+                  </div>
+                  {filesErr ? <div className="alert" style={{ marginTop: 8 }}>{filesErr}</div> : null}
+                  {filesMsg ? (
+                    <div
+                      className="alert"
+                      style={{ marginTop: 8, borderColor: 'rgba(80, 200, 160, 0.4)', background: 'rgba(80, 200, 160, 0.1)' }}
+                    >
+                      {filesMsg}
                     </div>
                   ) : null}
+                  <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={filesRecursive}
+                        disabled={!activeConversationId}
+                        onChange={(e) => void loadFiles(activeConversationId || undefined, e.target.checked, filesHidden)}
+                      />{' '}
+                      recursive
+                    </label>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={filesHidden}
+                        disabled={!activeConversationId}
+                        onChange={(e) => void loadFiles(activeConversationId || undefined, filesRecursive, e.target.checked)}
+                      />{' '}
+                      hidden
+                    </label>
+                    <div className="spacer" />
+                    <div className="muted mono">{files?.items ? `${fileItems.length} items` : '-'}</div>
+                  </div>
+                  {filesLoading ? (
+                    <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                      <LoadingSpinner label="Loading files" />
+                      <span>Loading files…</span>
+                    </div>
+                  ) : (
+                    <div className="workspaceFiles" style={{ marginTop: 8 }}>
+                      {!files ? <div className="muted">No workspace yet.</div> : null}
+                      {files && fileItems.length === 0 ? <div className="muted">No files yet.</div> : null}
+                      {files && fileItems.length > 0 ? (
+                        <div className="tree">
+                          {renderFileTree(fileTree, 0, filesExpanded, setFilesExpanded, handleFileDownload)}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </>
+            ) : null}
           </div>
       </aside>
       {showKeysModal ? (

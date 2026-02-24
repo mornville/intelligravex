@@ -1,10 +1,15 @@
 import { type MouseEvent as ReactMouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
+  ArrowTopRightOnSquareIcon,
+  ArrowsPointingInIcon,
+  ArrowsPointingOutIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Cog6ToothIcon,
   CpuChipIcon,
+  EyeIcon,
+  EyeSlashIcon,
   MicrophoneIcon,
   PaperClipIcon,
   UserIcon,
@@ -36,12 +41,12 @@ const WORKSPACE_WIDTH_KEY = 'igx_workspace_width'
 const WORKSPACE_COLLAPSED_KEY = 'igx_workspace_collapsed'
 const DEFAULT_WORKSPACE_WIDTH = 320
 const MIN_WORKSPACE_WIDTH = 240
-const MAX_WORKSPACE_WIDTH = 640
+const MAX_WORKSPACE_WIDTH = 900
 const SIDEBAR_WIDTH_KEY = 'igx_sidebar_width'
 const SIDEBAR_COLLAPSED_KEY = 'igx_sidebar_collapsed'
 const DEFAULT_SIDEBAR_WIDTH = 320
 const MIN_SIDEBAR_WIDTH = 220
-const MAX_SIDEBAR_WIDTH = 420
+const MAX_SIDEBAR_WIDTH = 520
 
 function clampWorkspaceWidth(next: number) {
   if (Number.isNaN(next)) return DEFAULT_WORKSPACE_WIDTH
@@ -119,6 +124,8 @@ export default function GroupConversationPage() {
   const sidebarResizeStartXRef = useRef(0)
   const sidebarResizeStartWidthRef = useRef(DEFAULT_SIDEBAR_WIDTH)
   const [workspaceIDEOpen, setWorkspaceIDEOpen] = useState(false)
+  const [workspaceIDEFull, setWorkspaceIDEFull] = useState(false)
+  const [resizeMode, setResizeMode] = useState<'workspace' | 'sidebar' | null>(null)
   const [agentStatus, setAgentStatus] = useState<DataAgentStatus | null>(null)
   const [agentErr, setAgentErr] = useState<string | null>(null)
   const [files, setFiles] = useState<ConversationFiles | null>(null)
@@ -133,6 +140,7 @@ export default function GroupConversationPage() {
     setAgentStatus(null)
     setAgentErr(null)
     setWorkspaceIDEOpen(false)
+    setWorkspaceIDEFull(false)
     setFiles(null)
     setFilesErr(null)
     setMessages([])
@@ -440,7 +448,7 @@ export default function GroupConversationPage() {
   const workspaceEnabled = Boolean(agentStatus?.exists || agentStatus?.running)
   const workspacePorts = agentStatus?.ports || []
   const workspaceIdePort = agentStatus?.ide_port || workspacePorts[0]?.host || 0
-  const workspaceIdeUrl = workspaceIdePort ? `http://127.0.0.1:${workspaceIdePort}/` : ''
+  const workspaceIdeUrl = groupId ? `/ide/${groupId}/` : ''
   const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
   const mentionOptions = useMemo(() => {
@@ -496,6 +504,7 @@ export default function GroupConversationPage() {
     if (workspaceCollapsed) return
     e.preventDefault()
     workspaceResizeActiveRef.current = true
+    setResizeMode('workspace')
     workspaceResizeStartXRef.current = e.clientX
     workspaceResizeStartWidthRef.current = workspaceWidth
     const handleMove = (ev: MouseEvent) => {
@@ -510,6 +519,7 @@ export default function GroupConversationPage() {
       window.removeEventListener('mouseup', handleUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      setResizeMode(null)
     }
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
@@ -521,6 +531,7 @@ export default function GroupConversationPage() {
     if (sidebarCollapsed) return
     e.preventDefault()
     sidebarResizeActiveRef.current = true
+    setResizeMode('sidebar')
     sidebarResizeStartXRef.current = e.clientX
     sidebarResizeStartWidthRef.current = sidebarWidth
     const handleMove = (ev: MouseEvent) => {
@@ -535,6 +546,7 @@ export default function GroupConversationPage() {
       window.removeEventListener('mouseup', handleUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      setResizeMode(null)
     }
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
@@ -641,6 +653,7 @@ export default function GroupConversationPage() {
       className={`chatLayout ${workspaceEnabled ? 'withWorkspace' : ''}`}
       style={{ ['--sidebar-width' as any]: `${(sidebarCollapsed ? 64 : sidebarWidth)}px` }}
     >
+      {resizeMode ? <div className="resizeShield" /> : null}
       <aside className={`chatSidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebarResizeHandle" onMouseDown={beginSidebarResize} />
         <div className="chatSidebarHeader">
@@ -829,10 +842,10 @@ export default function GroupConversationPage() {
           style={!workspaceCollapsed ? { width: workspaceWidth } : undefined}
         >
           <div className="workspaceResizeHandle" onMouseDown={beginWorkspaceResize} />
-          <div className="workspaceHeader">
+          <div className={`workspaceHeader ${workspaceIDEFull ? 'fullIde' : ''}`}>
             <div>
               <h3>Workspace</h3>
-              <div className="muted">Container: {agentStatus?.running ? 'running' : 'idle'}</div>
+              {!workspaceIDEFull ? <div className="muted">Container: {agentStatus?.running ? 'running' : 'idle'}</div> : null}
             </div>
             <button
               className="collapseBtn"
@@ -843,80 +856,103 @@ export default function GroupConversationPage() {
               {workspaceCollapsed ? <ChevronLeftIcon /> : <ChevronRightIcon />}
             </button>
           </div>
-          <div className="workspaceBody">
+          <div className={`workspaceBody ${workspaceIDEFull ? 'fullIde' : ''}`}>
             {agentErr ? <div className="alert">{agentErr}</div> : null}
-            <div className="workspaceCard">
-              <div className="workspaceTitle">Status</div>
-              <div className="workspaceRow">
-                <strong>Runtime</strong>
-                <span>{agentStatus?.exists ? 'Isolated Workspace' : '-'}</span>
+            {!workspaceIDEFull ? (
+              <div className="workspaceCard">
+                <div className="workspaceTitle">Status</div>
+                <div className="workspaceRow">
+                  <strong>Runtime</strong>
+                  <span>{agentStatus?.exists ? 'Isolated Workspace' : '-'}</span>
+                </div>
+                <div className="workspaceRow">
+                  <strong>Status</strong>
+                  <span>{agentStatus?.running ? 'running' : agentStatus?.status || 'idle'}</span>
+                </div>
+                <div className="workspaceRow">
+                  <strong>Container</strong>
+                  <span>{agentStatus?.container_name || '-'}</span>
+                </div>
               </div>
-              <div className="workspaceRow">
-                <strong>Status</strong>
-                <span>{agentStatus?.running ? 'running' : agentStatus?.status || 'idle'}</span>
-              </div>
-              <div className="workspaceRow">
-                <strong>Container</strong>
-                <span>{agentStatus?.container_name || '-'}</span>
-              </div>
-            </div>
-            <div className="workspaceCard">
-              <div className="workspaceTitle">IDE (VS Code)</div>
+            ) : null}
+            <div className={`workspaceCard ideCard ${workspaceIDEFull ? 'full' : ''}`}>
+              {!workspaceIDEFull ? <div className="workspaceTitle">IDE (VS Code)</div> : null}
               {!agentStatus?.running ? (
                 <div className="muted">Start the Isolated Workspace to enable the IDE.</div>
               ) : !workspaceIdePort ? (
                 <div className="muted">IDE port not assigned yet.</div>
               ) : (
                 <>
-                  <div className="workspaceRow">
-                    <strong>Port</strong>
-                    <span className="mono">{workspaceIdePort}</span>
-                  </div>
+                  {!workspaceIDEFull ? (
+                    <div className="workspaceRow">
+                      <strong>Port</strong>
+                      <span className="mono">{workspaceIdePort}</span>
+                    </div>
+                  ) : null}
                   <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                    <a className="btn" href={workspaceIdeUrl} target="_blank" rel="noreferrer">
-                      Open IDE
+                    <a
+                      className="iconBtn small"
+                      href={workspaceIdeUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open IDE in new tab"
+                      title="Open IDE in new tab"
+                    >
+                      <ArrowTopRightOnSquareIcon />
                     </a>
-                    <button className="btn" onClick={() => setWorkspaceIDEOpen((v) => !v)}>
-                      {workspaceIDEOpen ? 'Hide' : 'Embed'}
+                    <button
+                      className="iconBtn small"
+                      onClick={() => setWorkspaceIDEOpen((v) => !v)}
+                      aria-label={workspaceIDEOpen ? 'Hide IDE' : 'Embed IDE'}
+                      title={workspaceIDEOpen ? 'Hide IDE' : 'Embed IDE'}
+                    >
+                      {workspaceIDEOpen ? <EyeSlashIcon /> : <EyeIcon />}
+                    </button>
+                    <button
+                      className="iconBtn small"
+                      onClick={() => {
+                        setWorkspaceIDEFull((v) => !v)
+                        if (!workspaceIDEOpen) setWorkspaceIDEOpen(true)
+                      }}
+                      aria-label={workspaceIDEFull ? 'Exit full screen' : 'Full screen'}
+                      title={workspaceIDEFull ? 'Exit full screen' : 'Full screen'}
+                    >
+                      {workspaceIDEFull ? <ArrowsPointingInIcon /> : <ArrowsPointingOutIcon />}
                     </button>
                   </div>
                   {workspaceIDEOpen ? (
                     <iframe
                       title="Workspace IDE"
                       src={workspaceIdeUrl}
-                      style={{
-                        width: '100%',
-                        height: 520,
-                        marginTop: 10,
-                        borderRadius: 10,
-                        border: '1px solid rgba(255,255,255,0.08)',
-                        background: 'rgba(10, 12, 16, 0.5)',
-                      }}
+                      className="ideFrame"
+                      style={{ height: workspaceIDEFull ? '100%' : 520, marginTop: 10 }}
                     />
                   ) : null}
                 </>
               )}
             </div>
-            <div className="workspaceCard">
-              <div className="workspaceTitle">Files</div>
-              {filesLoading ? (
-                <div className="muted">
-                  <LoadingSpinner />
-                </div>
-              ) : filesErr ? (
-                <div className="alert">{filesErr}</div>
-              ) : (
-                <div className="workspaceFiles">
-                  {visibleFiles.length === 0 ? <div className="muted">No files yet.</div> : null}
-                  {visibleFiles.map((f) => (
-                    <div key={f.path} className="workspaceRow">
-                      <strong>{f.name}</strong>
-                      <span>{f.is_dir ? 'folder' : f.size_bytes ? `${f.size_bytes} B` : '-'}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {!workspaceIDEFull ? (
+              <div className="workspaceCard">
+                <div className="workspaceTitle">Files</div>
+                {filesLoading ? (
+                  <div className="muted">
+                    <LoadingSpinner />
+                  </div>
+                ) : filesErr ? (
+                  <div className="alert">{filesErr}</div>
+                ) : (
+                  <div className="workspaceFiles">
+                    {visibleFiles.length === 0 ? <div className="muted">No files yet.</div> : null}
+                    {visibleFiles.map((f) => (
+                      <div key={f.path} className="workspaceRow">
+                        <strong>{f.name}</strong>
+                        <span>{f.is_dir ? 'folder' : f.size_bytes ? `${f.size_bytes} B` : '-'}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
         </aside>
       ) : null}

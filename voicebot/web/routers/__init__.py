@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from . import bots, conversations, core, data_agent, downloads, files, groups, host_actions, keys, public, public_widget, status, streaming, ws
+from . import bots, conversations, core, data_agent, downloads, files, groups, host_actions, ide_proxy, keys, public, public_widget, status, streaming, ws
 
 
 def register_all(app, ctx) -> None:
@@ -16,5 +16,6 @@ def register_all(app, ctx) -> None:
     public.register(app, ctx)
     files.register(app, ctx)
     host_actions.register(app, ctx)
+    ide_proxy.register(app, ctx)
     streaming.register(app, ctx)
     ws.register(app, ctx)

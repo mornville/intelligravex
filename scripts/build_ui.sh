@@ -13,9 +13,9 @@ fi
 echo "Building Studio UI..."
 cd "${FRONTEND_DIR}"
 if [[ -f package-lock.json ]]; then
-  npm ci
+  npm ci --legacy-peer-deps
 else
-  npm install
+  npm install --legacy-peer-deps
 fi
 npm run build
 

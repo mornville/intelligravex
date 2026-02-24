@@ -331,6 +331,7 @@ def ensure_conversation_container(
     ]
     if ide_port > 0:
         cmd.extend(["-e", f"IGX_IDE_PORT={ide_port}"])
+        cmd.extend(["-e", f"IGX_IDE_BASE_PATH=/ide/{conversation_id}"])
     for mapping in ports:
         host_port = int(mapping.get("host") or 0)
         container_port = int(mapping.get("container") or 0)
@@ -352,9 +353,12 @@ def ensure_conversation_container(
             "sh",
             "-lc",
             "mkdir -p /work/.codex; "
-            "ln -s /work /workspace 2>/dev/null || true; "
+            "if [ ! -e /workspace ]; then ln -s /work /workspace 2>/dev/null || true; fi; "
             "if [ -n \"${IGX_IDE_PORT:-}\" ]; then "
-            "openvscode-server --host 0.0.0.0 --port \"${IGX_IDE_PORT}\" --without-connection-token --accept-server-license-terms --folder /workspace "
+            "cd /workspace 2>/dev/null || cd /work; "
+            "base=\"${IGX_IDE_BASE_PATH:-/}\"; "
+            "openvscode-server --host 0.0.0.0 --port \"${IGX_IDE_PORT}\" "
+            "--server-base-path \"${base}\" --without-connection-token --accept-server-license-terms /workspace "
             ">/work/.openvscode-server.log 2>&1 & "
             "fi; "
             "tail -f /dev/null",
