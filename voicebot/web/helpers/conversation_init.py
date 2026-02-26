@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import datetime as dt
 import time
 from typing import Optional
 from uuid import UUID
 
 from sqlmodel import Session
+
+from voicebot.utils.prompt import system_prompt_with_runtime
 
 
 def bind_ctx(ctx):
@@ -58,8 +59,10 @@ async def init_conversation_and_greet(
                     status_code=400,
                     detail=f"No {_provider_display_name(provider)} key configured for this bot.",
                 )
-            ts = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-            sys_prompt = f"Current Date Time(UTC): {ts}\n\n{render_template(bot.system_prompt, ctx={'meta': {}})}"
+            sys_prompt = system_prompt_with_runtime(
+                render_template(bot.system_prompt, ctx={"meta": {}}),
+                require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+            )
             msgs = [
                 Message(role="system", content=sys_prompt),
                 Message(role="user", content=_make_start_message_instruction(bot)),

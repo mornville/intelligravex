@@ -30,6 +30,16 @@ async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[repor
     accepting_audio = False
     tts_synth: Optional[Callable[[str], tuple[bytes, int]]] = None
 
+    def _register_conversation(cid: UUID) -> None:
+        nonlocal conv_id
+        if conv_id is not None and conv_id != cid:
+            try:
+                _conversation_ws_unregister(conv_id, ws)
+            except Exception:
+                pass
+        conv_id = cid
+        _conversation_ws_register(cid, ws, loop)
+
     try:
         while True:
             msg = await ws.receive()
@@ -86,6 +96,7 @@ async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[repor
                                 "id": str(conv_id),
                             },
                         )
+                        _register_conversation(conv_id)
                         await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
                         await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                         active_req_id = None
@@ -106,10 +117,12 @@ async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[repor
                         active_req_id = None
                         conv_id = None
                         continue
+                    _register_conversation(conv_id)
                     await _ws_send_json(
                         ws,
                         {"type": "conversation", "req_id": req_id, "conversation_id": str(conv_id), "id": str(conv_id)},
                     )
+                    _register_conversation(conv_id)
                     await _ws_send_json(ws, {"type": "done", "req_id": req_id, "text": ""})
                     await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "idle"})
                     active_req_id = None
@@ -168,11 +181,29 @@ async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[repor
                             "id": str(conv_id),
                         },
                     )
+                    _register_conversation(conv_id)
                     asyncio.create_task(
                         _kickoff_data_agent_container_if_enabled(bot_id=bot_id, conversation_id=conv_id)
                     )
                     await _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": "recording"})
 
+                elif msg_type == "watch":
+                    conversation_id_str = str(payload.get("conversation_id") or "").strip()
+                    if not conversation_id_str:
+                        await _ws_send_json(ws, {"type": "error", "error": "Missing conversation_id"})
+                        continue
+                    try:
+                        with Session(engine) as session:
+                            bot = get_bot(session, bot_id)
+                            cid = UUID(conversation_id_str)
+                            conv = get_conversation(session, cid)
+                            if conv.bot_id != bot.id:
+                                raise HTTPException(status_code=400, detail="Conversation does not belong to bot")
+                    except Exception as exc:
+                        await _ws_send_json(ws, {"type": "error", "error": str(exc)})
+                        continue
+                    _register_conversation(cid)
+                    continue
                 elif msg_type == "chat":
                     # Text-only chat turn (for when Speak is disabled).
                     if not req_id:
@@ -608,3 +639,9 @@ async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[repor
         except Exception:
             pass
         return
+    finally:
+        if conv_id is not None:
+            try:
+                _conversation_ws_unregister(conv_id, ws)
+            except Exception:
+                pass

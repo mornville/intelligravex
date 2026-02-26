@@ -315,6 +315,7 @@ export default function DashboardPage() {
   const [groupSaving, setGroupSaving] = useState(false)
   const [groupSaveErr, setGroupSaveErr] = useState<string | null>(null)
   const [startToken, setStartToken] = useState(0)
+  const [refreshToken, setRefreshToken] = useState(0)
   const [isVisible, setIsVisible] = useState(
     typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
   )
@@ -354,8 +355,6 @@ export default function DashboardPage() {
   const [filesExpanded, setFilesExpanded] = useState<Record<string, boolean>>({})
   const [hostActions, setHostActions] = useState<HostAction[]>([])
   const [hostActionsErr, setHostActionsErr] = useState<string | null>(null)
-  const [hostActionsLoading, setHostActionsLoading] = useState(false)
-  const [hostActionApprovals, setHostActionApprovals] = useState<Record<string, boolean>>({})
   const filesRequestSeqRef = useRef(0)
   const filesLoadingSeqRef = useRef(0)
   const filesNonSilentInFlightRef = useRef(false)
@@ -390,7 +389,6 @@ export default function DashboardPage() {
     setFilesExpanded({})
     setHostActions([])
     setHostActionsErr(null)
-    setHostActionApprovals({})
     if (filesMsgTimerRef.current) {
       window.clearTimeout(filesMsgTimerRef.current)
       filesMsgTimerRef.current = null
@@ -955,11 +953,6 @@ export default function DashboardPage() {
     : !activeConversationId
       ? 'Start a conversation to upload files.'
       : ''
-  const hostActionsEnabled =
-    selectedType === 'group'
-      ? groupBots.some((b) => bots.find((bot) => bot.id === b.id)?.enable_host_actions)
-      : Boolean(activeBot?.enable_host_actions)
-
   useEffect(() => {
     if (!activeConversationId) {
       setWorkspaceStatus(null)
@@ -979,7 +972,6 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!activeConversationId) {
       setHostActions([])
-      setHostActionApprovals({})
       return
     }
     if (!isVisible) return
@@ -1186,20 +1178,10 @@ export default function DashboardPage() {
     if (!id) return
     if (hostActionsInFlight.current) return
     hostActionsInFlight.current = true
-    setHostActionsLoading(true)
     setHostActionsErr(null)
     try {
       const res = await apiGet<{ items: HostAction[] }>(`/api/conversations/${id}/host-actions`)
       setHostActions(res.items || [])
-      setHostActionApprovals((prev) => {
-        const next: Record<string, boolean> = {}
-        ;(res.items || []).forEach((item) => {
-          if (item.status === 'pending') {
-            next[item.id] = Boolean(prev[item.id])
-          }
-        })
-        return next
-      })
     } catch (e: any) {
       if (isNotFoundError(e) && id === activeConversationId) {
         clearActiveConversationState()
@@ -1207,7 +1189,6 @@ export default function DashboardPage() {
       }
       setHostActionsErr(String(e?.message || e))
     } finally {
-      setHostActionsLoading(false)
       hostActionsInFlight.current = false
     }
   }
@@ -1220,12 +1201,9 @@ export default function DashboardPage() {
 
   async function runHostAction(action: HostAction) {
     try {
-      if (hostActionRequiresApproval(action) && !hostActionApprovals[action.id]) {
-        setHostActionsErr('Approve the action before running it.')
-        return
-      }
       await apiPost(`/api/host-actions/${action.id}/run`, {})
       await loadHostActions()
+      setRefreshToken((v) => v + 1)
     } catch (e: any) {
       setHostActionsErr(String(e?.message || e))
     }
@@ -1897,6 +1875,7 @@ export default function DashboardPage() {
                 initialConversationId={selectedConversationId || undefined}
                 layout="whatsapp"
                 startToken={startToken}
+                refreshToken={refreshToken}
                 onConversationIdChange={setAssistantConversationId}
                 onStageChange={setAssistantStage}
                 cache={chatCache}
@@ -1907,6 +1886,10 @@ export default function DashboardPage() {
                 uploadDisabledReason={uploadDisabledReason}
                 uploading={uploading}
                 onUploadFiles={uploadConversationFiles}
+                hostActions={hostActions}
+                hostActionRequiresApproval={hostActionRequiresApproval}
+                hostActionsErr={hostActionsErr}
+                onRunHostAction={(action) => void runHostAction(action)}
               />
             ) : (
               <div className="muted" style={{ padding: '16px 20px' }}>
@@ -2025,73 +2008,6 @@ export default function DashboardPage() {
             </div>
             {!workspaceIDEFull ? (
               <>
-                <div className="workspaceCard">
-                  <div className="workspaceTitle">Action queue</div>
-                  {!hostActionsEnabled ? (
-                    <div className="muted">Enable Host Actions in settings to queue actions.</div>
-                  ) : hostActionsLoading ? (
-                    <div className="muted">
-                      <LoadingSpinner label="Loading actions" />
-                    </div>
-                  ) : hostActionsErr ? (
-                    <div className="alert">{hostActionsErr}</div>
-                  ) : hostActions.length === 0 ? (
-                    <div className="muted">No pending actions.</div>
-                  ) : (
-                    <div className="workspaceFiles">
-                      {hostActions.map((a) => {
-                        const label = formatHostActionLabel(a)
-                        const requiresApproval = hostActionRequiresApproval(a)
-                        const isApproved = Boolean(hostActionApprovals[a.id])
-                        return (
-                          <div key={a.id} className="workspaceRow" style={{ alignItems: 'flex-start', gap: 10 }}>
-                            <div style={{ flex: 1 }}>
-                              <strong>{label.title}</strong>
-                              <div className="muted" title={label.detail}>
-                                {label.detail}
-                              </div>
-                              <div className="muted" style={{ marginTop: 2 }}>
-                                {a.status}
-                              </div>
-                            </div>
-                            <div>
-                              {a.status === 'pending' ? (
-                                requiresApproval ? (
-                                  <div
-                                    style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}
-                                  >
-                                    <label className="muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                                      <input
-                                        type="checkbox"
-                                        checked={isApproved}
-                                        onChange={(e) =>
-                                          setHostActionApprovals((prev) => ({
-                                            ...prev,
-                                            [a.id]: e.currentTarget.checked,
-                                          }))
-                                        }
-                                      />
-                                      Approve
-                                    </label>
-                                    {isApproved ? (
-                                      <button className="btn" onClick={() => void runHostAction(a)}>
-                                        Run
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                ) : (
-                                  <button className="btn" onClick={() => void runHostAction(a)}>
-                                    Run
-                                  </button>
-                                )
-                              ) : null}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
                 <div className="workspaceCard">
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                     <div className="workspaceTitle">Files</div>
@@ -2468,22 +2384,4 @@ function buildSlugMap(bots: Bot[]): Record<string, string> {
     map[b.id] = slug
   }
   return map
-}
-
-function formatHostActionLabel(action: HostAction): { title: string; detail: string } {
-  const payload = action.payload || {}
-  switch (action.action_type) {
-    case 'run_shell':
-      return {
-        title: 'Shell command',
-        detail: String(payload.command || ''),
-      }
-    case 'run_applescript':
-      return {
-        title: 'AppleScript',
-        detail: String(payload.script || ''),
-      }
-    default:
-      return { title: action.action_type || 'Host action', detail: '' }
-  }
 }

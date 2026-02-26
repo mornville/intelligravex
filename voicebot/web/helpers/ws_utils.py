@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from voicebot.llm.openai_llm import Message, OpenAILLM
 from voicebot.models import Bot
+from voicebot.utils.prompt import append_host_action_approval_notice
 
 
 async def ws_send_json(ctx, ws, obj: dict) -> None:
@@ -177,8 +178,12 @@ async def public_send_greeting(
         pass
     else:
         llm = ctx._build_llm_client(bot=bot, api_key=llm_api_key)
+        sys_prompt = append_host_action_approval_notice(
+            ctx.render_template(bot.system_prompt, ctx={"meta": {}}),
+            require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+        )
         msgs = [
-            Message(role="system", content=ctx.render_template(bot.system_prompt, ctx={"meta": {}})),
+            Message(role="system", content=sys_prompt),
             Message(role="user", content=ctx._make_start_message_instruction(bot)),
         ]
         t0 = time.time()

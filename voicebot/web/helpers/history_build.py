@@ -10,14 +10,14 @@ from sqlmodel import Session, delete
 
 from voicebot.llm.openai_llm import Message
 from voicebot.models import Bot, ConversationMessage
+from voicebot.utils.prompt import system_prompt_with_runtime
 
 
 def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUID]) -> list[Message]:
-    def _system_prompt_with_runtime(*, prompt: str) -> str:
-        ts = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-        return f"Current Date Time(UTC): {ts}\n\n{prompt}"
-
-    messages: list[Message] = [Message(role="system", content=_system_prompt_with_runtime(prompt=bot.system_prompt))]
+    require_approval = bool(getattr(bot, "require_host_action_approval", False))
+    messages: list[Message] = [
+        Message(role="system", content=system_prompt_with_runtime(bot.system_prompt, require_approval=require_approval))
+    ]
     if not conversation_id:
         return messages
     conv = ctx.get_conversation(session, conversation_id)
@@ -27,7 +27,10 @@ def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUI
     messages = [
         Message(
             role="system",
-            content=_system_prompt_with_runtime(prompt=ctx.render_template(bot.system_prompt, ctx=ctx_obj)),
+            content=system_prompt_with_runtime(
+                ctx.render_template(bot.system_prompt, ctx=ctx_obj),
+                require_approval=require_approval,
+            ),
         )
     ]
     if meta:
@@ -89,12 +92,14 @@ def build_history_budgeted(
     HISTORY_TOKEN_BUDGET = 400000
     SUMMARY_BATCH_MIN_MESSAGES = 8
 
-    def _system_prompt_with_runtime(*, prompt: str) -> str:
-        ts = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-        return f"Current Date Time(UTC): {ts}\n\n{prompt}"
-
     if not conversation_id:
-        return [Message(role="system", content=_system_prompt_with_runtime(prompt=bot.system_prompt))]
+        require_approval = bool(getattr(bot, "require_host_action_approval", False))
+        return [
+            Message(
+                role="system",
+                content=system_prompt_with_runtime(bot.system_prompt, require_approval=require_approval),
+            )
+        ]
 
     conv = ctx.get_conversation(session, conversation_id)
     ctx._assert_bot_in_conversation(conv, bot.id)
@@ -111,7 +116,11 @@ def build_history_budgeted(
     last_summarized_id = str(memory.get("last_summarized_message_id") or "").strip()
 
     ctx_obj = {"meta": meta}
-    system_prompt = _system_prompt_with_runtime(prompt=ctx.render_template(bot.system_prompt, ctx=ctx_obj))
+    require_approval = bool(getattr(bot, "require_host_action_approval", False))
+    system_prompt = system_prompt_with_runtime(
+        ctx.render_template(bot.system_prompt, ctx=ctx_obj),
+        require_approval=require_approval,
+    )
 
     db_msgs = ctx.list_messages(session, conversation_id=conversation_id)
     try:

@@ -84,7 +84,7 @@ async def process_talk_tool_calls(
             if tool_name == "set_variable":
                 tool_name = "set_metadata"
             skip_tool_result_persist = False
-            skip_tool_result_persist = False
+            suppress_tool_result = False
 
             await _ws_send_json(
                 ws,
@@ -241,19 +241,10 @@ async def process_talk_tool_calls(
                             if _host_action_requires_approval(bot):
                                 tool_result = _build_host_action_tool_result(action, ok=True)
                                 tool_result["path"] = rel_path
-                                if follow_up:
-                                    rendered_reply = ""
-                                    needs_followup_llm = True
-                                else:
-                                    candidate = _render_with_meta(next_reply, meta_current).strip()
-                                    if candidate:
-                                        rendered_reply = candidate
-                                        needs_followup_llm = False
-                                    else:
-                                        rendered_reply = (
-                                            "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
-                                        )
-                                        needs_followup_llm = False
+                                suppress_tool_result = True
+                                skip_tool_result_persist = True
+                                rendered_reply = ""
+                                needs_followup_llm = False
                             else:
                                 if wait_reply:
                                     await _send_interim(wait_reply, kind="wait")
@@ -348,17 +339,10 @@ async def process_talk_tool_calls(
                             )
                             if _host_action_requires_approval(bot):
                                 tool_result = _build_host_action_tool_result(action, ok=True)
-                                if follow_up:
-                                    rendered_reply = ""
-                                    needs_followup_llm = True
-                                else:
-                                    candidate = _render_with_meta(next_reply, meta_current).strip()
-                                    if candidate:
-                                        rendered_reply = candidate
-                                        needs_followup_llm = False
-                                    else:
-                                        needs_followup_llm = True
-                                        rendered_reply = ""
+                                suppress_tool_result = True
+                                skip_tool_result_persist = True
+                                rendered_reply = ""
+                                needs_followup_llm = False
                             else:
                                 if wait_reply:
                                     await _send_interim(wait_reply, kind="wait")
@@ -457,10 +441,11 @@ async def process_talk_tool_calls(
             if isinstance(tool_result, dict):
                 meta_current = tool_result.get("metadata") or meta_current
 
-            await _ws_send_json(
-                ws,
-                {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
-            )
+            if not suppress_tool_result:
+                await _ws_send_json(
+                    ws,
+                    {"type": "tool_result", "req_id": req_id, "name": tool_name, "result": tool_result},
+                )
 
             if tool_failed:
                 break

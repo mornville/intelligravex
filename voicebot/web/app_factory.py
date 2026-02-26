@@ -207,6 +207,8 @@ def create_app() -> FastAPI:
     openrouter_models_cache: dict[str, Any] = {"ts": 0.0, "models": [], "pricing": {}}
     group_ws_clients: dict[str, set[WebSocket]] = {}
     group_ws_lock = asyncio.Lock()
+    conversation_ws_clients: dict[str, dict[WebSocket, asyncio.AbstractEventLoop]] = {}
+    conversation_ws_lock = threading.Lock()
 
     download_base_url = (getattr(settings, "download_base_url", "") or "127.0.0.1:8000").strip()
 
@@ -353,6 +355,45 @@ def create_app() -> FastAPI:
                     group_ws_clients[key] = cur
                 else:
                     group_ws_clients.pop(key, None)
+
+    def _conversation_ws_register(conversation_id: UUID, ws: WebSocket, loop: asyncio.AbstractEventLoop) -> None:
+        key = str(conversation_id)
+        with conversation_ws_lock:
+            conversation_ws_clients.setdefault(key, {})[ws] = loop
+
+    def _conversation_ws_unregister(conversation_id: UUID, ws: WebSocket) -> None:
+        key = str(conversation_id)
+        with conversation_ws_lock:
+            cur = conversation_ws_clients.get(key)
+            if not cur:
+                return
+            cur.pop(ws, None)
+            if not cur:
+                conversation_ws_clients.pop(key, None)
+
+    def _conversation_ws_broadcast(conversation_id: UUID, payload: dict) -> None:
+        key = str(conversation_id)
+        with conversation_ws_lock:
+            clients = list(conversation_ws_clients.get(key, {}).items())
+        if not clients:
+            return
+        dead: list[WebSocket] = []
+        data = json.dumps(payload, ensure_ascii=False)
+        for ws, loop in clients:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(ws.send_text(data), loop)
+                fut.add_done_callback(lambda f: None)
+            except Exception:
+                dead.append(ws)
+        if dead:
+            with conversation_ws_lock:
+                cur = conversation_ws_clients.get(key)
+                if not cur:
+                    return
+                for ws in dead:
+                    cur.pop(ws, None)
+                if not cur:
+                    conversation_ws_clients.pop(key, None)
 
     app.state.igx_state = AppState(
         settings=settings,
@@ -580,6 +621,9 @@ def create_app() -> FastAPI:
     ctx._parse_follow_up_flag = integration_utils_helpers.parse_follow_up_flag
 
     ctx._group_ws_broadcast = _group_ws_broadcast
+    ctx._conversation_ws_register = _conversation_ws_register
+    ctx._conversation_ws_unregister = _conversation_ws_unregister
+    ctx._conversation_ws_broadcast = _conversation_ws_broadcast
 
     talk_stream_module.bind_ctx(ctx)
     talk_tool_integrations_module.bind_ctx(ctx)

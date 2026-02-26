@@ -34,6 +34,7 @@ async def process_public_tool_calls(
         if tool_name == "set_variable":
             tool_name = "set_metadata"
         skip_tool_result_persist = False
+        suppress_tool_result = False
 
         tool_args = json.loads(tc.arguments_json or "{}")
         if not isinstance(tool_args, dict):
@@ -152,19 +153,10 @@ async def process_public_tool_calls(
                         if _host_action_requires_approval(bot):
                             tool_result = _build_host_action_tool_result(action, ok=True)
                             tool_result["path"] = rel_path
-                            if follow_up:
-                                final = ""
-                                needs_followup_llm = True
-                            else:
-                                candidate = _render_with_meta(next_reply, meta_current).strip()
-                                if candidate:
-                                    final = candidate
-                                    needs_followup_llm = False
-                                else:
-                                    final = (
-                                        "Approve the screenshot capture in the Action Queue, then ask me to analyze it."
-                                    )
-                                    needs_followup_llm = False
+                            suppress_tool_result = True
+                            skip_tool_result_persist = True
+                            final = ""
+                            needs_followup_llm = False
                         else:
                             tool_result = await _execute_host_action_and_update_async(
                                 session, action=action
@@ -257,17 +249,10 @@ async def process_public_tool_calls(
                         )
                         if _host_action_requires_approval(bot):
                             tool_result = _build_host_action_tool_result(action, ok=True)
-                            if follow_up:
-                                final = ""
-                                needs_followup_llm = True
-                            else:
-                                candidate = _render_with_meta(next_reply, meta_current).strip()
-                                if candidate:
-                                    final = candidate
-                                    needs_followup_llm = False
-                                else:
-                                    needs_followup_llm = True
-                                    final = ""
+                            suppress_tool_result = True
+                            skip_tool_result_persist = True
+                            final = ""
+                            needs_followup_llm = False
                         else:
                             tool_result = await _execute_host_action_and_update_async(
                                 session, action=action
@@ -590,7 +575,7 @@ async def process_public_tool_calls(
                             except Exception:
                                 pass
 
-        if not skip_tool_result_persist:
+        if not skip_tool_result_persist and not suppress_tool_result:
             add_message_with_metrics(
                 session,
                 conversation_id=conv_id,

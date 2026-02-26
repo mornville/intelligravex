@@ -40,6 +40,7 @@ async def process_group_tool_calls(
             if tool_name == "set_variable":
                 tool_name = "set_metadata"
 
+            suppress_tool_result = False
             try:
                 tool_args = json.loads(tc.arguments_json or "{}")
                 if not isinstance(tool_args, dict):
@@ -146,7 +147,8 @@ async def process_group_tool_calls(
                             if ctx._host_action_requires_approval(bot):
                                 tool_result = ctx._build_host_action_tool_result(action, ok=True)
                                 tool_result["path"] = rel_path
-                                needs_followup_llm = True
+                                suppress_tool_result = True
+                                needs_followup_llm = False
                                 final = ""
                             else:
                                 tool_result = await ctx._execute_host_action_and_update_async(session, action=action)
@@ -221,13 +223,9 @@ async def process_group_tool_calls(
                             )
                             if ctx._host_action_requires_approval(bot):
                                 tool_result = ctx._build_host_action_tool_result(action, ok=True)
-                                candidate = ctx._render_with_meta(next_reply, meta_current).strip()
-                                if candidate:
-                                    final = candidate
-                                    needs_followup_llm = False
-                                else:
-                                    needs_followup_llm = True
-                                    final = ""
+                                suppress_tool_result = True
+                                needs_followup_llm = False
+                                final = ""
                             else:
                                 tool_result = await ctx._execute_host_action_and_update_async(session, action=action)
                                 tool_failed = not bool(tool_result.get("ok", False))
@@ -540,15 +538,16 @@ async def process_group_tool_calls(
                 final = f"Host action failed: {msg}"
                 needs_followup_llm = False
 
-            tool_result_msg = ctx.add_message_with_metrics(
-                session,
-                conversation_id=conversation_id,
-                role="tool",
-                content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
-                sender_bot_id=bot.id,
-                sender_name=bot.name,
-            )
-            ctx._mirror_group_message(session, conv=conv, msg=tool_result_msg)
+            if not suppress_tool_result:
+                tool_result_msg = ctx.add_message_with_metrics(
+                    session,
+                    conversation_id=conversation_id,
+                    role="tool",
+                    content=json.dumps({"tool": tool_name, "result": tool_result}, ensure_ascii=False),
+                    sender_bot_id=bot.id,
+                    sender_name=bot.name,
+                )
+                ctx._mirror_group_message(session, conv=conv, msg=tool_result_msg)
             if isinstance(tool_result, dict):
                 meta_current = tool_result.get("metadata") or meta_current
 

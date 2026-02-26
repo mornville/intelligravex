@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from ..schemas import ChatRequest
+from voicebot.utils.prompt import append_host_action_approval_notice
 
 
 def register(app, ctx) -> None:
@@ -34,7 +35,11 @@ def register(app, ctx) -> None:
                 yield ctx._ndjson({"type": "error", "error": "Empty text"})
                 return
 
-            messages = [ctx.Message(role="system", content=bot.system_prompt), ctx.Message(role="user", content=text)]
+            sys_prompt = append_host_action_approval_notice(
+                bot.system_prompt,
+                require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+            )
+            messages = [ctx.Message(role="system", content=sys_prompt), ctx.Message(role="user", content=text)]
 
             delta_q_client: "ctx.queue.Queue[Optional[str]]" = ctx.queue.Queue()
             delta_q_tts: "ctx.queue.Queue[Optional[str]]" = ctx.queue.Queue()
@@ -286,7 +291,11 @@ def register(app, ctx) -> None:
         if not text:
             raise ctx.HTTPException(status_code=400, detail="Empty text")
 
-        messages = [ctx.Message(role="system", content=bot.system_prompt), ctx.Message(role="user", content=text)]
+        sys_prompt = append_host_action_approval_notice(
+            bot.system_prompt,
+            require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+        )
+        messages = [ctx.Message(role="system", content=sys_prompt), ctx.Message(role="user", content=text)]
         out_text = llm.complete_text(messages=messages)
 
         if not payload.speak:

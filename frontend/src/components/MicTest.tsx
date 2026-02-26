@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
   CpuChipIcon,
   MicrophoneIcon,
@@ -13,7 +13,8 @@ import { getBasicAuthToken } from '../auth'
 import { createRecorder, type Recorder } from '../audio/recorder'
 import { WavQueuePlayer } from '../audio/player'
 import { fmtMs } from '../utils/format'
-import type { Bot, DataAgentStatus, ConversationFiles, ConversationMessage, Citation } from '../types'
+import { formatHostActionLabel } from '../utils/hostActions'
+import type { Bot, DataAgentStatus, ConversationFiles, ConversationMessage, Citation, HostAction } from '../types'
 import LoadingSpinner from './LoadingSpinner'
 import MarkdownText from './MarkdownText'
 
@@ -120,6 +121,11 @@ export default function MicTest({
   uploadDisabledReason = '',
   uploading = false,
   onUploadFiles,
+  refreshToken,
+  hostActions,
+  hostActionRequiresApproval,
+  hostActionsErr,
+  onRunHostAction,
 }: {
   botId: string
   initialConversationId?: string
@@ -135,6 +141,11 @@ export default function MicTest({
   uploadDisabledReason?: string
   uploading?: boolean
   onUploadFiles?: (files: FileList) => void
+  refreshToken?: number
+  hostActions?: HostAction[]
+  hostActionRequiresApproval?: (action: HostAction) => boolean
+  hostActionsErr?: string | null
+  onRunHostAction?: (action: HostAction) => void
 }) {
   const [connectionStage, setConnectionStage] = useState<Stage>('disconnected')
   const [stageByConversationId, setStageByConversationId] = useState<Record<string, Stage>>({})
@@ -187,6 +198,7 @@ export default function MicTest({
   const hydrateSeqRef = useRef(0)
   const ignoreInitialConversationRef = useRef(false)
   const startTokenRef = useRef<number | undefined>(startToken)
+  const refreshTokenRef = useRef<number | undefined>(refreshToken)
   const cacheRef = useRef<Record<string, ChatCacheEntry> | undefined>(cache)
   const conversationIdRef = useRef<string | null>(null)
   const markReadTimerRef = useRef<number | null>(null)
@@ -199,6 +211,7 @@ export default function MicTest({
   const autoScrollLockRef = useRef(false)
   const lastScrollTopRef = useRef(0)
   const interimIdRef = useRef<string | null>(null)
+  const lastWatchedConvRef = useRef<string | null>(null)
 
   const activeStage = useMemo(() => {
     if (connectionStage === 'disconnected' || connectionStage === 'error') return connectionStage
@@ -482,6 +495,13 @@ export default function MicTest({
         return
       }
 
+      if (msg.type === 'conversation_update') {
+        const cid = String(msg.conversation_id || '')
+        if (cid && cid === conversationIdRef.current) {
+          void hydrateConversation(cid)
+        }
+        return
+      }
       if (msg.type === 'status') {
         const reqId = String(msg.req_id || '')
         const convId = reqId ? reqToConversationRef.current[reqId] : conversationIdRef.current
@@ -543,6 +563,7 @@ export default function MicTest({
         const reqId = String(msg.req_id || '')
         if (!isActiveConversationForReq(reqId)) return
         const details = normalizeToolEventForDisplay(msg)
+        const isHostAction = String(msg.name || '') === 'request_host_action'
         const toolItem = {
           id: makeId(),
           role: 'tool' as const,
@@ -553,16 +574,30 @@ export default function MicTest({
         }
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
-          if (!draftId) return [...prev, toolItem]
-          const idx = prev.findIndex((it) => it.id === draftId)
-          if (idx === -1) return [...prev, toolItem]
-          return [...prev.slice(0, idx), toolItem, ...prev.slice(idx)]
+          let next = prev
+          if (isHostAction && draftId) {
+            const draftItem = prev.find((it) => it.id === draftId)
+            if (draftItem && !draftItem.text.trim()) {
+              draftAssistantIdRef.current = null
+              next = prev.filter((it) => it.id !== draftId)
+            }
+          }
+          const insertDraftId = draftAssistantIdRef.current
+          if (!insertDraftId) return [...next, toolItem]
+          const idx = next.findIndex((it) => it.id === insertDraftId)
+          if (idx === -1) return [...next, toolItem]
+          return [...next.slice(0, idx), toolItem, ...next.slice(idx)]
         })
         return
       }
       if (msg.type === 'tool_result') {
         const reqId = String(msg.req_id || '')
-        if (!isActiveConversationForReq(reqId)) return
+        const convId = String(msg.conversation_id || '')
+        if (reqId) {
+          if (!isActiveConversationForReq(reqId)) return
+        } else if (!convId || convId !== conversationIdRef.current) {
+          return
+        }
         const details = normalizeToolEventForDisplay(msg)
         const toolItem = {
           id: makeId(),
@@ -680,6 +715,13 @@ export default function MicTest({
         const draftId = draftAssistantIdRef.current
         setItems((prev) => {
           const hasDraft = draftId ? prev.some((it) => it.id === draftId) : false
+          if (!doneText.trim() && draftId && hasDraft) {
+            const draftItem = prev.find((it) => it.id === draftId)
+            if (draftItem && !draftItem.text.trim()) {
+              draftAssistantIdRef.current = null
+              return prev.filter((it) => it.id !== draftId)
+            }
+          }
           if (doneText.trim() && (!draftId || !hasDraft)) {
             const newId = makeId()
             draftAssistantIdRef.current = newId
@@ -820,6 +862,20 @@ export default function MicTest({
   }, [conversationId, connectionStage, isVisible])
 
   useEffect(() => {
+    if (!conversationId) return
+    if (lastWatchedConvRef.current === conversationId) return
+    const sendWatch = async () => {
+      const ok = await ensureWsOpen()
+      if (!ok) return
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: 'watch', conversation_id: conversationId }))
+      lastWatchedConvRef.current = conversationId
+    }
+    void sendWatch()
+  }, [conversationId])
+
+  useEffect(() => {
     if (layout !== 'whatsapp') return
     if (startToken === undefined) return
     if (startTokenRef.current === undefined) {
@@ -830,6 +886,19 @@ export default function MicTest({
     startTokenRef.current = startToken
     void initConversation()
   }, [startToken])
+
+  useEffect(() => {
+    if (refreshToken === undefined) return
+    if (refreshTokenRef.current === undefined) {
+      refreshTokenRef.current = refreshToken
+      return
+    }
+    if (refreshToken === refreshTokenRef.current) return
+    refreshTokenRef.current = refreshToken
+    if (conversationId) {
+      void hydrateConversation(conversationId)
+    }
+  }, [refreshToken, conversationId])
 
   useEffect(() => {
     if (hideWorkspace) setShowFilesPane(false)
@@ -1085,6 +1154,10 @@ export default function MicTest({
   }, [showFilesPane, tree, expandedPaths])
 
   const displayItems = showToolMessages ? items : items.filter((it) => it.role !== 'tool')
+  const approvalActions = useMemo(() => {
+    if (!hostActions?.length || !hostActionRequiresApproval) return []
+    return hostActions.filter((action) => action.status === 'pending' && hostActionRequiresApproval(action))
+  }, [hostActions, hostActionRequiresApproval])
   const loadingDots = (
     <span className="loadingDots" aria-label="Loading">
       <span>.</span>
@@ -1092,6 +1165,41 @@ export default function MicTest({
       <span>.</span>
     </span>
   )
+  const approvalQueueNode = approvalActions.length ? (
+    <div className="msgRow assistant">
+      <div className="avatar assistant" aria-hidden="true">
+        <RoleIcon role="assistant" />
+      </div>
+      <div className="bubble assistant approvalBubble">
+        <div className="approvalTitle">Approval needed</div>
+        {hostActionsErr ? <div className="alert">{hostActionsErr}</div> : null}
+        <div className="approvalList">
+          {approvalActions.map((action) => {
+            const label = formatHostActionLabel(action)
+            return (
+              <div key={action.id} className="approvalItem">
+                <div className="approvalItemBody">
+                  <div className="approvalItemTitle">{label.title}</div>
+                  {label.detail ? (
+                    <div className="approvalItemDetail" title={label.detail}>
+                      {label.detail}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="approvalActions">
+                  {onRunHostAction ? (
+                    <button className="btn" onClick={() => onRunHostAction(action)}>
+                      Run
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  ) : null
   const messages = (
     <>
       {displayItems.map((it) => {
@@ -1106,48 +1214,51 @@ export default function MicTest({
               ? `bubble assistant${it.interim ? ' interim' : ''}`
               : 'bubble tool'
         return (
-          <div key={it.id} className={`msgRow ${role}`}>
-            <div className={`avatar ${role}`} aria-hidden="true">
-              <RoleIcon role={role} />
-            </div>
-            <div className={bubbleClass}>
-              <div className="bubbleText">
-                {typeof bubbleText === 'string' ? <MarkdownText content={bubbleText} /> : bubbleText}
+          <Fragment key={it.id}>
+            <div className={`msgRow ${role}`}>
+              <div className={`avatar ${role}`} aria-hidden="true">
+                <RoleIcon role={role} />
               </div>
-              {role === 'assistant' && citations.length ? (
-                <div className="citationBlock">
-                  <div className="citationTitle">Sources</div>
-                  <ol className="citationList">
-                    {citations.map((c, idx) => (
-                      <li key={`${c.url}-${idx}`}>
-                        <a className="citationLink" href={c.url} target="_blank" rel="noreferrer">
-                          {c.title || c.url}
-                        </a>
-                      </li>
-                    ))}
-                  </ol>
+              <div className={bubbleClass}>
+                <div className="bubbleText">
+                  {typeof bubbleText === 'string' ? <MarkdownText content={bubbleText} /> : bubbleText}
                 </div>
-              ) : null}
-              {role === 'assistant' && it.timings ? (
-                <details className="details">
-                  <summary>metrics</summary>
-                  <div className="bubbleMeta">
-                    ASR {fmtMs(it.timings.asr)} | LLM 1st {fmtMs(it.timings.llm_ttfb)} | LLM {fmtMs(it.timings.llm_total)} | TTS 1st{' '}
-                    {fmtMs(it.timings.tts_first_audio)} | total {fmtMs(it.timings.total)}
+                {role === 'assistant' && citations.length ? (
+                  <div className="citationBlock">
+                    <div className="citationTitle">Sources</div>
+                    <ol className="citationList">
+                      {citations.map((c, idx) => (
+                        <li key={`${c.url}-${idx}`}>
+                          <a className="citationLink" href={c.url} target="_blank" rel="noreferrer">
+                            {c.title || c.url}
+                          </a>
+                        </li>
+                      ))}
+                    </ol>
                   </div>
-                </details>
-              ) : null}
-              {it.details ? (
-                <details className="details">
-                  <summary>details</summary>
-                  <pre className="pre">{JSON.stringify(it.details, null, 2)}</pre>
-                </details>
-              ) : null}
-              {it.created_at ? <div className="bubbleTime" title={it.created_at}>{fmtTime(it.created_at)}</div> : null}
+                ) : null}
+                {role === 'assistant' && it.timings ? (
+                  <details className="details">
+                    <summary>metrics</summary>
+                    <div className="bubbleMeta">
+                      ASR {fmtMs(it.timings.asr)} | LLM 1st {fmtMs(it.timings.llm_ttfb)} | LLM {fmtMs(it.timings.llm_total)} | TTS 1st{' '}
+                      {fmtMs(it.timings.tts_first_audio)} | total {fmtMs(it.timings.total)}
+                    </div>
+                  </details>
+                ) : null}
+                {it.details ? (
+                  <details className="details">
+                    <summary>details</summary>
+                    <pre className="pre">{JSON.stringify(it.details, null, 2)}</pre>
+                  </details>
+                ) : null}
+                {it.created_at ? <div className="bubbleTime" title={it.created_at}>{fmtTime(it.created_at)}</div> : null}
+              </div>
             </div>
-          </div>
+          </Fragment>
         )
       })}
+      {approvalQueueNode ? approvalQueueNode : null}
     </>
   )
 
