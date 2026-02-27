@@ -4,11 +4,13 @@ import type { LocalModel, Options } from '../types'
 import { BACKEND_URL, apiGet, apiPost } from '../api/client'
 import { authHeader } from '../auth'
 import { formatLocalModelToolSupport } from '../utils/localModels'
+import { formatProviderLabel } from '../utils/llmProviders'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<{
     openai_key_configured: boolean
     openrouter_key_configured?: boolean
+    chatgpt_key_configured?: boolean
     llm_key_configured?: boolean
     docker_available: boolean
   } | null>(null)
@@ -16,7 +18,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [statusErr, setStatusErr] = useState<string | null>(null)
   const [setupActive, setSetupActive] = useState(false)
   const [setupStep, setSetupStep] = useState<'llm' | 'docker'>('llm')
-  const [llmProvider, setLlmProvider] = useState<'openai' | 'openrouter' | 'local'>('openai')
+  const [llmProvider, setLlmProvider] = useState<'openai' | 'openrouter' | 'local' | 'chatgpt'>('chatgpt')
   const [llmKey, setLlmKey] = useState('')
   const [setupErr, setSetupErr] = useState<string | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
@@ -27,6 +29,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [localCustomUrl, setLocalCustomUrl] = useState('')
   const [localCustomName, setLocalCustomName] = useState('')
   const [localStatus, setLocalStatus] = useState<any>(null)
+  const [chatgptAuthState, setChatgptAuthState] = useState<string | null>(null)
+  const [chatgptAuthErr, setChatgptAuthErr] = useState<string | null>(null)
+  const [chatgptAuthBusy, setChatgptAuthBusy] = useState(false)
+  const [chatgptAuthUrl, setChatgptAuthUrl] = useState<string | null>(null)
 
   const localModels: LocalModel[] = options?.local_models || []
   const selectedLocalModel = localModels.find((m) => m.id === localModelId) || null
@@ -96,6 +102,67 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    setChatgptAuthErr(null)
+    setChatgptAuthState(null)
+    setChatgptAuthUrl(null)
+  }, [llmProvider])
+
+  useEffect(() => {
+    if (!chatgptAuthState) return
+    const state = chatgptAuthState
+    let canceled = false
+    async function poll() {
+      try {
+        const res = await apiGet<{ status: string; error?: string }>(`/api/chatgpt/oauth/status?state=${encodeURIComponent(state)}`)
+        if (canceled) return
+        if (res.status === 'ready') {
+          setChatgptAuthState(null)
+          setChatgptAuthUrl(null)
+          setChatgptAuthErr(null)
+          await refreshStatus()
+          if (!canceled) setSetupStep('docker')
+          return
+        }
+        if (res.status === 'error' || res.status === 'expired') {
+          setChatgptAuthState(null)
+          setChatgptAuthUrl(null)
+          setChatgptAuthErr(res.error || (res.status === 'expired' ? 'Sign-in expired. Please try again.' : 'Sign-in failed.'))
+        }
+      } catch (e: any) {
+        if (!canceled) setChatgptAuthErr(String(e?.message || e))
+      }
+    }
+    void poll()
+    const t = window.setInterval(() => void poll(), 1200)
+    return () => {
+      canceled = true
+      window.clearInterval(t)
+    }
+  }, [chatgptAuthState])
+
+  useEffect(() => {
+    if (!setupActive || setupStep !== 'llm' || llmProvider !== 'chatgpt' || chatgptAuthState) return
+    let canceled = false
+    async function pollStatus() {
+      try {
+        const res = await apiGet<any>('/api/status')
+        if (canceled) return
+        if (res?.chatgpt_key_configured) {
+          await refreshStatus()
+        }
+      } catch {
+        // ignore
+      }
+    }
+    void pollStatus()
+    const t = window.setInterval(() => void pollStatus(), 2000)
+    return () => {
+      canceled = true
+      window.clearInterval(t)
+    }
+  }, [setupActive, setupStep, llmProvider, chatgptAuthState])
+
+  useEffect(() => {
     if (!setupActive || llmProvider !== 'local') return
     let canceled = false
     async function poll() {
@@ -150,7 +217,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   async function saveLlmKey() {
     setSetupErr(null)
     if (!llmKey.trim()) {
-      setSetupErr('Please enter an API key.')
+      setSetupErr('Please enter an API key or OAuth token.')
       return
     }
     setSetupBusy(true)
@@ -170,6 +237,25 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setSetupErr(e?.message || 'Failed to save API key.')
     } finally {
       setSetupBusy(false)
+    }
+  }
+
+  async function startChatgptAuth() {
+    setChatgptAuthErr(null)
+    setChatgptAuthBusy(true)
+    try {
+      const res = await apiPost<{ state: string; auth_url: string }>('/api/chatgpt/oauth/start', {})
+      if (!res?.state || !res?.auth_url) throw new Error('ChatGPT sign-in unavailable.')
+      setChatgptAuthState(res.state)
+      setChatgptAuthUrl(res.auth_url)
+      const opened = window.open(res.auth_url, '_blank', 'noopener,noreferrer')
+      if (!opened) {
+        setChatgptAuthErr('Popup blocked. Click "Open login" to continue.')
+      }
+    } catch (e: any) {
+      setChatgptAuthErr(String(e?.message || e))
+    } finally {
+      setChatgptAuthBusy(false)
     }
   }
 
@@ -209,6 +295,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       const data = await res.json()
       setStatus(data)
       setStatusErr(null)
+      const llmReady = Boolean(data.llm_key_configured ?? data.openai_key_configured)
+      if (llmReady && setupActive && setupStep === 'llm') {
+        setSetupStep('docker')
+      }
     } catch {
       setStatus(null)
       setStatusErr('Unable to reach backend.')
@@ -239,6 +329,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   if (setupActive) {
     const stepIndex = setupStep === 'llm' ? 1 : 2
     const usingLocal = llmProvider === 'local'
+    const usingChatgpt = llmProvider === 'chatgpt'
     const showCustom = localModelId === '__custom__'
     const progress = localStatus?.percent ? `${localStatus.percent}%` : ''
     return (
@@ -257,26 +348,50 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               <div className="formRow">
                 <label>Provider</label>
                 <select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value as any)}>
-                  <option value="openai">OpenAI</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="local">Local model (no API key)</option>
+                  <option value="chatgpt">{formatProviderLabel('chatgpt')}</option>
+                  <option value="openai">{formatProviderLabel('openai')}</option>
+                  <option value="openrouter">{formatProviderLabel('openrouter')}</option>
+                  <option value="local">{formatProviderLabel('local')} model (no API key)</option>
                 </select>
               </div>
               {!usingLocal ? (
-                <>
-                  <div className="formRow">
-                    <label>{llmProvider === 'openai' ? 'OpenAI API key' : 'OpenRouter API key'}</label>
-                    <input
-                      type="password"
-                      placeholder={llmProvider === 'openai' ? 'sk-...' : 'sk-or-...'}
-                      value={llmKey}
-                      onChange={(e) => setLlmKey(e.target.value)}
-                    />
-                  </div>
-                  <button className="btn primary" onClick={() => void saveLlmKey()} disabled={setupBusy || !llmKey.trim()}>
-                    {setupBusy ? 'Saving…' : 'Save and continue'}
-                  </button>
-                </>
+                usingChatgpt ? (
+                  <>
+                    {chatgptAuthErr ? <div className="alert">{chatgptAuthErr}</div> : null}
+                    <div className="muted" style={{ marginBottom: 12 }}>
+                      Sign in with your ChatGPT account to enable personal-use Codex calls. We’ll open a browser window for approval.
+                    </div>
+                    <div className="muted" style={{ marginBottom: 12 }}>
+                      Voice features (ASR/TTS) still require an OpenAI API key.
+                    </div>
+                    <div className="row gap">
+                      <button className="btn primary" onClick={() => void startChatgptAuth()} disabled={chatgptAuthBusy || !!chatgptAuthState}>
+                        {chatgptAuthBusy ? 'Starting…' : chatgptAuthState ? 'Waiting for approval…' : 'Sign in with ChatGPT'}
+                      </button>
+                      {chatgptAuthUrl ? (
+                        <button className="btn" onClick={() => window.open(chatgptAuthUrl, '_blank', 'noopener,noreferrer')}>
+                          Open login
+                        </button>
+                      ) : null}
+                    </div>
+                    {chatgptAuthState ? <div className="muted" style={{ marginTop: 8 }}>Waiting for approval…</div> : null}
+                  </>
+                ) : (
+                  <>
+                    <div className="formRow">
+                      <label>{llmProvider === 'openai' ? 'OpenAI API key' : 'OpenRouter API key'}</label>
+                      <input
+                        type="password"
+                        placeholder={llmProvider === 'openai' ? 'sk-...' : 'sk-or-...'}
+                        value={llmKey}
+                        onChange={(e) => setLlmKey(e.target.value)}
+                      />
+                    </div>
+                    <button className="btn primary" onClick={() => void saveLlmKey()} disabled={setupBusy || !llmKey.trim()}>
+                      {setupBusy ? 'Saving…' : 'Save and continue'}
+                    </button>
+                  </>
+                )
               ) : (
                 <>
                   <div className="formRow">

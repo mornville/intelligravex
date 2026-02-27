@@ -62,6 +62,19 @@ def create_key(session: Session, *, crypto: CryptoBox, provider: str, name: str,
     return k
 
 
+def upsert_key(session: Session, *, crypto: CryptoBox, provider: str, name: str, secret: str) -> ApiKey:
+    existing = get_latest_key(session, provider=provider)
+    if existing is None:
+        return create_key(session, crypto=crypto, provider=provider, name=name, secret=secret)
+    existing.name = name
+    existing.hint = build_hint(secret)
+    existing.secret_ciphertext = crypto.encrypt_str(secret)
+    session.add(existing)
+    session.commit()
+    session.refresh(existing)
+    return existing
+
+
 def delete_key(session: Session, key_id: UUID) -> None:
     key = session.get(ApiKey, key_id)
     if not key:

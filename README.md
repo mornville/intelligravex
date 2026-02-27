@@ -7,7 +7,9 @@
 
 # Gravex
 
-**Local‑first automation agents** that run on your machine - not in a black box.
+- **Local‑first automation agents** that run on your machine - not in a black box.
+- **Now with fast ChatGPT sign‑in** for instant GPT access, no API key copy‑paste required.
+- **Or just use openai keys** for accessing all the features like TTS, ASR
 
 Gravex gives you a dashboard to create agents, run real tasks, and keep files, configs, and context on-device. Use local LLMs or OpenAI, add tools, and scale from one agent to teams.
 
@@ -28,7 +30,7 @@ Open:
 - `http://localhost:8000/dashboard`
 
 First‑time setup in the UI:
-- Choose **Local**, **OpenAI**, or **OpenRouter**.
+- Choose **ChatGPT (OAuth)**, **Local**, **OpenAI**, or **OpenRouter**.
 - Voice (ASR/TTS) is optional.
 - Isolated Workspace is optional and requires Docker.
 - For Local models, you can pick a bundled model or use **Custom URL** to provide a direct download link.
@@ -44,6 +46,7 @@ First‑time setup in the UI:
 
 - Dedicated dashboard to spin up agents and teams fast.
 - Local LLM runtime with **0 API keys** and **0 data export**.
+- ChatGPT OAuth sign‑in for instant GPT access (no API key copy‑paste).
 - Summarization to keep context stable with less drift.
 - System tools with 1‑click enablement and approvals.
 - HTTP request tool (ad‑hoc) for zero‑setup API calls.

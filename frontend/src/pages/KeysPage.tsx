@@ -7,6 +7,7 @@ import { fmtIso } from '../utils/format'
 
 export default function KeysPage() {
   const [openaiKeys, setOpenaiKeys] = useState<ApiKey[]>([])
+  const [chatgptKeys, setChatgptKeys] = useState<ApiKey[]>([])
   const [openrouterKeys, setOpenrouterKeys] = useState<ApiKey[]>([])
   const [clientKeys, setClientKeys] = useState<ClientKey[]>([])
   const [err, setErr] = useState<string | null>(null)
@@ -21,17 +22,23 @@ export default function KeysPage() {
   const [gitToken, setGitToken] = useState('')
   const [gitStatus, setGitStatus] = useState<GitTokenInfo | null>(null)
   const [savingGit, setSavingGit] = useState(false)
+  const [chatgptAuthState, setChatgptAuthState] = useState<string | null>(null)
+  const [chatgptAuthErr, setChatgptAuthErr] = useState<string | null>(null)
+  const [chatgptAuthBusy, setChatgptAuthBusy] = useState(false)
+  const [chatgptAuthUrl, setChatgptAuthUrl] = useState<string | null>(null)
 
   async function reload() {
     setLoading(true)
     setErr(null)
     try {
-      const [oai, orr, c] = await Promise.all([
+      const [oai, cgpt, orr, c] = await Promise.all([
         apiGet<{ items: ApiKey[] }>('/api/keys?provider=openai'),
+        apiGet<{ items: ApiKey[] }>('/api/keys?provider=chatgpt'),
         apiGet<{ items: ApiKey[] }>('/api/keys?provider=openrouter'),
         apiGet<{ items: ClientKey[] }>('/api/client-keys'),
       ])
       setOpenaiKeys(oai.items)
+      setChatgptKeys(cgpt.items)
       setOpenrouterKeys(orr.items)
       setClientKeys(c.items)
     } catch (e: any) {
@@ -55,6 +62,38 @@ export default function KeysPage() {
     void loadGitStatus()
   }, [])
 
+  useEffect(() => {
+    if (!chatgptAuthState) return
+    const state = chatgptAuthState
+    let canceled = false
+    async function poll() {
+      try {
+        const res = await apiGet<{ status: string; error?: string }>(`/api/chatgpt/oauth/status?state=${encodeURIComponent(state)}`)
+        if (canceled) return
+        if (res.status === 'ready') {
+          setChatgptAuthState(null)
+          setChatgptAuthUrl(null)
+          setChatgptAuthErr(null)
+          await reload()
+          return
+        }
+        if (res.status === 'error' || res.status === 'expired') {
+          setChatgptAuthState(null)
+          setChatgptAuthUrl(null)
+          setChatgptAuthErr(res.error || (res.status === 'expired' ? 'Sign-in expired. Please try again.' : 'Sign-in failed.'))
+        }
+      } catch (e: any) {
+        if (!canceled) setChatgptAuthErr(String(e?.message || e))
+      }
+    }
+    void poll()
+    const t = window.setInterval(() => void poll(), 1200)
+    return () => {
+      canceled = true
+      window.clearInterval(t)
+    }
+  }, [chatgptAuthState])
+
   async function onCreateOpenAI() {
     if (!openaiForm.name.trim() || !openaiForm.secret.trim()) return
     setCreatingOpenai(true)
@@ -71,6 +110,23 @@ export default function KeysPage() {
       setErr(String(e?.message || e))
     } finally {
       setCreatingOpenai(false)
+    }
+  }
+
+  async function startChatgptAuth() {
+    setChatgptAuthErr(null)
+    setChatgptAuthBusy(true)
+    try {
+      const res = await apiPost<{ state: string; auth_url: string }>('/api/chatgpt/oauth/start', {})
+      if (!res?.state || !res?.auth_url) throw new Error('ChatGPT sign-in unavailable.')
+      setChatgptAuthState(res.state)
+      setChatgptAuthUrl(res.auth_url)
+      const opened = window.open(res.auth_url, '_blank', 'noopener,noreferrer')
+      if (!opened) setChatgptAuthErr('Popup blocked. Click "Open login" to continue.')
+    } catch (e: any) {
+      setChatgptAuthErr(String(e?.message || e))
+    } finally {
+      setChatgptAuthBusy(false)
     }
   }
 
@@ -229,6 +285,75 @@ export default function KeysPage() {
                     <td>{fmtIso(k.created_at)}</td>
                     <td style={{ textAlign: 'right' }}>
                       <button className="btn iconBtn danger" onClick={() => void onDelete(k)} aria-label="Delete key" title="Delete key">
+                        <TrashIcon aria-hidden="true" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      </div>
+
+      <div style={{ height: 16 }} />
+
+      <div className="grid2">
+        <section className="card">
+          <div className="cardTitle">ChatGPT OAuth (personal)</div>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            Sign in with ChatGPT to enable personal-use Codex calls.
+          </div>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            Voice features (ASR/TTS) still require an OpenAI API key.
+          </div>
+          {chatgptAuthErr ? <div className="alert">{chatgptAuthErr}</div> : null}
+          <div className="row gap">
+            <button className="btn primary" onClick={() => void startChatgptAuth()} disabled={chatgptAuthBusy || !!chatgptAuthState}>
+              {chatgptAuthBusy ? 'Starting…' : chatgptAuthState ? 'Waiting for approval…' : 'Sign in with ChatGPT'}
+            </button>
+            {chatgptAuthUrl ? (
+              <button className="btn" onClick={() => window.open(chatgptAuthUrl, '_blank', 'noopener,noreferrer')}>
+                Open login
+              </button>
+            ) : null}
+          </div>
+          {chatgptAuthState ? <div className="muted" style={{ marginTop: 8 }}>Waiting for approval…</div> : null}
+        </section>
+      </div>
+
+      <div style={{ height: 16 }} />
+
+      <div className="grid2">
+        <section className="card">
+          <div className="cardTitle">ChatGPT tokens</div>
+          <div className="muted" style={{ marginBottom: 8 }}>
+            The most recently added token is used for ChatGPT (OAuth) bots.
+          </div>
+          {loading ? (
+            <div className="muted">
+              <LoadingSpinner />
+            </div>
+          ) : chatgptKeys.length === 0 ? (
+            <div className="muted">No tokens yet.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Hint</th>
+                  <th>Created</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {chatgptKeys.map((k) => (
+                  <tr key={k.id}>
+                    <td>{k.name}</td>
+                    <td className="mono">{k.hint}</td>
+                    <td>{fmtIso(k.created_at)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button className="btn iconBtn danger" onClick={() => void onDelete(k)} aria-label="Delete token" title="Delete token">
                         <TrashIcon aria-hidden="true" />
                       </button>
                     </td>

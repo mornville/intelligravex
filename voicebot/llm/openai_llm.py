@@ -186,7 +186,7 @@ def _parse_stream_events(
 
 
 class OpenAILLM:
-    def __init__(self, *, model: str, api_key: str | None = None) -> None:
+    def __init__(self, *, model: str, api_key: str | None = None, base_url: str | None = None) -> None:
         try:
             from openai import OpenAI  # type: ignore
         except Exception as exc:  # pragma: no cover
@@ -196,7 +196,10 @@ class OpenAILLM:
         if not key:
             raise RuntimeError("No OpenAI API key found (set OPENAI_API_KEY or configure a bot key).")
 
-        self._client = OpenAI(api_key=key)
+        if base_url:
+            self._client = OpenAI(api_key=key, base_url=base_url)
+        else:
+            self._client = OpenAI(api_key=key)
         self._model = model
 
     @property

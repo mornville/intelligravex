@@ -431,7 +431,7 @@ export default function MicTest({
     [connectionStage],
   )
   const canRecord = useMemo(() => {
-    if (botProvider === 'local') return false
+    if (botProvider === 'local' || botProvider === 'chatgpt') return false
     if (layout === 'whatsapp') return connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
     return speak && connectionStage === 'idle' && activeStage === 'idle' && !!conversationId
   }, [layout, speak, conversationId, activeStage, connectionStage, botProvider])
@@ -450,7 +450,7 @@ export default function MicTest({
         if (!alive) return
         const provider = (bot.llm_provider || 'openai').toLowerCase()
         setBotProvider(provider)
-        if (provider === 'local') setSpeak(false)
+        if (provider === 'local' || provider === 'chatgpt') setSpeak(false)
       } catch {
         if (alive) setBotProvider('openai')
       }
@@ -1020,7 +1020,8 @@ export default function MicTest({
     const reqId = makeId()
     activeReqIdRef.current = reqId
     pendingInitReqIdRef.current = reqId
-    ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak, test_flag: testFlag, debug }))
+    const effectiveSpeak = botProvider === 'local' || botProvider === 'chatgpt' ? false : speak
+    ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak: effectiveSpeak, test_flag: testFlag, debug }))
   }
 
   async function sendChat() {
@@ -1052,7 +1053,7 @@ export default function MicTest({
         type: 'chat',
         req_id: reqId,
         conversation_id: conversationId,
-        speak,
+        speak: botProvider === 'local' || botProvider === 'chatgpt' ? false : speak,
         test_flag: testFlag,
         debug,
         text,
@@ -1085,7 +1086,14 @@ export default function MicTest({
     activeReqIdRef.current = reqId
     reqToConversationRef.current[reqId] = conversationId
     wsRef.current.send(
-      JSON.stringify({ type: 'start', req_id: reqId, conversation_id: conversationId, speak, test_flag: testFlag, debug }),
+      JSON.stringify({
+        type: 'start',
+        req_id: reqId,
+        conversation_id: conversationId,
+        speak: botProvider === 'local' || botProvider === 'chatgpt' ? false : speak,
+        test_flag: testFlag,
+        debug,
+      }),
     )
     recordingRef.current = true
     const rec = await createRecorder((pcm16) => {
@@ -1328,7 +1336,7 @@ export default function MicTest({
       </aside>
     ) : null
 
-  const voiceDisabled = botProvider === 'local'
+  const voiceDisabled = botProvider === 'local' || botProvider === 'chatgpt'
   const micButton = recording ? (
     <button className="iconBtn danger" onClick={() => void stopRecording()} title="Stop recording">
       Stop
@@ -1338,7 +1346,7 @@ export default function MicTest({
       className="iconBtn"
       onClick={() => void startRecording()}
       disabled={!canRecord}
-      title={voiceDisabled ? 'Voice input disabled for local models' : 'Record'}
+      title={voiceDisabled ? 'Voice input disabled (requires OpenAI API key)' : 'Record'}
     >
       <MicrophoneIcon />
     </button>
@@ -1350,7 +1358,7 @@ export default function MicTest({
       disabled={voiceDisabled}
       title={
         voiceDisabled
-          ? 'Voice output disabled for local models'
+          ? 'Voice output disabled (requires OpenAI API key)'
           : speak
             ? 'Voice output on'
             : 'Voice output off'

@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 
 from voicebot.models import Bot, IntegrationTool
 from voicebot.store import create_bot, get_bot
+from voicebot.local_runtime import LOCAL_RUNTIME
 from voicebot.web.constants import (
     SHOWCASE_BOT_NAME,
     SHOWCASE_BOT_PROMPT,
@@ -17,6 +18,7 @@ from voicebot.web.constants import (
 from voicebot.web.helpers.integration_utils import (
     parse_required_args_json,
 )
+from voicebot.web.helpers.settings import get_app_setting
 from voicebot.web.helpers.settings import mask_headers_json, headers_configured
 
 
@@ -69,7 +71,33 @@ def get_or_create_system_bot(session: Session) -> Bot:
     return create_bot(session, bot)
 
 
+def _default_showcase_provider(session: Session) -> str:
+    provider = (get_app_setting(session, "default_llm_provider") or "").strip().lower() or "openai"
+    if provider not in ("openai", "openrouter", "local", "chatgpt"):
+        return "openai"
+    return provider
+
+
+def _default_showcase_model(session: Session, provider: str) -> str:
+    default_model = (get_app_setting(session, "default_llm_model") or "").strip()
+    if default_model:
+        return default_model
+    if provider in ("openai", "chatgpt"):
+        return "gpt-5.2"
+    if provider == "local":
+        models = LOCAL_RUNTIME.list_models()
+        for item in models:
+            if item.get("recommended"):
+                return str(item.get("id") or "").strip()
+        if models:
+            return str(models[0].get("id") or "").strip()
+        return "llama3.2-3b-instruct-q4_k_m"
+    return "o4-mini"
+
+
 def get_or_create_showcase_bot(session: Session) -> Bot:
+    provider = _default_showcase_provider(session)
+    model = _default_showcase_model(session, provider)
     stmt = select(Bot).where(Bot.name == SHOWCASE_BOT_NAME).limit(1)
     bot = session.exec(stmt).first()
     if not bot:
@@ -79,6 +107,15 @@ def get_or_create_showcase_bot(session: Session) -> Bot:
             bot = legacy
     if bot:
         updated = False
+        if bot.llm_provider != provider:
+            bot.llm_provider = provider
+            updated = True
+        if bot.openai_model != model:
+            bot.openai_model = model
+            updated = True
+        if bot.web_search_model != model:
+            bot.web_search_model = model
+            updated = True
         if bot.system_prompt != SHOWCASE_BOT_PROMPT:
             bot.system_prompt = SHOWCASE_BOT_PROMPT
             updated = True
@@ -88,8 +125,8 @@ def get_or_create_showcase_bot(session: Session) -> Bot:
         if bot.start_message_text != SHOWCASE_BOT_START_MESSAGE:
             bot.start_message_text = SHOWCASE_BOT_START_MESSAGE
             updated = True
-        if not bot.enable_data_agent:
-            bot.enable_data_agent = True
+        if bot.enable_data_agent:
+            bot.enable_data_agent = False
             updated = True
         if not bot.enable_host_actions:
             bot.enable_host_actions = True
@@ -111,10 +148,13 @@ def get_or_create_showcase_bot(session: Session) -> Bot:
         return bot
     bot = Bot(
         name=SHOWCASE_BOT_NAME,
+        llm_provider=provider,
+        openai_model=model,
+        web_search_model=model,
         system_prompt=SHOWCASE_BOT_PROMPT,
         start_message_mode="static",
         start_message_text=SHOWCASE_BOT_START_MESSAGE,
-        enable_data_agent=True,
+        enable_data_agent=False,
         enable_host_actions=True,
         enable_host_shell=True,
         require_host_action_approval=False,
@@ -141,6 +181,8 @@ def bot_to_dict(bot: Bot, *, disabled_tool_names_fn, llm_provider_for_bot_fn) ->
         "data_agent_return_result_directly": bool(getattr(bot, "data_agent_return_result_directly", False)),
         "data_agent_prewarm_on_start": bool(getattr(bot, "data_agent_prewarm_on_start", False)),
         "data_agent_prewarm_prompt": getattr(bot, "data_agent_prewarm_prompt", "") or "",
+        "data_agent_model": getattr(bot, "data_agent_model", "gpt-5.2") or "gpt-5.2",
+        "data_agent_reasoning_effort": getattr(bot, "data_agent_reasoning_effort", "high") or "high",
         "enable_host_actions": bool(getattr(bot, "enable_host_actions", False)),
         "enable_host_shell": bool(getattr(bot, "enable_host_shell", False)),
         "require_host_action_approval": bool(getattr(bot, "require_host_action_approval", False)),

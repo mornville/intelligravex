@@ -33,12 +33,16 @@ def register(app, ctx) -> None:
     @router.post("/api/keys")
     def api_create_key(payload: ApiKeyCreateRequest, session: Session = Depends(ctx.get_session)) -> dict:
         provider = ctx._normalize_llm_provider(payload.provider)
-        if provider not in ("openai", "openrouter"):
-            raise ctx.HTTPException(status_code=400, detail="Provider must be 'openai' or 'openrouter'")
+        if provider not in ("openai", "openrouter", "chatgpt"):
+            raise ctx.HTTPException(status_code=400, detail="Unsupported provider")
         if not payload.secret:
-            raise ctx.HTTPException(status_code=400, detail="Missing API key")
+            raise ctx.HTTPException(status_code=400, detail="Missing API key or token")
         crypto = ctx.require_crypto()
         key = ctx.create_key(session, provider=provider, name=payload.name, secret=payload.secret, crypto=crypto)
+        ctx._set_app_setting(session, "default_llm_provider", provider)
+        if provider in ("openai", "chatgpt"):
+            ctx._set_app_setting(session, "default_llm_model", "gpt-5.2")
+        ctx._get_or_create_showcase_bot(session)
         updated_at = getattr(key, "updated_at", None) or key.created_at
         return {
             "id": str(key.id),

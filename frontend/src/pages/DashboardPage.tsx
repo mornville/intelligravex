@@ -8,6 +8,7 @@ import KeysPage from './KeysPage'
 import DeveloperPage from './DeveloperPage'
 import BotSettingsModal from '../components/BotSettingsModal'
 import SelectField from '../components/SelectField'
+import InlineHelpTip from '../components/InlineHelpTip'
 import type {
   Bot,
   ConversationMessage,
@@ -23,6 +24,8 @@ import type {
 } from '../types'
 import { fmtIso } from '../utils/format'
 import { formatLocalModelToolSupport } from '../utils/localModels'
+import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
+import { useChatgptOauth } from '../hooks/useChatgptOauth'
 import {
   ArrowsPointingInIcon,
   ArrowsPointingOutIcon,
@@ -271,6 +274,7 @@ export default function DashboardPage() {
   const [groupUploadMenuOpen, setGroupUploadMenuOpen] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const [workingBots, setWorkingBots] = useState<Record<string, string>>({})
+  const chatgptOauth = useChatgptOauth()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [showKeysModal, setShowKeysModal] = useState(false)
@@ -292,7 +296,7 @@ export default function DashboardPage() {
   }
   const [newBot, setNewBot] = useState({
     name: '',
-    llm_provider: 'openai',
+    llm_provider: 'chatgpt',
     openai_model: 'o4-mini',
     openai_asr_model: 'gpt-4o-mini-transcribe',
     web_search_model: 'gpt-4o-mini',
@@ -307,6 +311,8 @@ export default function DashboardPage() {
   })
   const newBotLocalModel =
     (options?.local_models || []).find((m) => m.id === newBot.openai_model) || null
+  const newBotVoiceRequiresOpenAI = newBot.llm_provider === 'chatgpt'
+  const newBotNeedsChatgptAuth = newBot.llm_provider === 'chatgpt' && !chatgptOauth.ready
   const [showCreateGroup, setShowCreateGroup] = useState(false)
   const [groupTitle, setGroupTitle] = useState('')
   const [groupFilter, setGroupFilter] = useState('')
@@ -1090,6 +1096,7 @@ export default function DashboardPage() {
   const workspacePorts = workspaceStatus?.ports || []
   const workspaceIdePort = workspaceStatus?.ide_port || workspacePorts[0]?.host || 0
   const workspaceIdeUrl = activeConversationId ? `/ide/${activeConversationId}/` : ''
+  const workspacePortsExhausted = Boolean(activeConversationId && workspaceStatus?.running && !workspaceIdePort)
 
   useEffect(() => {
     if (!fileItems.length) return
@@ -1590,7 +1597,7 @@ export default function DashboardPage() {
                 : (() => {
                     const sel = bots.find((b) => b.id === selectedBotId)
                     if (!sel) return ''
-                    return `${sel.openai_model} · ${sel.llm_provider || 'openai'}`
+                    return `${sel.openai_model} · ${formatProviderLabel(sel.llm_provider || 'openai')}`
                   })()}
             </div>
           </div>
@@ -1955,7 +1962,11 @@ export default function DashboardPage() {
               ) : !workspaceStatus?.running ? (
                 <div className="muted">Start the Isolated Workspace to enable the IDE.</div>
               ) : !workspaceIdePort ? (
-                <div className="muted">IDE port not assigned yet.</div>
+                <div className={workspacePortsExhausted ? 'alert' : 'muted'}>
+                  {workspacePortsExhausted
+                    ? 'No available Isolated Workspace ports. Delete old Isolated Workspace containers from the Developer panel to free ports.'
+                    : 'IDE port not assigned yet.'}
+                </div>
               ) : (
                 <>
                   {!workspaceIDEFull ? (
@@ -2160,9 +2171,9 @@ export default function DashboardPage() {
                   }))
                 }}
               >
-                {(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
+                {orderProviderList(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
                   <option value={p} key={p}>
-                    {p}
+                    {formatProviderLabel(p)}
                   </option>
                 ))}
               </SelectField>
@@ -2199,10 +2210,14 @@ export default function DashboardPage() {
                 )}
               </div>
               <div className="formRow">
-                <label>ASR model</label>
+                <label>
+                  ASR model
+                  {newBotVoiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                </label>
                 <SelectField
                   value={newBot.openai_asr_model}
                   onChange={(e) => setNewBot((p) => ({ ...p, openai_asr_model: e.target.value }))}
+                  disabled={newBotVoiceRequiresOpenAI}
                 >
                   {(options?.openai_asr_models || [newBot.openai_asr_model]).map((m) => (
                     <option value={m} key={m}>
@@ -2210,10 +2225,42 @@ export default function DashboardPage() {
                     </option>
                   ))}
                 </SelectField>
+                {newBotVoiceRequiresOpenAI ? (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    ASR disabled for ChatGPT OAuth. Add an OpenAI API key to enable it.
+                  </div>
+                ) : null}
               </div>
             </div>
+            {newBotNeedsChatgptAuth ? (
+              <div className="alert" style={{ marginTop: 12 }}>
+                <div style={{ marginBottom: 8 }}>Sign in with ChatGPT to create an assistant with this provider.</div>
+                {chatgptOauth.error ? <div className="muted" style={{ marginBottom: 8 }}>{chatgptOauth.error}</div> : null}
+                <div className="row gap">
+                  <button className="btn primary" onClick={() => void chatgptOauth.start()} disabled={chatgptOauth.busy}>
+                    {chatgptOauth.busy ? 'Starting…' : 'Sign in with ChatGPT'}
+                  </button>
+                  {chatgptOauth.authUrl ? (
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        const url = chatgptOauth.authUrl
+                        if (url) window.open(url, '_blank', 'noopener,noreferrer')
+                      }}
+                    >
+                      Open login
+                    </button>
+                  ) : null}
+                </div>
+                {chatgptOauth.authState ? <div className="muted" style={{ marginTop: 8 }}>Waiting for approval…</div> : null}
+              </div>
+            ) : null}
             <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button className="btn primary" onClick={() => void createAssistant()} disabled={creatingAssistant || !newBot.name.trim()}>
+              <button
+                className="btn primary"
+                onClick={() => void createAssistant()}
+                disabled={creatingAssistant || !newBot.name.trim() || newBotNeedsChatgptAuth}
+              >
                 {creatingAssistant ? 'Creating…' : 'Create assistant'}
               </button>
             </div>

@@ -54,6 +54,8 @@ def register(app, ctx) -> None:
             data_agent_return_result_directly=bool(getattr(payload, "data_agent_return_result_directly", False)),
             data_agent_prewarm_on_start=bool(getattr(payload, "data_agent_prewarm_on_start", False)),
             data_agent_prewarm_prompt=(payload.data_agent_prewarm_prompt or ""),
+            data_agent_model=(payload.data_agent_model or "gpt-5.2").strip() or "gpt-5.2",
+            data_agent_reasoning_effort=(payload.data_agent_reasoning_effort or "high").strip() or "high",
             enable_host_actions=bool(getattr(payload, "enable_host_actions", False)),
             enable_host_shell=bool(getattr(payload, "enable_host_shell", False)),
             require_host_action_approval=bool(getattr(payload, "require_host_action_approval", False)),
@@ -79,7 +81,7 @@ def register(app, ctx) -> None:
         for k, v in payload.model_dump(exclude_unset=True).items():
             if k == "llm_provider":
                 raw = (v or "").strip().lower()
-                if raw and raw not in ("openai", "openrouter", "local"):
+                if raw and raw not in ("openai", "openrouter", "local", "chatgpt"):
                     raise ctx.HTTPException(status_code=400, detail="Unsupported LLM provider.")
                 patch[k] = raw or "openai"
             elif k in (
@@ -101,6 +103,8 @@ def register(app, ctx) -> None:
                 if n < 1:
                     n = 1
                 patch[k] = n
+            elif k in ("data_agent_model", "data_agent_reasoning_effort"):
+                patch[k] = (v or "").strip()
             elif k == "disabled_tools":
                 patch[k] = sorted({str(x) for x in (v or []) if str(x).strip()})
             else:

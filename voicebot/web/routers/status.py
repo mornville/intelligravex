@@ -75,7 +75,7 @@ def register(app, ctx) -> None:
             "local_models": local_models,
             "default_llm_provider": default_provider,
             "default_llm_model": default_model,
-            "llm_providers": ["openai", "openrouter", "local"],
+            "llm_providers": ["openai", "chatgpt", "openrouter", "local"],
             "openai_asr_models": ctx.ui_options.get("openai_asr_models", []),
             "languages": ctx.ui_options.get("languages", []),
             "openai_tts_models": ctx.ui_options.get("openai_tts_models", []),
@@ -88,13 +88,15 @@ def register(app, ctx) -> None:
     def api_status(session: Session = Depends(ctx.get_session)) -> dict:
         openai_key = bool(ctx._get_openai_api_key(session))
         openrouter_key = bool(ctx._get_openrouter_api_key(session))
+        chatgpt_key = bool(ctx._get_chatgpt_api_key(session))
         local_ready = ctx.LOCAL_RUNTIME.is_ready()
         return {
             "openai_key_configured": openai_key,
             "openrouter_key_configured": openrouter_key,
+            "chatgpt_key_configured": chatgpt_key,
             "local_ready": local_ready,
             "local_status": ctx.LOCAL_RUNTIME.status(),
-            "llm_key_configured": openai_key or openrouter_key or local_ready,
+            "llm_key_configured": openai_key or openrouter_key or chatgpt_key or local_ready,
             "docker_available": ctx.docker_available(),
         }
 
@@ -129,6 +131,10 @@ def register(app, ctx) -> None:
             bot.updated_at = ctx.dt.datetime.now(ctx.dt.timezone.utc)
             session.add(bot)
             session.commit()
+        except Exception:
+            pass
+        try:
+            ctx._get_or_create_showcase_bot(session)
         except Exception:
             pass
         return status

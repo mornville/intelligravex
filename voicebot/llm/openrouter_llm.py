@@ -118,6 +118,7 @@ class OpenRouterLLM:
         tool_calls: dict[int, dict[str, Any]] = {}
         with self._post(payload=payload, stream=True) as resp:
             if resp.status_code >= 400:
+                resp.read()
                 raise RuntimeError(f"OpenRouter error {resp.status_code}: {resp.text}")
             for raw in resp.iter_lines():
                 if not raw:

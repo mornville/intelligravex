@@ -23,7 +23,7 @@ from functools import lru_cache, partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
-from urllib.parse import quote as _url_quote, parse_qsl
+from urllib.parse import quote as _url_quote, parse_qsl, urlparse
 from uuid import UUID
 
 import httpx
@@ -97,6 +97,7 @@ from voicebot.store import (
     update_bot,
     update_conversation_metrics,
     update_integration_tool,
+    upsert_key,
     upsert_git_token,
     verify_client_key,
 )
@@ -214,6 +215,26 @@ def create_app() -> FastAPI:
 
     def _download_url_for_token(token: str) -> str:
         return settings_helpers.download_url_for_token(download_base_url, token)
+
+    def _chatgpt_proxy_base_url() -> str:
+        override = (os.environ.get("CHATGPT_OAUTH_PROXY_BASE_URL") or "").strip()
+        if override:
+            return override.rstrip("/")
+        base = download_base_url.strip()
+        if not base:
+            base = "127.0.0.1:8000"
+        host = base
+        if base.startswith("http://") or base.startswith("https://"):
+            try:
+                parsed = urlparse(base)
+                host = parsed.netloc or base
+            except Exception:
+                host = base
+        host = host.split("/", 1)[0]
+        host = host.replace("127.0.0.1", "host.docker.internal").replace("localhost", "host.docker.internal")
+        if not (host.startswith("http://") or host.startswith("https://")):
+            host = "http://" + host
+        return host.rstrip("/") + "/api/chatgpt/proxy"
 
     basic_user = (settings.basic_auth_user or "").strip()
     basic_pass = (settings.basic_auth_pass or "").strip()
@@ -455,6 +476,8 @@ def create_app() -> FastAPI:
     ctx._provider_display_name = llm_helpers.provider_display_name
     ctx._get_openai_api_key = partial(llm_helpers.get_openai_api_key, settings=settings)
     ctx._get_openai_api_key_for_bot = partial(llm_helpers.get_openai_api_key_for_bot, settings=settings)
+    ctx._get_chatgpt_api_key = partial(llm_helpers.get_chatgpt_api_key, settings=settings)
+    ctx._get_chatgpt_api_key_for_bot = partial(llm_helpers.get_chatgpt_api_key_for_bot, settings=settings)
     ctx._get_openrouter_api_key = partial(llm_helpers.get_openrouter_api_key, settings=settings)
     ctx._get_openrouter_api_key_for_bot = partial(llm_helpers.get_openrouter_api_key_for_bot, settings=settings)
     ctx._llm_provider_for_bot = llm_helpers.llm_provider_for_bot
@@ -511,6 +534,7 @@ def create_app() -> FastAPI:
     ctx._init_conversation_and_greet = conversation_init_helpers.init_conversation_and_greet
 
     ctx._get_openai_api_key_global = llm_keys_helpers.get_openai_api_key_global
+    ctx._upsert_key = upsert_key
 
     ctx._get_or_create_system_bot = bot_helpers.get_or_create_system_bot
     ctx._get_or_create_showcase_bot = bot_helpers.get_or_create_showcase_bot
@@ -547,6 +571,7 @@ def create_app() -> FastAPI:
     ctx._accepts_html = _accepts_html
     ctx._viewer_id_from_request = _viewer_id_from_request
     ctx._download_url_for_token = _download_url_for_token
+    ctx._chatgpt_proxy_base_url = _chatgpt_proxy_base_url
     ctx._url_quote = _url_quote
 
     def _require_crypto():

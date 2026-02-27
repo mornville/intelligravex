@@ -77,6 +77,8 @@ class BotCreateRequest(BaseModel):
     data_agent_return_result_directly: bool = False
     data_agent_prewarm_on_start: bool = False
     data_agent_prewarm_prompt: str = ""
+    data_agent_model: str = "gpt-5.2"
+    data_agent_reasoning_effort: str = "high"
     enable_host_actions: bool = False
     enable_host_shell: bool = False
     require_host_action_approval: bool = False
@@ -105,6 +107,8 @@ class BotUpdateRequest(BaseModel):
     data_agent_return_result_directly: Optional[bool] = None
     data_agent_prewarm_on_start: Optional[bool] = None
     data_agent_prewarm_prompt: Optional[str] = None
+    data_agent_model: Optional[str] = None
+    data_agent_reasoning_effort: Optional[str] = None
     enable_host_actions: Optional[bool] = None
     enable_host_shell: Optional[bool] = None
     require_host_action_approval: Optional[bool] = None

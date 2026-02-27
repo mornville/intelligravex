@@ -17,6 +17,8 @@ export type Bot = {
   data_agent_return_result_directly?: boolean
   data_agent_prewarm_on_start?: boolean
   data_agent_prewarm_prompt?: string
+  data_agent_model?: string
+  data_agent_reasoning_effort?: string
   enable_host_actions?: boolean
   enable_host_shell?: boolean
   require_host_action_approval?: boolean

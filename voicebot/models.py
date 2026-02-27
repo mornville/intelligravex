@@ -37,6 +37,8 @@ class Bot(SQLModel, table=True):
     data_agent_return_result_directly: bool = Field(default=False)
     data_agent_prewarm_on_start: bool = Field(default=False)
     data_agent_prewarm_prompt: str = Field(default="")
+    data_agent_model: str = Field(default="gpt-5.2")
+    data_agent_reasoning_effort: str = Field(default="high")
     enable_host_actions: bool = Field(default=False)
     enable_host_shell: bool = Field(default=False)
     require_host_action_approval: bool = Field(default=False)

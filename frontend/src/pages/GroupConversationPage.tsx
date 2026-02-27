@@ -449,6 +449,7 @@ export default function GroupConversationPage() {
   const workspacePorts = agentStatus?.ports || []
   const workspaceIdePort = agentStatus?.ide_port || workspacePorts[0]?.host || 0
   const workspaceIdeUrl = groupId ? `/ide/${groupId}/` : ''
+  const workspacePortsExhausted = Boolean(agentStatus?.running && !workspaceIdePort)
   const visibleFiles = (files?.items || []).filter((f) => !(f.is_dir && (f.path === '' || f.path === '.'))).slice(0, 6)
 
   const mentionOptions = useMemo(() => {
@@ -880,7 +881,11 @@ export default function GroupConversationPage() {
               {!agentStatus?.running ? (
                 <div className="muted">Start the Isolated Workspace to enable the IDE.</div>
               ) : !workspaceIdePort ? (
-                <div className="muted">IDE port not assigned yet.</div>
+                <div className={workspacePortsExhausted ? 'alert' : 'muted'}>
+                  {workspacePortsExhausted
+                    ? 'No available Isolated Workspace ports. Delete old Isolated Workspace containers from the Developer panel to free ports.'
+                    : 'IDE port not assigned yet.'}
+                </div>
               ) : (
                 <>
                   {!workspaceIDEFull ? (

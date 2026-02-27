@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from . import bots, conversations, core, data_agent, downloads, files, groups, host_actions, ide_proxy, keys, public, public_widget, status, streaming, ws
+from . import bots, chatgpt_oauth, chatgpt_proxy, conversations, core, data_agent, downloads, files, groups, host_actions, ide_proxy, keys, public, public_widget, status, streaming, ws
 
 
 def register_all(app, ctx) -> None:
@@ -10,6 +10,8 @@ def register_all(app, ctx) -> None:
     downloads.register(app, ctx)
     data_agent.register(app, ctx)
     bots.register(app, ctx)
+    chatgpt_oauth.register(app, ctx)
+    chatgpt_proxy.register(app, ctx)
     keys.register(app, ctx)
     conversations.register(app, ctx)
     groups.register(app, ctx)

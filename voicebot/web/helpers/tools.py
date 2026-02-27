@@ -91,7 +91,7 @@ def system_tools_defs(*, bot: Bot) -> list[dict[str, Any]]:
         set_metadata_tool(),
         http_request_tool(),
     ]
-    if llm_provider_for_bot(bot) == "openai":
+    if llm_provider_for_bot(bot) in ("openai", "chatgpt"):
         tools.insert(1, web_search_tool())
     if bool(getattr(bot, "enable_data_agent", False)):
         tools.append(give_command_to_data_agent_tool_def())

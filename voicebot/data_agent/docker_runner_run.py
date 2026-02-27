@@ -79,6 +79,10 @@ def run_data_agent(
     system_prompt: str,
     conversation_context: dict[str, Any],
     what_to_do: str,
+    openai_base_url: str | None = None,
+    openai_api_key: str | None = None,
+    data_agent_model: str | None = None,
+    data_agent_reasoning_effort: str | None = None,
     timeout_s: float = 600.0,
     on_stream: Callable[[str], None] | None = None,
 ) -> DataAgentRunResult:
@@ -165,13 +169,13 @@ def run_data_agent(
     #
     # Note: Options like --output-schema / --output-last-message are `codex exec` options, so they must
     # appear before the optional `resume` subcommand.
+    model = (data_agent_model or "gpt-5.2").strip() or "gpt-5.2"
+    reasoning = (data_agent_reasoning_effort or "high").strip()
     cmd: list[str] = [
         "codex",
         "exec",
         "--model",
-        "gpt-5.2",
-        "--config",
-        'model_reasoning_effort="high"',
+        model,
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--json",
@@ -180,14 +184,24 @@ def run_data_agent(
         "--output-last-message",
         "/work/output.json",
     ]
+    if reasoning:
+        cmd.extend(["--config", f'model_reasoning_effort="{reasoning}"'])
     if session_id:
         cmd += ["resume", session_id]
     cmd.append(prompt)
     # Use a shell to avoid PATH issues in minimal images, but keep args safely quoted.
     cmd_str = " ".join(shlex.quote(x) for x in cmd)
+    env_parts: list[str] = []
     env_prefix = _build_ssh_env_prefix(ws)
     if env_prefix:
-        cmd_str = f"{env_prefix} {cmd_str}"
+        env_parts.append(env_prefix)
+    if openai_base_url:
+        env_parts.append(f"OPENAI_BASE_URL={shlex.quote(openai_base_url)}")
+    if openai_api_key:
+        env_parts.append(f"OPENAI_API_KEY={shlex.quote(openai_api_key)}")
+        env_parts.append(f"CODEX_API_KEY={shlex.quote(openai_api_key)}")
+    if env_parts:
+        cmd_str = f"{' '.join(env_parts)} {cmd_str}"
 
     logger.info(
         "Isolated Workspace run: conv=%s container=%s session_id=%s timeout_s=%s",

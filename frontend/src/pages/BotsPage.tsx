@@ -3,9 +3,12 @@ import { Link, useNavigate } from 'react-router-dom'
 import { apiDelete, apiGet, apiPost } from '../api/client'
 import SelectField from '../components/SelectField'
 import LoadingSpinner from '../components/LoadingSpinner'
+import InlineHelpTip from '../components/InlineHelpTip'
 import type { Bot, Options } from '../types'
 import { fmtIso } from '../utils/format'
 import { formatLocalModelToolSupport } from '../utils/localModels'
+import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
+import { useChatgptOauth } from '../hooks/useChatgptOauth'
 import { TrashIcon } from '@heroicons/react/24/solid'
 
 export default function BotsPage() {
@@ -16,6 +19,7 @@ export default function BotsPage() {
   const [err, setErr] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const chatgptOauth = useChatgptOauth()
 
   const defaultPrompt = useMemo(
     () => 'You are a fast, helpful voice assistant. Keep answers concise unless asked.',
@@ -48,6 +52,8 @@ export default function BotsPage() {
     start_message_mode: 'llm' as const,
     start_message_text: '',
   })
+  const voiceRequiresOpenAI = newBot.llm_provider === 'chatgpt'
+  const newBotNeedsChatgptAuth = newBot.llm_provider === 'chatgpt' && !chatgptOauth.ready
 
   const newBotLocalModel =
     (options?.local_models || []).find((m) => m.id === newBot.openai_model) || null
@@ -156,7 +162,7 @@ export default function BotsPage() {
               <div className="assistantHeader">
                 <div>
                   <div className="assistantName">{b.name}</div>
-                  <div className="muted">Model: {b.openai_model} · {(b.llm_provider || 'openai')}</div>
+                  <div className="muted">Model: {b.openai_model} · {formatProviderLabel(b.llm_provider || 'openai')}</div>
                 </div>
                 <button
                   className="btn iconBtn danger"
@@ -238,9 +244,9 @@ export default function BotsPage() {
                     }))
                   }}
                 >
-                  {(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
+                  {orderProviderList(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
                     <option value={p} key={p}>
-                      {p}
+                      {formatProviderLabel(p)}
                     </option>
                   ))}
                 </SelectField>
@@ -315,8 +321,15 @@ export default function BotsPage() {
               <summary>Voice & ASR</summary>
               <div className="formRowGrid2">
                 <div className="formRow">
-                  <label>ASR language</label>
-                  <SelectField value={newBot.language} onChange={(e) => setNewBot((p) => ({ ...p, language: e.target.value }))}>
+                  <label>
+                    ASR language
+                    {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                  </label>
+                  <SelectField
+                    value={newBot.language}
+                    onChange={(e) => setNewBot((p) => ({ ...p, language: e.target.value }))}
+                    disabled={voiceRequiresOpenAI}
+                  >
                     {(options?.languages || ['en']).map((l) => (
                       <option value={l} key={l}>
                         {l}
@@ -325,8 +338,15 @@ export default function BotsPage() {
                   </SelectField>
                 </div>
                 <div className="formRow">
-                  <label>ASR model</label>
-                  <SelectField value={newBot.openai_asr_model} onChange={(e) => setNewBot((p) => ({ ...p, openai_asr_model: e.target.value }))}>
+                  <label>
+                    ASR model
+                    {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                  </label>
+                  <SelectField
+                    value={newBot.openai_asr_model}
+                    onChange={(e) => setNewBot((p) => ({ ...p, openai_asr_model: e.target.value }))}
+                    disabled={voiceRequiresOpenAI}
+                  >
                     {(options?.openai_asr_models || ['gpt-4o-mini-transcribe']).map((m) => (
                       <option value={m} key={m}>
                         {m}
@@ -335,11 +355,19 @@ export default function BotsPage() {
                   </SelectField>
                 </div>
               </div>
+              {voiceRequiresOpenAI ? <div className="muted">ASR disabled for ChatGPT OAuth. Add an OpenAI API key to enable it.</div> : null}
 
               <div className="formRowGrid2">
                 <div className="formRow">
-                  <label>OpenAI TTS model</label>
-                  <SelectField value={newBot.openai_tts_model} onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_model: e.target.value }))}>
+                  <label>
+                    OpenAI TTS model
+                    {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                  </label>
+                  <SelectField
+                    value={newBot.openai_tts_model}
+                    onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_model: e.target.value }))}
+                    disabled={voiceRequiresOpenAI}
+                  >
                     {(options?.openai_tts_models?.length ? options.openai_tts_models : ['gpt-4o-mini-tts']).map((m) => (
                       <option value={m} key={m}>
                         {m}
@@ -348,8 +376,15 @@ export default function BotsPage() {
                   </SelectField>
                 </div>
                 <div className="formRow">
-                  <label>OpenAI voice</label>
-                  <SelectField value={newBot.openai_tts_voice} onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_voice: e.target.value }))}>
+                  <label>
+                    OpenAI voice
+                    {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                  </label>
+                  <SelectField
+                    value={newBot.openai_tts_voice}
+                    onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_voice: e.target.value }))}
+                    disabled={voiceRequiresOpenAI}
+                  >
                     {(options?.openai_tts_voices?.length ? options.openai_tts_voices : ['alloy']).map((v) => (
                       <option value={v} key={v}>
                         {v}
@@ -358,21 +393,54 @@ export default function BotsPage() {
                   </SelectField>
                 </div>
               </div>
-              <div className="formRow">
-                <label>OpenAI speed</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0.25"
-                  max="4"
-                  value={newBot.openai_tts_speed}
-                  onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_speed: Number(e.target.value) }))}
-                />
-              </div>
+            <div className="formRow">
+              <label>
+                OpenAI speed
+                {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+              </label>
+              <input
+                type="number"
+                step="0.1"
+                min="0.25"
+                max="4"
+                value={newBot.openai_tts_speed}
+                onChange={(e) => setNewBot((p) => ({ ...p, openai_tts_speed: Number(e.target.value) }))}
+                disabled={voiceRequiresOpenAI}
+              />
+            </div>
+              {voiceRequiresOpenAI ? <div className="muted">TTS disabled for ChatGPT OAuth. Add an OpenAI API key to enable it.</div> : null}
             </details>
 
+            {newBotNeedsChatgptAuth ? (
+              <div className="alert" style={{ marginTop: 12 }}>
+                <div style={{ marginBottom: 8 }}>Sign in with ChatGPT to create an assistant with this provider.</div>
+                {chatgptOauth.error ? <div className="muted" style={{ marginBottom: 8 }}>{chatgptOauth.error}</div> : null}
+                <div className="row gap">
+                  <button className="btn primary" onClick={() => void chatgptOauth.start()} disabled={chatgptOauth.busy}>
+                    {chatgptOauth.busy ? 'Starting…' : 'Sign in with ChatGPT'}
+                  </button>
+                  {chatgptOauth.authUrl ? (
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        const url = chatgptOauth.authUrl
+                        if (url) window.open(url, '_blank', 'noopener,noreferrer')
+                      }}
+                    >
+                      Open login
+                    </button>
+                  ) : null}
+                </div>
+                {chatgptOauth.authState ? <div className="muted" style={{ marginTop: 8 }}>Waiting for approval…</div> : null}
+              </div>
+            ) : null}
+
             <div className="row formActions" style={{ justifyContent: 'flex-end' }}>
-              <button className="btn primary" onClick={onCreate} disabled={creating || !newBot.name.trim()}>
+              <button
+                className="btn primary"
+                onClick={onCreate}
+                disabled={creating || !newBot.name.trim() || newBotNeedsChatgptAuth}
+              >
                 {creating ? 'Creating…' : 'Create assistant'}
               </button>
             </div>

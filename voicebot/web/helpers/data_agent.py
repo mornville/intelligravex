@@ -42,9 +42,16 @@ def ensure_data_agent_container(
     container_id = str(da.get("container_id") or "").strip()
     session_id = str(da.get("session_id") or "").strip()
 
-    api_key = ctx._get_openai_api_key_for_bot(session, bot=bot)
-    if not api_key:
-        raise RuntimeError("No OpenAI API key configured for this bot (needed for Isolated Workspace).")
+    provider = ctx._llm_provider_for_bot(bot)
+    if provider == "chatgpt":
+        token = ctx._get_chatgpt_api_key(session)
+        if not token:
+            raise RuntimeError("No ChatGPT OAuth sign-in configured for this bot (needed for Isolated Workspace).")
+        api_key = "chatgpt-oauth"
+    else:
+        api_key = ctx._get_openai_api_key_for_bot(session, bot=bot)
+        if not api_key:
+            raise RuntimeError("No OpenAI API key configured for this bot (needed for Isolated Workspace).")
     auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
     git_token = ctx._get_git_token_plaintext(session, provider="github") if ctx._git_auth_mode(auth_json) == "token" else ""
 
@@ -189,20 +196,38 @@ async def kickoff_data_agent_container_if_enabled(
                 if (not prewarm) and str(da.get("container_id") or "").strip():
                     return
 
-                api_key = ctx._get_openai_api_key_for_bot(session, bot=bot)
-                if not api_key:
-                    ctx.logger.warning(
-                        "Isolated Workspace kickoff: missing OpenAI key conv=%s bot=%s", conversation_id, bot_id
-                    )
-                    ctx.merge_conversation_metadata(
-                        session,
-                        conversation_id=conversation_id,
-                        patch={
-                            "data_agent.init_error": "No OpenAI API key configured for this bot.",
-                            "data_agent.ready": False,
-                        },
-                    )
-                    return
+                provider = ctx._llm_provider_for_bot(bot)
+                if provider == "chatgpt":
+                    token = ctx._get_chatgpt_api_key(session)
+                    if not token:
+                        ctx.logger.warning(
+                            "Isolated Workspace kickoff: missing ChatGPT OAuth conv=%s bot=%s", conversation_id, bot_id
+                        )
+                        ctx.merge_conversation_metadata(
+                            session,
+                            conversation_id=conversation_id,
+                            patch={
+                                "data_agent.init_error": "No ChatGPT OAuth sign-in configured for this bot.",
+                                "data_agent.ready": False,
+                            },
+                        )
+                        return
+                    api_key = "chatgpt-oauth"
+                else:
+                    api_key = ctx._get_openai_api_key_for_bot(session, bot=bot)
+                    if not api_key:
+                        ctx.logger.warning(
+                            "Isolated Workspace kickoff: missing OpenAI key conv=%s bot=%s", conversation_id, bot_id
+                        )
+                        ctx.merge_conversation_metadata(
+                            session,
+                            conversation_id=conversation_id,
+                            patch={
+                                "data_agent.init_error": "No OpenAI API key configured for this bot.",
+                                "data_agent.ready": False,
+                            },
+                        )
+                        return
                 auth_json = getattr(bot, "data_agent_auth_json", "") or "{}"
                 git_token = (
                     ctx._get_git_token_plaintext(session, provider="github")
@@ -288,6 +313,8 @@ async def kickoff_data_agent_container_if_enabled(
                     (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                     or ctx.DEFAULT_DATA_AGENT_SYSTEM_PROMPT
                 )
+                da_model = (getattr(bot, "data_agent_model", "") or "gpt-5.2").strip() or "gpt-5.2"
+                da_reason = (getattr(bot, "data_agent_reasoning_effort", "") or "high").strip() or "high"
 
             init_task = (getattr(bot, "data_agent_prewarm_prompt", "") or "").strip()
             if not init_task:
@@ -297,6 +324,11 @@ async def kickoff_data_agent_container_if_enabled(
                     "- Do NOT call external APIs.\n"
                     "- Output ok=true and result_text='READY'."
                 )
+            openai_base_url = ""
+            if provider == "chatgpt":
+                base = ctx._chatgpt_proxy_base_url()
+                if base:
+                    openai_base_url = base.rstrip("/") + "/v1"
             try:
                 res = await asyncio.to_thread(
                     ctx.run_data_agent,
@@ -309,6 +341,10 @@ async def kickoff_data_agent_container_if_enabled(
                     system_prompt=sys_prompt,
                     conversation_context=ctx_obj,
                     what_to_do=init_task,
+                    openai_base_url=openai_base_url or None,
+                    openai_api_key=api_key or None,
+                    data_agent_model=da_model,
+                    data_agent_reasoning_effort=da_reason,
                     timeout_s=180.0,
                 )
                 with Session(ctx.engine) as session:
@@ -440,18 +476,49 @@ async def run_data_agent_tool_persist(
                 if ctx._git_auth_mode(auth_json_raw) == "token"
                 else ""
             )
-
-            if not container_id:
-                api_key = ctx._get_openai_api_key_for_bot(session, bot=bot)
-                if not api_key:
+            provider = ctx._llm_provider_for_bot(bot)
+            openai_base_url = ""
+            api_key = ""
+            if provider == "chatgpt":
+                token = ctx._get_chatgpt_api_key(session)
+                if not token:
                     outcome["tool_result"] = {
                         "ok": False,
                         "error": {
-                            "message": "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
+                            "message": "No ChatGPT OAuth sign-in configured for this bot (needed for Isolated Workspace)."
                         },
                     }
                     outcome["tool_failed"] = True
-                    raise RuntimeError("missing_openai_key")
+                    raise RuntimeError("missing_chatgpt_oauth")
+                api_key = "chatgpt-oauth"
+                base = ctx._chatgpt_proxy_base_url()
+                if base:
+                    openai_base_url = base.rstrip("/") + "/v1"
+
+            if not container_id:
+                if provider == "chatgpt":
+                    token = ctx._get_chatgpt_api_key(session)
+                    if not token:
+                        outcome["tool_result"] = {
+                            "ok": False,
+                            "error": {
+                                "message": "No ChatGPT OAuth sign-in configured for this bot (needed for Isolated Workspace)."
+                            },
+                        }
+                        outcome["tool_failed"] = True
+                        raise RuntimeError("missing_chatgpt_oauth")
+                    api_key = "chatgpt-oauth"
+                else:
+                    api_key = ctx._get_openai_api_key_for_bot(session, bot=bot)
+                    if not api_key:
+                        outcome["tool_result"] = {
+                            "ok": False,
+                            "error": {
+                                "message": "No OpenAI API key configured for this bot (needed for Isolated Workspace)."
+                            },
+                        }
+                        outcome["tool_failed"] = True
+                        raise RuntimeError("missing_openai_key")
                 container_id = await asyncio.to_thread(
                     ctx.ensure_conversation_container,
                     conversation_id=conversation_id,
@@ -493,6 +560,8 @@ async def run_data_agent_tool_persist(
                 (getattr(bot, "data_agent_system_prompt", "") or "").strip()
                 or ctx.DEFAULT_DATA_AGENT_SYSTEM_PROMPT
             )
+            da_model = (getattr(bot, "data_agent_model", "") or "gpt-5.2").strip() or "gpt-5.2"
+            da_reason = (getattr(bot, "data_agent_reasoning_effort", "") or "high").strip() or "high"
 
         task = asyncio.create_task(
             asyncio.to_thread(
@@ -506,6 +575,10 @@ async def run_data_agent_tool_persist(
                 system_prompt=sys_prompt,
                 conversation_context=ctx_obj,
                 what_to_do=what_to_do,
+                openai_base_url=openai_base_url or None,
+                openai_api_key=(api_key if provider == "chatgpt" else None),
+                data_agent_model=da_model,
+                data_agent_reasoning_effort=da_reason,
                 on_stream=_emit_tool_progress,
             )
         )

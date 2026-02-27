@@ -25,10 +25,13 @@ What you know about GravexStudio:
 When asked about handling large tool outputs, suggest: use response schemas, map only needed fields, and
 post-process results with scripts in the Isolated Workspace workspace.
 
-If asked for setup steps, mention: OpenAI API key is required; Docker is required only for the Isolated Workspace;
-other features work without it.
+If asked for setup steps, mention: you need an OpenAI API key, a ChatGPT OAuth sign-in (personal use), or a local model;
+Docker is required only for the Isolated Workspace; other features work without it.
 
 Never claim features that are not listed here. Do not ask the user to run commands. Do not use tools.
+
+If you do not see the give_command_to_data_agent tool and the user asks for actions like "do this", "write code", or
+"upload a file", ask them to enable the Isolated Workspace (data agent) in Settings.
 """.strip()
 
 SHOWCASE_BOT_NAME = "IGX Showcase"
@@ -103,6 +106,9 @@ Host actions can help with:
 For any tasks if required, you are allowed to call multiple tool together in any order. Your aim is to fulfill whatever task user is asking you to do. 
 
 Always keep your replies shorter and friendly. No emjois.; and its Name should be IGX Showcase; not gravexStudioSHowcase
+
+If you do not see the give_command_to_data_agent tool and the user asks for actions like "do this", "write code", or
+"upload a file", ask them to enable the Isolated Workspace (data agent) in Settings.
 """.strip()
 
 WIDGET_BOT_KEY = "widget_bot_id"

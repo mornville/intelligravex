@@ -4,8 +4,10 @@ import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import MicTest from '../components/MicTest'
 import SelectField from '../components/SelectField'
 import LoadingSpinner from '../components/LoadingSpinner'
+import InlineHelpTip from '../components/InlineHelpTip'
 import type { Bot, ConversationSummary, IntegrationTool, Options, SystemTool } from '../types'
 import { formatLocalModelToolSupport } from '../utils/localModels'
+import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
 import { TrashIcon } from '@heroicons/react/24/solid'
 
 function HelpTip({ children }: { children: ReactNode }) {
@@ -118,6 +120,7 @@ Rules:
   }
 
   const llmProvider = bot?.llm_provider || 'openai'
+  const voiceRequiresOpenAI = llmProvider === 'chatgpt'
 
   async function reload() {
     if (!botId) return
@@ -466,7 +469,7 @@ Rules:
               onClick={() => nav(`/bots/${b.id}`)}
             >
               <div className="dashboardListTitle">{b.name}</div>
-              <div className="dashboardListMeta">Model: {b.openai_model} · {(b.llm_provider || 'openai')}</div>
+              <div className="dashboardListMeta">Model: {b.openai_model} · {formatProviderLabel(b.llm_provider || 'openai')}</div>
             </button>
           ))}
         </div>
@@ -477,7 +480,7 @@ Rules:
           <div>
             <h2>{bot?.name || 'Assistant'}</h2>
             <div className="muted">
-              {bot?.openai_model || '-'} · {bot?.llm_provider || 'openai'}
+              {bot?.openai_model || '-'} · {formatProviderLabel(bot?.llm_provider || 'openai')}
             </div>
           </div>
           <div className="chatHeaderActions">
@@ -562,9 +565,9 @@ Rules:
                         void save({ llm_provider: next, openai_model: nextModel })
                       }}
                     >
-                      {(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
+                      {orderProviderList(options?.llm_providers || ['openai', 'openrouter', 'local']).map((p) => (
                         <option value={p} key={p}>
-                          {p}
+                          {formatProviderLabel(p)}
                         </option>
                       ))}
                     </SelectField>
@@ -703,8 +706,15 @@ Rules:
                 <>
                   <div className="formRowGrid2">
                     <div className="formRow">
-                      <label>ASR language</label>
-                      <SelectField value={bot.language} onChange={(e) => void save({ language: e.target.value })}>
+                      <label>
+                        ASR language
+                        {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                      </label>
+                      <SelectField
+                        value={bot.language}
+                        onChange={(e) => void save({ language: e.target.value })}
+                        disabled={voiceRequiresOpenAI}
+                      >
                         {(options?.languages || [bot.language]).map((l) => (
                           <option value={l} key={l}>
                             {l}
@@ -713,8 +723,15 @@ Rules:
                       </SelectField>
                     </div>
                     <div className="formRow">
-                      <label>ASR model</label>
-                      <SelectField value={bot.openai_asr_model} onChange={(e) => void save({ openai_asr_model: e.target.value })}>
+                      <label>
+                        ASR model
+                        {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                      </label>
+                      <SelectField
+                        value={bot.openai_asr_model}
+                        onChange={(e) => void save({ openai_asr_model: e.target.value })}
+                        disabled={voiceRequiresOpenAI}
+                      >
                         {(options?.openai_asr_models || [bot.openai_asr_model]).map((m) => (
                           <option value={m} key={m}>
                             {m}
@@ -723,6 +740,7 @@ Rules:
                       </SelectField>
                     </div>
                   </div>
+                  {voiceRequiresOpenAI ? <div className="muted">ASR disabled for ChatGPT OAuth. Add an OpenAI API key to enable it.</div> : null}
                 </>
               ) : null}
 
@@ -730,8 +748,15 @@ Rules:
                 <>
                   <div className="formRowGrid2">
                     <div className="formRow">
-                      <label>OpenAI TTS model</label>
-                      <SelectField value={bot.openai_tts_model} onChange={(e) => void save({ openai_tts_model: e.target.value })}>
+                      <label>
+                        OpenAI TTS model
+                        {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                      </label>
+                      <SelectField
+                        value={bot.openai_tts_model}
+                        onChange={(e) => void save({ openai_tts_model: e.target.value })}
+                        disabled={voiceRequiresOpenAI}
+                      >
                         {(options?.openai_tts_models?.length ? options.openai_tts_models : [bot.openai_tts_model]).map((m) => (
                           <option value={m} key={m}>
                             {m}
@@ -740,8 +765,15 @@ Rules:
                       </SelectField>
                     </div>
                     <div className="formRow">
-                      <label>OpenAI voice</label>
-                      <SelectField value={bot.openai_tts_voice} onChange={(e) => void save({ openai_tts_voice: e.target.value })}>
+                      <label>
+                        OpenAI voice
+                        {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                      </label>
+                      <SelectField
+                        value={bot.openai_tts_voice}
+                        onChange={(e) => void save({ openai_tts_voice: e.target.value })}
+                        disabled={voiceRequiresOpenAI}
+                      >
                         {(options?.openai_tts_voices?.length ? options.openai_tts_voices : [bot.openai_tts_voice]).map((v) => (
                           <option value={v} key={v}>
                             {v}
@@ -749,18 +781,23 @@ Rules:
                         ))}
                       </SelectField>
                     </div>
-                  </div>
-                  <div className="formRow">
-                    <label>OpenAI speed</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0.25"
-                      max="4"
-                      value={bot.openai_tts_speed}
-                      onChange={(e) => void save({ openai_tts_speed: Number(e.target.value) })}
-                    />
-                  </div>
+                </div>
+                <div className="formRow">
+                  <label>
+                    OpenAI speed
+                    {voiceRequiresOpenAI ? <InlineHelpTip text="Requires OpenAI API key." /> : null}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.25"
+                    max="4"
+                    value={bot.openai_tts_speed}
+                    onChange={(e) => void save({ openai_tts_speed: Number(e.target.value) })}
+                    disabled={voiceRequiresOpenAI}
+                  />
+                </div>
+                  {voiceRequiresOpenAI ? <div className="muted">TTS disabled for ChatGPT OAuth. Add an OpenAI API key to enable it.</div> : null}
                 </>
               ) : null}
 
@@ -783,6 +820,37 @@ Rules:
                   </div>
                   {bot.enable_data_agent ? (
                     <>
+                      <div className="formRowGrid2">
+                        <div className="formRow">
+                          <label>Codex model (Isolated Workspace)</label>
+                          <SelectField
+                            value={bot.data_agent_model || 'gpt-5.2'}
+                            onChange={(e) => void save({ data_agent_model: e.target.value })}
+                          >
+                            {([bot.data_agent_model || 'gpt-5.2', ...(options?.openai_models || [])] as string[])
+                              .filter(Boolean)
+                              .filter((v, i, a) => a.indexOf(v) === i)
+                              .map((m) => (
+                                <option value={m} key={m}>
+                                  {m}
+                                </option>
+                              ))}
+                          </SelectField>
+                        </div>
+                        <div className="formRow">
+                          <label>Reasoning effort</label>
+                          <SelectField
+                            value={bot.data_agent_reasoning_effort || 'high'}
+                            onChange={(e) => void save({ data_agent_reasoning_effort: e.target.value })}
+                          >
+                            {['low', 'medium', 'high'].map((r) => (
+                              <option value={r} key={r}>
+                                {r}
+                              </option>
+                            ))}
+                          </SelectField>
+                        </div>
+                      </div>
                       <div className="formRow">
                         <label>Prewarm Isolated Workspace on conversation start</label>
                         <label className="checkRow">
