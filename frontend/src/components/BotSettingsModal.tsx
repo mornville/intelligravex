@@ -82,7 +82,7 @@ export default function BotSettingsModal({
 }: {
   botId: string
   onClose: () => void
-  activeTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'tools'
+  activeTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'host' | 'tools'
   onBotUpdate?: (bot: Bot) => void
 }) {
   const [bot, setBot] = useState<Bot | null>(null)
@@ -501,64 +501,31 @@ export default function BotSettingsModal({
                     </SelectField>
                   )}
                 </div>
-                <details className="accordion" style={{ marginTop: 10 }}>
-                  <summary>Advanced models</summary>
-                  {llmProvider === 'openai' ? (
-                    <div className="formRow">
-                      <label>Web search model</label>
-                      <SelectField
-                        value={bot.web_search_model || bot.openai_model}
-                        onChange={(e) => void save({ web_search_model: e.target.value })}
-                      >
-                        {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
-                          <option value={m} key={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </SelectField>
-                      <div className="muted">Used for web_search filtering + summarization.</div>
-                    </div>
-                  ) : null}
-                  <div className="formRow">
-                    <label>Codex model (OpenAI)</label>
-                    <SelectField
-                      value={bot.codex_model || 'gpt-5.1-codex-mini'}
-                      onChange={(e) => void save({ codex_model: e.target.value })}
-                    >
-                      {(options?.openai_models || [bot.codex_model || 'gpt-5.1-codex-mini']).map((m) => (
-                        <option value={m} key={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </SelectField>
-                    <div className="muted">Used for “use Codex for response” HTTP integrations.</div>
-                  </div>
-                  <div className="formRow">
-                    <label>Summary model</label>
-                    <SelectField
-                      value={bot.summary_model || 'gpt-5-nano'}
-                      onChange={(e) => void save({ summary_model: e.target.value })}
-                    >
-                      {llmModels(llmProvider, bot.summary_model || 'gpt-5-nano').map((m) => (
-                        <option value={m} key={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </SelectField>
-                    <div className="muted">Used to summarize older conversation history when context grows.</div>
-                  </div>
-                  <div className="formRow">
-                    <label>History window (turns)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="64"
-                      value={bot.history_window_turns ?? 16}
-                      onChange={(e) => void save({ history_window_turns: Number(e.target.value) })}
-                    />
-                    <div className="muted">Keep the last N user turns verbatim; older turns are summarized.</div>
-                  </div>
-                </details>
+                <div className="formRow">
+                  <label>Summary model</label>
+                  <SelectField
+                    value={bot.summary_model || 'gpt-5-nano'}
+                    onChange={(e) => void save({ summary_model: e.target.value })}
+                  >
+                    {llmModels(llmProvider, bot.summary_model || 'gpt-5-nano').map((m) => (
+                      <option value={m} key={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </SelectField>
+                  <div className="muted">Used to summarize older conversation history when context grows.</div>
+                </div>
+                <div className="formRow">
+                  <label>History window (turns)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="64"
+                    value={bot.history_window_turns ?? 16}
+                    onChange={(e) => void save({ history_window_turns: Number(e.target.value) })}
+                  />
+                  <div className="muted">Keep the last N user turns verbatim; older turns are summarized.</div>
+                </div>
                 <div className="formRow">
                   <label>System prompt</label>
                   <textarea
@@ -890,7 +857,7 @@ export default function BotSettingsModal({
               </>
             ) : null}
 
-            {activeTabValue === 'agent' && bot ? (
+            {activeTabValue === 'host' && bot ? (
               <details className="accordion" open>
                 <summary>Host actions (one‑click)</summary>
                 <div className="muted" style={{ marginTop: 6 }}>

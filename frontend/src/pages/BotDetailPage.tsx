@@ -607,38 +607,6 @@ Rules:
                       </SelectField>
                     )}
                   </div>
-                  <details className="accordion" style={{ marginTop: 10 }}>
-                    <summary>Advanced models</summary>
-                  {llmProvider === 'openai' ? (
-                    <div className="formRow">
-                      <label>Web search model</label>
-                      <SelectField
-                        value={bot.web_search_model || bot.openai_model}
-                        onChange={(e) => void save({ web_search_model: e.target.value })}
-                      >
-                        {(options?.openai_models || [bot.web_search_model || bot.openai_model]).map((m) => (
-                          <option value={m} key={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </SelectField>
-                      <div className="muted">Used for web_search filtering + summarization.</div>
-                    </div>
-                  ) : null}
-                  <div className="formRow">
-                    <label>Codex model (OpenAI)</label>
-                    <SelectField
-                      value={bot.codex_model || 'gpt-5.1-codex-mini'}
-                      onChange={(e) => void save({ codex_model: e.target.value })}
-                    >
-                      {(options?.openai_models || [bot.codex_model || 'gpt-5.1-codex-mini']).map((m) => (
-                        <option value={m} key={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </SelectField>
-                    <div className="muted">Used for “use Codex for response” HTTP integrations.</div>
-                  </div>
                   <div className="formRow">
                     <label>Summary model</label>
                     <SelectField
@@ -664,7 +632,6 @@ Rules:
                     />
                     <div className="muted">Keep the last N user turns verbatim; older turns are summarized.</div>
                   </div>
-                  </details>
                   <div className="formRow">
                     <label>System prompt</label>
                     <textarea

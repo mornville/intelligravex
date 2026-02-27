@@ -2701,6 +2701,11 @@ label {
   display: grid;
   gap: 4px;
 }
+.settingsDivider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 4px 0;
+}
 .settingsItem {
   background: transparent;
   border: none;
@@ -2715,6 +2720,16 @@ label {
 }
 .settingsItem.danger {
   color: #fca5a5;
+}
+.settingsTabsMeasure {
+  position: absolute;
+  left: -9999px;
+  top: -9999px;
+  visibility: hidden;
+  pointer-events: none;
+  display: flex;
+  gap: 12px;
+  white-space: nowrap;
 }
 
 .chatShell {

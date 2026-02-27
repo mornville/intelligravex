@@ -149,8 +149,8 @@ export default function MicTest({
   hostActionRequiresApproval?: (action: HostAction) => boolean
   hostActionsErr?: string | null
   onRunHostAction?: (action: HostAction) => void
-  settingsTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'tools'
-  onOpenSettingsTab?: (tab: 'llm' | 'asr' | 'tts' | 'agent' | 'tools') => void
+  settingsTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'host' | 'tools'
+  onOpenSettingsTab?: (tab: 'llm' | 'asr' | 'tts' | 'agent' | 'host' | 'tools') => void
   isolatedEnabled?: boolean
 }) {
   const [connectionStage, setConnectionStage] = useState<Stage>('disconnected')
@@ -1159,9 +1159,15 @@ export default function MicTest({
     { id: 'asr', label: 'ASR' },
     { id: 'tts', label: 'TTS' },
     { id: 'agent', label: 'Isolated Workspace' },
+    { id: 'host', label: 'Host actions' },
     { id: 'tools', label: 'Tools' },
   ] as const
   const showSettingsTabs = typeof onOpenSettingsTab === 'function'
+  const [compactTabs, setCompactTabs] = useState(false)
+  const headerRowRef = useRef<HTMLDivElement | null>(null)
+  const tabsMeasureRef = useRef<HTMLDivElement | null>(null)
+  const wsPillRef = useRef<HTMLDivElement | null>(null)
+  const settingsBtnRef = useRef<HTMLButtonElement | null>(null)
   const modalItems = (files?.items || []).filter((it) => it.path && it.path !== '.')
   const tree = useMemo(() => buildTree(modalItems), [modalItems])
 
@@ -1180,6 +1186,36 @@ export default function MicTest({
     if (!hostActions?.length || !hostActionRequiresApproval) return []
     return hostActions.filter((action) => action.status === 'pending' && hostActionRequiresApproval(action))
   }, [hostActions, hostActionRequiresApproval])
+
+  useLayoutEffect(() => {
+    if (!showSettingsTabs) {
+      setCompactTabs(false)
+      return
+    }
+    const row = headerRowRef.current
+    if (!row) return
+
+    const compute = () => {
+      const rowWidth = row.clientWidth
+      const tabsWidth = tabsMeasureRef.current?.scrollWidth ?? 0
+      const wsWidth = wsPillRef.current?.scrollWidth ?? 0
+      const settingsWidth = settingsBtnRef.current?.scrollWidth ?? 0
+      const gap = 12
+      const needed = wsWidth + tabsWidth + settingsWidth + gap * 3
+      const shrinkThreshold = needed + 16
+      const expandThreshold = needed + 80
+      if (!compactTabs && rowWidth > 0 && rowWidth < shrinkThreshold) {
+        setCompactTabs(true)
+      } else if (compactTabs && rowWidth > expandThreshold) {
+        setCompactTabs(false)
+      }
+    }
+
+    compute()
+    const observer = new ResizeObserver(() => compute())
+    observer.observe(row)
+    return () => observer.disconnect()
+  }, [compactTabs, showSettingsTabs, isolatedEnabled])
   const loadingDots = (
     <span className="loadingDots" aria-label="Loading">
       <span>.</span>
@@ -1426,11 +1462,11 @@ export default function MicTest({
         {err ? <div className="alert">{err}</div> : null}
         <div className={`assistantSplit ${hideWorkspace || !conversationId || !showFilesPane ? 'full' : ''}`}>
           <div className="assistantChatPane">
-            <div className="row gap" style={{ alignItems: 'center' }}>
-              <div className="pill" title={`stage: ${activeStage}`}>
+            <div className="row gap" style={{ alignItems: 'center' }} ref={headerRowRef}>
+              <div className="pill" title={`stage: ${activeStage}`} ref={wsPillRef}>
                 ws: {wsStatusLabel}
               </div>
-              {showSettingsTabs ? (
+              {showSettingsTabs && !compactTabs ? (
                 <div className="row gap" style={{ flexWrap: 'wrap' }}>
                   {settingsTabs.map((tab) => (
                     <button
@@ -1456,11 +1492,35 @@ export default function MicTest({
                   type="button"
                   onClick={() => setShowControlMenu((v) => !v)}
                   aria-label="Conversation controls"
+                  ref={settingsBtnRef}
                 >
                   <WrenchScrewdriverIcon aria-hidden="true" />
                 </button>
                 {showControlMenu ? (
                   <div className="settingsMenu">
+                    {compactTabs && showSettingsTabs ? (
+                      <>
+                        {settingsTabs.map((tab) => (
+                          <button
+                            key={`menu-${tab.id}`}
+                            className="settingsItem"
+                            type="button"
+                            onClick={() => {
+                              onOpenSettingsTab?.(tab.id)
+                              setShowControlMenu(false)
+                            }}
+                          >
+                            {tab.label}
+                            {tab.id === 'agent' ? (
+                              <span className={`tabTag ${isolatedEnabled ? 'on' : 'off'}`}>
+                                {isolatedEnabled ? 'Enabled' : 'Disabled'}
+                              </span>
+                            ) : null}
+                          </button>
+                        ))}
+                        <div className="settingsDivider" />
+                      </>
+                    ) : null}
                     <button
                       className="settingsItem"
                       type="button"
@@ -1480,6 +1540,20 @@ export default function MicTest({
                   </div>
                 ) : null}
               </div>
+              {showSettingsTabs ? (
+                <div className="settingsTabsMeasure" ref={tabsMeasureRef} aria-hidden="true">
+                  {settingsTabs.map((tab) => (
+                    <button key={`measure-${tab.id}`} className="btn tabBtn" type="button" tabIndex={-1}>
+                      {tab.label}
+                      {tab.id === 'agent' ? (
+                        <span className={`tabTag ${isolatedEnabled ? 'on' : 'off'}`}>
+                          {isolatedEnabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
             {showWsSettings ? (
               <div className="row gap" style={{ marginTop: 6 }}>
