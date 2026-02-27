@@ -126,6 +126,9 @@ export default function MicTest({
   hostActionRequiresApproval,
   hostActionsErr,
   onRunHostAction,
+  settingsTab,
+  onOpenSettingsTab,
+  isolatedEnabled,
 }: {
   botId: string
   initialConversationId?: string
@@ -146,6 +149,9 @@ export default function MicTest({
   hostActionRequiresApproval?: (action: HostAction) => boolean
   hostActionsErr?: string | null
   onRunHostAction?: (action: HostAction) => void
+  settingsTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'tools'
+  onOpenSettingsTab?: (tab: 'llm' | 'asr' | 'tts' | 'agent' | 'tools') => void
+  isolatedEnabled?: boolean
 }) {
   const [connectionStage, setConnectionStage] = useState<Stage>('disconnected')
   const [stageByConversationId, setStageByConversationId] = useState<Record<string, Stage>>({})
@@ -1148,6 +1154,14 @@ export default function MicTest({
           : containerStatus.status || 'stopped'
         : 'not started'
   const wsStatusLabel = connectionStage === 'idle' ? 'connected' : connectionStage
+  const settingsTabs = [
+    { id: 'llm', label: 'LLM' },
+    { id: 'asr', label: 'ASR' },
+    { id: 'tts', label: 'TTS' },
+    { id: 'agent', label: 'Isolated Workspace' },
+    { id: 'tools', label: 'Tools' },
+  ] as const
+  const showSettingsTabs = typeof onOpenSettingsTab === 'function'
   const modalItems = (files?.items || []).filter((it) => it.path && it.path !== '.')
   const tree = useMemo(() => buildTree(modalItems), [modalItems])
 
@@ -1416,6 +1430,25 @@ export default function MicTest({
               <div className="pill" title={`stage: ${activeStage}`}>
                 ws: {wsStatusLabel}
               </div>
+              {showSettingsTabs ? (
+                <div className="row gap" style={{ flexWrap: 'wrap' }}>
+                  {settingsTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      className={`btn tabBtn ${settingsTab === tab.id ? 'tabBtnActive' : ''}`}
+                      type="button"
+                      onClick={() => onOpenSettingsTab?.(tab.id)}
+                    >
+                      {tab.label}
+                      {tab.id === 'agent' ? (
+                        <span className={`tabTag ${isolatedEnabled ? 'on' : 'off'}`}>
+                          {isolatedEnabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="spacer" />
               <div className="settingsWrapper">
                 <button

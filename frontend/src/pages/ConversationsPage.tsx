@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { apiGet, apiPost } from '../api/client'
+import { XMarkIcon } from '@heroicons/react/24/solid'
+import { useEscapeClose } from '../hooks/useEscapeClose'
 import SelectField from '../components/SelectField'
 import LoadingSpinner from '../components/LoadingSpinner'
 import type { Bot, ConversationSummary, GroupConversationDetail, GroupConversationSummary } from '../types'
@@ -22,6 +24,7 @@ export default function ConversationsPage() {
   const [filterBotId, setFilterBotId] = useState<string>('')
   const [filterTest, setFilterTest] = useState<string>('') // "", "true", "false"
   const [showGroupModal, setShowGroupModal] = useState(false)
+  useEscapeClose(() => setShowGroupModal(false), showGroupModal)
   const [groupTitle, setGroupTitle] = useState('')
   const [groupFilter, setGroupFilter] = useState('')
   const [groupSelected, setGroupSelected] = useState<string[]>([])
@@ -295,13 +298,13 @@ export default function ConversationsPage() {
       {showGroupModal ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div>
                 <div className="cardTitle">New group chat</div>
                 <div className="muted">Pick assistants and set a default before starting.</div>
               </div>
-              <button className="btn" onClick={() => setShowGroupModal(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowGroupModal(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
 

@@ -86,6 +86,7 @@ export type ConversationSummary = {
   last_total_ms: number | null
   last_message_at?: string | null
   last_message_preview?: string
+  first_user_message?: string
   unread_count?: number
   created_at: string
   updated_at: string

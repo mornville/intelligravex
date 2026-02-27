@@ -26,6 +26,7 @@ import { fmtIso } from '../utils/format'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
 import { useChatgptOauth } from '../hooks/useChatgptOauth'
+import { useEscapeClose } from '../hooks/useEscapeClose'
 import {
   ArrowsPointingInIcon,
   ArrowsPointingOutIcon,
@@ -41,6 +42,7 @@ import {
   TrashIcon,
   UserIcon,
   WrenchScrewdriverIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/solid'
 
 type FilterTab = 'all' | 'assistants' | 'groups'
@@ -280,6 +282,7 @@ export default function DashboardPage() {
   const [showKeysModal, setShowKeysModal] = useState(false)
   const [showDeveloperModal, setShowDeveloperModal] = useState(false)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'tools'>('llm')
   const [resettingOnboarding, setResettingOnboarding] = useState(false)
   const [showCreateAssistant, setShowCreateAssistant] = useState(false)
   const [creatingAssistant, setCreatingAssistant] = useState(false)
@@ -365,6 +368,17 @@ export default function DashboardPage() {
   const filesLoadingSeqRef = useRef(0)
   const filesNonSilentInFlightRef = useRef(false)
   const filesMsgTimerRef = useRef<number | null>(null)
+
+  const anyModalOpen =
+    showKeysModal || showDeveloperModal || showSettingsModal || showCreateAssistant || showCreateGroup
+
+  useEscapeClose(() => {
+    if (showKeysModal) setShowKeysModal(false)
+    if (showDeveloperModal) setShowDeveloperModal(false)
+    if (showSettingsModal) setShowSettingsModal(false)
+    if (showCreateAssistant) setShowCreateAssistant(false)
+    if (showCreateGroup) setShowCreateGroup(false)
+  }, anyModalOpen)
 
   function isNotFoundError(e: any) {
     return String(e?.message || e).includes('HTTP 404')
@@ -617,6 +631,11 @@ export default function DashboardPage() {
     }
     return map
   }, [conversations])
+
+  const selectedBot = useMemo(() => {
+    if (!selectedBotId) return null
+    return bots.find((b) => b.id === selectedBotId) || null
+  }, [bots, selectedBotId])
 
   useEffect(() => {
     if (!selectedBotId) return
@@ -1098,6 +1117,12 @@ export default function DashboardPage() {
   const workspaceIdeUrl = activeConversationId ? `/ide/${activeConversationId}/` : ''
   const workspacePortsExhausted = Boolean(activeConversationId && workspaceStatus?.running && !workspaceIdePort)
 
+  function conversationTitle(summary: ConversationSummary) {
+    const raw = String(summary.first_user_message || '').trim()
+    if (!raw) return 'Conversation'
+    return raw.length > 30 ? `${raw.slice(0, 30)}...` : raw
+  }
+
   useEffect(() => {
     if (!fileItems.length) return
     if (Object.keys(filesExpanded).length) return
@@ -1270,22 +1295,44 @@ export default function DashboardPage() {
     }
   }
 
-  async function deleteAssistant() {
-    if (!selectedBotId) return
-    const target = bots.find((b) => b.id === selectedBotId)
+  async function deleteAssistantById(botId: string) {
+    if (!botId) return
+    const target = bots.find((b) => b.id === botId)
     const ok = window.confirm(`Delete assistant \"${target?.name || 'assistant'}\"? This removes its conversations.`)
     if (!ok) return
     try {
-      await apiDelete(`/api/bots/${selectedBotId}`)
-      if (selectedType === 'assistant') {
+      await apiDelete(`/api/bots/${botId}`)
+      if (selectedType === 'assistant' && selectedBotId === botId) {
         clearAssistantConversation()
       }
       await reloadLists()
-      const next = bots.filter((b) => b.id !== selectedBotId)[0]
-      setSelectedBotId(next?.id || null)
+      if (selectedBotId === botId) {
+        const next = bots.filter((b) => b.id !== botId)[0]
+        setSelectedBotId(next?.id || null)
+      }
     } catch (e: any) {
       setErr(String(e?.message || e))
     }
+  }
+
+  async function deleteConversation() {
+    if (!selectedConversationId) return
+    const conv = botConversations.find((c) => c.id === selectedConversationId)
+    const title = conv ? conversationTitle(conv) : 'Conversation'
+    const ok = window.confirm(`Delete conversation \"${title}\"? This removes its messages.`)
+    if (!ok) return
+    try {
+      await apiDelete(`/api/conversations/${selectedConversationId}`)
+      clearAssistantConversation()
+      await reloadLists()
+    } catch (e: any) {
+      setErr(String(e?.message || e))
+    }
+  }
+
+  function openSettingsTab(tab: 'llm' | 'asr' | 'tts' | 'agent' | 'tools') {
+    setSettingsTab(tab)
+    setShowSettingsModal(true)
   }
 
   async function createGroup() {
@@ -1533,6 +1580,16 @@ export default function DashboardPage() {
                                   : 'No conversations yet'}
                             </div>
                           </div>
+                          <button
+                            className="iconBtn small danger"
+                            title="Delete assistant"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void deleteAssistantById(b.id)
+                            }}
+                          >
+                            <TrashIcon />
+                          </button>
                           {showTyping ? <span className="waTyping">typing…</span> : unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
                         </div>
                       </button>
@@ -1624,7 +1681,7 @@ export default function DashboardPage() {
                 {botConversations.length === 0 ? <option value="">No conversations</option> : null}
                 {botConversations.map((c) => (
                   <option key={c.id} value={c.id}>
-                    Conversation · {fmtIso(c.updated_at)}
+                    {conversationTitle(c)} · {fmtIso(c.updated_at)}
                   </option>
                 ))}
               </select>
@@ -1655,7 +1712,12 @@ export default function DashboardPage() {
               </button>
             ) : null}
             {selectedType === 'assistant' ? (
-              <button className="iconBtn danger" title="Delete assistant" onClick={() => void deleteAssistant()}>
+              <button
+                className="iconBtn danger"
+                title="Delete conversation"
+                onClick={() => void deleteConversation()}
+                disabled={!selectedConversationId}
+              >
                 <TrashIcon />
               </button>
             ) : null}
@@ -1670,9 +1732,6 @@ export default function DashboardPage() {
               </button>
               {settingsOpen ? (
                 <div className="settingsMenu">
-                  <button className="settingsItem" onClick={() => setSettingsOpen(false)}>
-                    Dashboard
-                  </button>
                   <button
                     className="settingsItem"
                     onClick={() => {
@@ -1690,15 +1749,6 @@ export default function DashboardPage() {
                     }}
                   >
                     Developer
-                  </button>
-                  <button
-                    className="settingsItem"
-                    onClick={() => {
-                      setSettingsOpen(false)
-                      setShowSettingsModal(true)
-                    }}
-                  >
-                    Settings
                   </button>
                   <button
                     className="settingsItem danger"
@@ -1897,6 +1947,9 @@ export default function DashboardPage() {
                 hostActionRequiresApproval={hostActionRequiresApproval}
                 hostActionsErr={hostActionsErr}
                 onRunHostAction={(action) => void runHostAction(action)}
+                settingsTab={settingsTab}
+                onOpenSettingsTab={openSettingsTab}
+                isolatedEnabled={!!selectedBot?.enable_data_agent}
               />
             ) : (
               <div className="muted" style={{ padding: '16px 20px' }}>
@@ -2086,13 +2139,13 @@ export default function DashboardPage() {
       {showKeysModal ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div>
                 <div className="cardTitle">Keys</div>
                 <div className="muted">Manage API and client keys.</div>
               </div>
-              <button className="btn" onClick={() => setShowKeysModal(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowKeysModal(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
             <KeysPage />
@@ -2103,13 +2156,13 @@ export default function DashboardPage() {
       {showDeveloperModal ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div>
                 <div className="cardTitle">Developer</div>
                 <div className="muted">Monitor and stop Isolated Workspace containers.</div>
               </div>
-              <button className="btn" onClick={() => setShowDeveloperModal(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowDeveloperModal(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
             <DeveloperPage />
@@ -2121,16 +2174,23 @@ export default function DashboardPage() {
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
             {selectedBotId ? (
-              <BotSettingsModal botId={selectedBotId} onClose={() => setShowSettingsModal(false)} />
+              <BotSettingsModal
+                botId={selectedBotId}
+                onClose={() => setShowSettingsModal(false)}
+                activeTab={settingsTab}
+                onBotUpdate={(updated) =>
+                  setBots((prev) => prev.map((b) => (b.id === updated.id ? { ...b, ...updated } : b)))
+                }
+              />
             ) : (
               <>
-                <div className="cardTitleRow">
+                <div className="cardTitleRow modalSticky">
                   <div>
                     <div className="cardTitle">Settings</div>
                     <div className="muted">Select an assistant to edit settings.</div>
                   </div>
-                  <button className="btn" onClick={() => setShowSettingsModal(false)}>
-                    Close
+                  <button className="iconBtn modalCloseBtn" onClick={() => setShowSettingsModal(false)} aria-label="Close">
+                    <XMarkIcon />
                   </button>
                 </div>
                 <div className="muted">Pick an assistant from the left panel, then reopen Settings.</div>
@@ -2143,13 +2203,13 @@ export default function DashboardPage() {
       {showCreateAssistant ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div>
                 <div className="cardTitle">New assistant</div>
                 <div className="muted">Set a name and choose the core models.</div>
               </div>
-              <button className="btn" onClick={() => setShowCreateAssistant(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowCreateAssistant(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
             {assistantErr ? <div className="alert">{assistantErr}</div> : null}
@@ -2271,13 +2331,13 @@ export default function DashboardPage() {
       {showCreateGroup ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div>
                 <div className="cardTitle">New group</div>
                 <div className="muted">Pick assistants and a default.</div>
               </div>
-              <button className="btn" onClick={() => setShowCreateGroup(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowCreateGroup(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
             {groupSaveErr ? <div className="alert">{groupSaveErr}</div> : null}

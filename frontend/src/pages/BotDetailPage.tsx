@@ -8,7 +8,8 @@ import InlineHelpTip from '../components/InlineHelpTip'
 import type { Bot, ConversationSummary, IntegrationTool, Options, SystemTool } from '../types'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
-import { TrashIcon } from '@heroicons/react/24/solid'
+import { TrashIcon, XMarkIcon } from '@heroicons/react/24/solid'
+import { useEscapeClose } from '../hooks/useEscapeClose'
 
 function HelpTip({ children }: { children: ReactNode }) {
   return (
@@ -97,6 +98,10 @@ Rules:
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'tools'>('llm')
   const [showSettings, setShowSettings] = useState(false)
+  useEscapeClose(() => {
+    if (showSettings) setShowSettings(false)
+    if (showToolModal) setShowToolModal(false)
+  }, showSettings || showToolModal)
 
   function parseAuthJson(raw?: string): Record<string, any> | null {
     try {
@@ -511,15 +516,15 @@ Rules:
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard settingsModal">
             <section className="card settingsCard">
-          <div className="cardTitleRow">
+          <div className="cardTitleRow modalSticky">
             <div>
               <div className="cardTitle">Configuration</div>
               <div className="muted">Tune models, voice, and tools.</div>
             </div>
             <div className="row gap">
               {saving ? <div className="pill accent">saving…</div> : <div className="pill accent">saved</div>}
-              <button className="btn" onClick={() => setShowSettings(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowSettings(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
           </div>
@@ -1114,10 +1119,10 @@ Rules:
       {showToolModal ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div className="cardTitle">{toolForm.id ? 'Edit integration' : 'New integration'}</div>
-              <button className="btn" onClick={() => setShowToolModal(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowToolModal(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
             <div className="formRow">

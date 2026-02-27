@@ -9,7 +9,8 @@ import { fmtIso } from '../utils/format'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
 import { useChatgptOauth } from '../hooks/useChatgptOauth'
-import { TrashIcon } from '@heroicons/react/24/solid'
+import { TrashIcon, XMarkIcon } from '@heroicons/react/24/solid'
+import { useEscapeClose } from '../hooks/useEscapeClose'
 
 export default function BotsPage() {
   const nav = useNavigate()
@@ -19,6 +20,7 @@ export default function BotsPage() {
   const [err, setErr] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  useEscapeClose(() => setShowCreateModal(false), showCreateModal)
   const chatgptOauth = useChatgptOauth()
 
   const defaultPrompt = useMemo(
@@ -211,13 +213,13 @@ export default function BotsPage() {
       {showCreateModal ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div>
                 <div className="cardTitle">New assistant</div>
                 <div className="muted">Set a name and choose the core models.</div>
               </div>
-              <button className="btn" onClick={() => setShowCreateModal(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowCreateModal(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
             <details className="accordion" open>

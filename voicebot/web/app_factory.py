@@ -79,6 +79,7 @@ from voicebot.store import (
     delete_integration_tool,
     delete_key,
     decrypt_provider_key,
+    first_user_message_map,
     get_bot,
     get_client_key,
     get_conversation,

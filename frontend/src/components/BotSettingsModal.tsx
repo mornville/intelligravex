@@ -6,8 +6,9 @@ import type { Bot, IntegrationTool, Options, SystemTool } from '../types'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
 import { useChatgptOauth } from '../hooks/useChatgptOauth'
+import { useEscapeClose } from '../hooks/useEscapeClose'
 import InlineHelpTip from './InlineHelpTip'
-import { TrashIcon } from '@heroicons/react/24/solid'
+import { TrashIcon, XMarkIcon } from '@heroicons/react/24/solid'
 
 function HelpTip({ children }: { children: ReactNode }) {
   return (
@@ -73,7 +74,17 @@ const DEFAULT_TOOL_FORM = {
   static_reply_template: '',
 }
 
-export default function BotSettingsModal({ botId, onClose }: { botId: string; onClose: () => void }) {
+export default function BotSettingsModal({
+  botId,
+  onClose,
+  activeTab,
+  onBotUpdate,
+}: {
+  botId: string
+  onClose: () => void
+  activeTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'tools'
+  onBotUpdate?: (bot: Bot) => void
+}) {
   const [bot, setBot] = useState<Bot | null>(null)
   const [options, setOptions] = useState<Options | null>(null)
   const [tools, setTools] = useState<IntegrationTool[]>([])
@@ -86,12 +97,14 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
   const [preferredRepoSourcePath, setPreferredRepoSourcePath] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'tools'>('llm')
+  const activeTabValue = activeTab || 'llm'
   const chatgptOauth = useChatgptOauth()
   const [pendingChatgptModel, setPendingChatgptModel] = useState<string | null>(null)
   const [uiProvider, setUiProvider] = useState<string | null>(null)
   const selectedLocalModel =
     (options?.local_models || []).find((m) => m.id === (bot?.openai_model || '')) || null
+
+  useEscapeClose(() => setShowToolModal(false), showToolModal)
 
   function parseAuthJson(raw?: string): Record<string, any> | null {
     try {
@@ -155,6 +168,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
     try {
       const updated = await apiPut<Bot>(`/api/bots/${botId}`, patch)
       setBot(updated)
+      onBotUpdate?.(updated)
     } catch (e: any) {
       setErr(String(e?.message || e))
     } finally {
@@ -371,38 +385,20 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
 
   return (
     <>
-      <div className="cardTitleRow">
+      <div className="cardTitleRow modalSticky">
         <div>
           <div className="cardTitle">Configuration</div>
           <div className="muted">Tune models, voice, and tools.</div>
         </div>
         <div className="row gap">
           {saving ? <div className="pill accent">saving…</div> : <div className="pill accent">saved</div>}
-          <button className="btn" onClick={onClose}>
-            Close
+          <button className="iconBtn modalCloseBtn" onClick={onClose} aria-label="Close">
+            <XMarkIcon />
           </button>
         </div>
       </div>
 
       {err ? <div className="alert">{err}</div> : null}
-
-      <div className="row gap settingsTabs" style={{ flexWrap: 'wrap' }}>
-        <button className={activeTab === 'llm' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('llm')}>
-          LLM
-        </button>
-        <button className={activeTab === 'asr' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('asr')}>
-          ASR
-        </button>
-        <button className={activeTab === 'tts' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tts')}>
-          TTS
-        </button>
-        <button className={activeTab === 'agent' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('agent')}>
-          Isolated Workspace
-        </button>
-        <button className={activeTab === 'tools' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tools')}>
-          Tools
-        </button>
-      </div>
 
       <div className="settingsContent">
         {!bot ? (
@@ -411,7 +407,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
           </div>
         ) : (
           <>
-            {activeTab === 'llm' ? (
+            {activeTabValue === 'llm' ? (
               <>
                 <div className="formRow">
                   <label>Name</label>
@@ -605,7 +601,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               </>
             ) : null}
 
-            {activeTab === 'asr' ? (
+            {activeTabValue === 'asr' ? (
               <>
                 <div className="formRowGrid2">
                   <div className="formRow">
@@ -647,7 +643,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               </>
             ) : null}
 
-            {activeTab === 'tts' ? (
+            {activeTabValue === 'tts' ? (
               <>
                 <div className="formRowGrid2">
                   <div className="formRow">
@@ -704,7 +700,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               </>
             ) : null}
 
-            {activeTab === 'agent' ? (
+            {activeTabValue === 'agent' ? (
               <>
                 <div className="muted" style={{ marginBottom: 8 }}>
                   Isolated Workspace requires Docker. Install and start Docker before enabling.
@@ -894,7 +890,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               </>
             ) : null}
 
-            {activeTab === 'agent' && bot ? (
+            {activeTabValue === 'agent' && bot ? (
               <details className="accordion" open>
                 <summary>Host actions (one‑click)</summary>
                 <div className="muted" style={{ marginTop: 6 }}>
@@ -947,7 +943,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               </details>
             ) : null}
 
-            {activeTab === 'tools' && systemTools.length ? (
+            {activeTabValue === 'tools' && systemTools.length ? (
               <details className="accordion" style={{ marginBottom: 12 }} open>
                 <summary>System tools</summary>
                 <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8, marginTop: 8 }}>
@@ -986,7 +982,7 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
               </details>
             ) : null}
 
-            {activeTab === 'tools' ? (
+            {activeTabValue === 'tools' ? (
               <details className="accordion" open>
                 <summary>Integrations (HTTP tools)</summary>
                 <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8, marginTop: 8 }}>
@@ -1061,10 +1057,10 @@ export default function BotSettingsModal({ botId, onClose }: { botId: string; on
       {showToolModal ? (
         <div className="modalOverlay" role="dialog" aria-modal="true">
           <div className="modalCard">
-            <div className="cardTitleRow">
+            <div className="cardTitleRow modalSticky">
               <div className="cardTitle">{toolForm.id ? 'Edit integration' : 'New integration'}</div>
-              <button className="btn" onClick={() => setShowToolModal(false)}>
-                Close
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowToolModal(false)} aria-label="Close">
+                <XMarkIcon />
               </button>
             </div>
             <div className="formRow">

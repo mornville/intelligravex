@@ -392,6 +392,29 @@ def list_conversations(
     stmt = stmt.offset(int(offset)).limit(int(limit))
     return list(session.exec(stmt))
 
+
+def first_user_message_map(
+    session: Session,
+    *,
+    conversation_ids: list[UUID],
+) -> dict[UUID, str]:
+    if not conversation_ids:
+        return {}
+    stmt = (
+        select(ConversationMessage.conversation_id, ConversationMessage.content, ConversationMessage.created_at)
+        .where(ConversationMessage.conversation_id.in_(conversation_ids))
+        .where(ConversationMessage.role == "user")
+        .order_by(ConversationMessage.created_at.asc())
+    )
+    rows = list(session.exec(stmt))
+    out: dict[UUID, str] = {}
+    for conv_id, content, _ in rows:
+        if conv_id in out:
+            continue
+        preview = _clean_preview(content or "", max_len=200)
+        out[conv_id] = preview
+    return out
+
 def count_conversations(
     session: Session,
     *,

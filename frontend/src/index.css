@@ -1343,6 +1343,40 @@ label {
   background: linear-gradient(120deg, rgba(138, 180, 248, 1), rgba(92, 139, 255, 0.95));
 }
 
+.tabBtn {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.tabBtn.tabBtnActive {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(234, 238, 245, 0.95);
+  box-shadow: none;
+}
+
+.tabTag {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.12);
+  color: rgba(226, 232, 240, 0.8);
+  font-size: 11px;
+}
+
+.tabTag.on {
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(16, 185, 129, 0.16);
+  color: rgba(209, 250, 229, 0.95);
+}
+
+.tabTag.off {
+  border-color: rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.12);
+  color: rgba(226, 232, 240, 0.8);
+}
+
 .btn.attentionBtn {
   position: relative;
   border: 2px solid transparent;
@@ -2147,6 +2181,28 @@ label {
 
 .modalCard.settingsModal {
   width: min(1100px, 96vw);
+}
+
+.modalCard .page {
+  width: 100%;
+  max-width: 100%;
+}
+
+.modalCard .pageHeader {
+  flex-wrap: wrap;
+}
+
+.modalSticky {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  background: linear-gradient(180deg, rgba(19, 17, 24, 0.98), rgba(19, 17, 24, 0.86));
+}
+
+.modalCloseBtn {
+  border-radius: 10px;
 }
 .settingsCard {
   border: none;

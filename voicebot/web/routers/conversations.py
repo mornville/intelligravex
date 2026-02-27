@@ -4,7 +4,9 @@ from uuid import UUID
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
-from sqlmodel import Session
+from sqlmodel import Session, delete
+
+from voicebot.models import ConversationMessage, ConversationReadState
 
 
 def register(app, ctx) -> None:
@@ -38,6 +40,10 @@ def register(app, ctx) -> None:
             conversation_ids=[c.id for c in convs],
             viewer_id=viewer_id,
         )
+        first_user_map = ctx.first_user_message_map(
+            session,
+            conversation_ids=[c.id for c in convs],
+        )
         bots_by_id = {b.id: b for b in ctx.list_bots(session)}
         items = []
         for c in convs:
@@ -59,12 +65,27 @@ def register(app, ctx) -> None:
                     "last_total_ms": c.last_total_ms,
                     "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
                     "last_message_preview": c.last_message_preview or "",
+                    "first_user_message": first_user_map.get(c.id, ""),
                     "unread_count": int(unread_map.get(c.id, 0)),
                     "created_at": c.created_at.isoformat(),
                     "updated_at": c.updated_at.isoformat(),
                 }
             )
         return {"items": items, "page": page, "page_size": page_size, "total": total}
+
+    @router.delete("/api/conversations/{conversation_id}")
+    def api_delete_conversation(
+        conversation_id: UUID,
+        session: Session = Depends(ctx.get_session),
+    ) -> dict:
+        conv = ctx.get_conversation(session, conversation_id)
+        if bool(conv.is_group):
+            raise ctx.HTTPException(status_code=404, detail="Conversation not found")
+        session.exec(delete(ConversationMessage).where(ConversationMessage.conversation_id == conv.id))
+        session.exec(delete(ConversationReadState).where(ConversationReadState.conversation_id == conv.id))
+        session.delete(conv)
+        session.commit()
+        return {"ok": True}
 
     @router.get("/api/conversations/{conversation_id}")
     def api_conversation_detail(
