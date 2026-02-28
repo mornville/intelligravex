@@ -45,6 +45,25 @@ py -3.11 -m venv .venv
 Open:
 - `http://localhost:8000/dashboard`
 
+macOS auto-start (optional):
+- Install at login/restart:
+
+```bash
+./scripts/install_macos_autostart.sh
+```
+
+- If you stop port `8000` by mistake, restart the service:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.intelligravex.voicebot.web
+```
+
+- Disable auto-start:
+
+```bash
+./scripts/uninstall_macos_autostart.sh
+```
+
 First‑time setup in the UI:
 - Choose **ChatGPT (OAuth)**, **Local**, **OpenAI**, or **OpenRouter**.
 - Voice (ASR/TTS) is optional.
