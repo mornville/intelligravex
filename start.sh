@@ -42,15 +42,33 @@ fi
 
 log_step "Using ${PYTHON_BIN} (Python ${PY_VERSION})"
 
+venv_python_path() {
+  if [[ -x ".venv/bin/python" ]]; then
+    echo ".venv/bin/python"
+    return 0
+  fi
+  if [[ -x ".venv/Scripts/python.exe" ]]; then
+    echo ".venv/Scripts/python.exe"
+    return 0
+  fi
+  if [[ -x ".venv/Scripts/python" ]]; then
+    echo ".venv/Scripts/python"
+    return 0
+  fi
+  return 1
+}
+
 ensure_venv() {
   local desired_mm="${PY_MAJOR}.${PY_MINOR}"
+  local existing_python=""
 
   if [[ -d ".venv" ]]; then
-    if [[ ! -x ".venv/bin/python" ]]; then
+    existing_python="$(venv_python_path || true)"
+    if [[ -z "${existing_python:-}" ]]; then
       rm -rf .venv
     else
       local venv_mm
-      venv_mm="$(".venv/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
+      venv_mm="$("$existing_python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true)"
       if [[ -z "${venv_mm:-}" || "$venv_mm" != "$desired_mm" ]]; then
         echo "Recreating .venv (found Python ${venv_mm:-unknown}, need ${desired_mm})"
         rm -rf .venv
@@ -68,21 +86,23 @@ log_step "Ensuring .venv"
 ensure_venv
 log_step "Ensuring .venv done ($(( $(date +%s) - venv_start ))s)"
 
-# shellcheck disable=SC1091
-log_step "Activating .venv"
-source .venv/bin/activate
+VENV_PYTHON="$(venv_python_path || true)"
+if [[ -z "${VENV_PYTHON:-}" ]]; then
+  echo "Could not locate virtualenv Python in .venv"
+  exit 1
+fi
 
 log_step "Upgrading pip"
 pip_start="$(date +%s)"
-python -m pip install -U pip >/dev/null
+"$VENV_PYTHON" -m pip install -U pip >/dev/null
 log_step "Upgrading pip done ($(( $(date +%s) - pip_start ))s)"
 
 log_step "Ensuring setuptools"
-if ! python - <<'PY' >/dev/null 2>&1
+if ! "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
 import pkg_resources  # provided by setuptools
 PY
 then
-  python -m pip install -U "setuptools<81" >/dev/null
+  "$VENV_PYTHON" -m pip install -U "setuptools<81" >/dev/null
 fi
 log_step "Ensuring setuptools done"
 
@@ -112,10 +132,17 @@ if [[ "$cmd" == "package-all" ]]; then
   exec "${ROOT_DIR}/scripts/package_macos_overlay.sh"
 fi
 
+if [[ "$cmd" == "web" ]]; then
+  log_step "Building Studio UI"
+  ui_build_start="$(date +%s)"
+  "${ROOT_DIR}/scripts/build_ui.sh"
+  log_step "Building Studio UI done ($(( $(date +%s) - ui_build_start ))s)"
+fi
+
 need_install=0
 log_step "Checking base dependencies"
 dep_start="$(date +%s)"
-python - <<'PY' >/dev/null 2>&1 || need_install=1
+"$VENV_PYTHON" - <<'PY' >/dev/null 2>&1 || need_install=1
 import importlib
 mods = ("numpy","sounddevice","webrtcvad","openai","pydantic","pydantic_settings","rich","typer","soundfile")
 for m in mods:
@@ -129,7 +156,7 @@ log_step "Checking base dependencies done ($(( $(date +%s) - dep_start ))s)"
 if [[ "$need_install" -eq 0 && "$cmd" == "web" ]]; then
   log_step "Checking web dependencies"
   web_dep_start="$(date +%s)"
-  python - <<'PY' >/dev/null 2>&1 || need_install=1
+  "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1 || need_install=1
 import importlib
 for m in ("fastapi","uvicorn","sqlmodel","jinja2","cryptography"):
     importlib.import_module(m)
@@ -140,11 +167,11 @@ fi
 if [[ "$need_install" -eq 1 ]]; then
   log_step "Installing dependencies (this may take a while on first run)..."
   install_start="$(date +%s)"
-  python -m pip install -U pip setuptools wheel >/dev/null
+  "$VENV_PYTHON" -m pip install -U pip setuptools wheel >/dev/null
   if [[ "$cmd" == "web" ]]; then
-    python -m pip install -e ".[web]"
+    "$VENV_PYTHON" -m pip install -e ".[web]"
   else
-    python -m pip install -e "."
+    "$VENV_PYTHON" -m pip install -e "."
   fi
   log_step "Installing dependencies done ($(( $(date +%s) - install_start ))s)"
 fi
@@ -202,14 +229,14 @@ fi
 
 if [[ "$has_help" -eq 0 && "$cmd" == "run" ]]; then
   log_step "Running diagnostics..."
-  python -m voicebot doctor || true
+  "$VENV_PYTHON" -m voicebot doctor || true
   log_step "Starting voice bot. Use Ctrl+C to stop."
 fi
 
 if [[ "$#" -eq 0 ]]; then
-  log_step "Launching: python -m voicebot run"
-  exec python -m voicebot run
+  log_step "Launching: ${VENV_PYTHON} -m voicebot run"
+  exec "$VENV_PYTHON" -m voicebot run
 else
-  log_step "Launching: python -m voicebot $*"
-  exec python -m voicebot "$@"
+  log_step "Launching: ${VENV_PYTHON} -m voicebot $*"
+  exec "$VENV_PYTHON" -m voicebot "$@"
 fi

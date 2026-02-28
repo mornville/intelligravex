@@ -18,12 +18,28 @@ Gravex gives you a dashboard to create agents, run real tasks, and keep files, c
 - **GravexStudio Guide** (system helper)
 - **IGX Showcase** (demo agent)
 
-## Run Locally (No Overlay)
+## Run Locally
+
+- Docker is only required for Isolated Workspaces.
+- Download Docker Desktop for full features (Isolated Workspaces): https://www.docker.com/products/docker-desktop/
+- Local models download automatically when selected.
 
 > The overlay is macOS‑only. The dashboard works everywhere.
 
 ```bash
 ./start.sh web -v
+```
+This command builds the Studio UI first, then starts the web server.
+
+Windows options:
+- Git Bash: `./start.sh web -v`
+- PowerShell:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U pip setuptools wheel
+.\.venv\Scripts\python.exe -m pip install -e ".[web]"
+.\.venv\Scripts\python.exe -m voicebot web -v
 ```
 
 Open:
@@ -82,7 +98,4 @@ Outputs:
 - Linux: `dist/GravexStudio-x86_64.AppImage`
 - Windows: `dist/GravexStudio.exe`
 
-## Notes
 
-- Docker is only required for Isolated Workspaces.
-- Local models download automatically when selected.
