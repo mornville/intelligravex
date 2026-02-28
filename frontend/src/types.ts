@@ -179,6 +179,19 @@ export type DataAgentStatus = {
   error?: string
 }
 
+export type DataAgentSetupStatus = {
+  status: 'idle' | 'building' | 'ready' | 'error'
+  docker_available: boolean
+  image: string
+  image_ready: boolean
+  message?: string
+  error?: string
+  logs?: string[]
+  started_at?: string | null
+  updated_at?: string | null
+  finished_at?: string | null
+}
+
 export type HostAction = {
   id: UUID
   conversation_id: UUID

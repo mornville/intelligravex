@@ -181,6 +181,7 @@ async def public_send_greeting(
         sys_prompt = append_host_action_approval_notice(
             ctx.render_template(bot.system_prompt, ctx={"meta": {}}),
             require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+            host_actions_enabled=bool(getattr(bot, "enable_host_actions", False)),
         )
         msgs = [
             Message(role="system", content=sys_prompt),

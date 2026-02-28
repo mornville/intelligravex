@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import SelectField from './SelectField'
 import LoadingSpinner from './LoadingSpinner'
-import type { Bot, IntegrationTool, Options, SystemTool } from '../types'
+import type { Bot, DataAgentSetupStatus, IntegrationTool, Options, SystemTool } from '../types'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
 import { useChatgptOauth } from '../hooks/useChatgptOauth'
@@ -97,6 +97,11 @@ export default function BotSettingsModal({
   const [preferredRepoSourcePath, setPreferredRepoSourcePath] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [agentSetup, setAgentSetup] = useState<DataAgentSetupStatus | null>(null)
+  const [agentSetupBusy, setAgentSetupBusy] = useState(false)
+  const [agentSetupPolling, setAgentSetupPolling] = useState(false)
+  const [agentEnablePending, setAgentEnablePending] = useState(false)
+  const [applyAgentEnable, setApplyAgentEnable] = useState(false)
   const activeTabValue = activeTab || 'llm'
   const chatgptOauth = useChatgptOauth()
   const [pendingChatgptModel, setPendingChatgptModel] = useState<string | null>(null)
@@ -175,6 +180,94 @@ export default function BotSettingsModal({
       setSaving(false)
     }
   }
+
+  async function handleToggleDataAgent(next: boolean) {
+    if (!botId) return
+    if (!next) {
+      setAgentEnablePending(false)
+      setAgentSetupPolling(false)
+      setApplyAgentEnable(false)
+      setAgentSetup(null)
+      await save({ enable_data_agent: false })
+      return
+    }
+    setErr(null)
+    setAgentSetupBusy(true)
+    setAgentEnablePending(true)
+    try {
+      const res = await apiPost<DataAgentSetupStatus>('/api/data-agent/setup/ensure', {})
+      setAgentSetup(res)
+      if (!res.docker_available) {
+        setAgentEnablePending(false)
+        setErr(res.error || res.message || 'Docker is not available. Install Docker Desktop: https://www.docker.com/products/docker-desktop/')
+        return
+      }
+      if (res.image_ready || res.status === 'ready') {
+        setAgentEnablePending(false)
+        setApplyAgentEnable(true)
+        return
+      }
+      if (res.status === 'building') {
+        setAgentSetupPolling(true)
+        return
+      }
+      setAgentEnablePending(false)
+      setErr(res.error || res.message || 'Failed to prepare Isolated Workspace.')
+    } catch (e: any) {
+      setAgentEnablePending(false)
+      setErr(String(e?.message || e))
+    } finally {
+      setAgentSetupBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!agentSetupPolling || !agentEnablePending) return
+    let canceled = false
+    const tick = async () => {
+      try {
+        const res = await apiGet<DataAgentSetupStatus>('/api/data-agent/setup/status')
+        if (canceled) return
+        setAgentSetup(res)
+        if (!res.docker_available) {
+          setAgentSetupPolling(false)
+          setAgentEnablePending(false)
+          setErr(res.error || res.message || 'Docker is not available. Install Docker Desktop: https://www.docker.com/products/docker-desktop/')
+          return
+        }
+        if (res.image_ready || res.status === 'ready') {
+          setAgentSetupPolling(false)
+          setAgentEnablePending(false)
+          setApplyAgentEnable(true)
+          return
+        }
+        if (res.status === 'error') {
+          setAgentSetupPolling(false)
+          setAgentEnablePending(false)
+          setErr(res.error || res.message || 'Failed to build Isolated Workspace image.')
+        }
+      } catch (e: any) {
+        if (canceled) return
+        setAgentSetupPolling(false)
+        setAgentEnablePending(false)
+        setErr(String(e?.message || e))
+      }
+    }
+    void tick()
+    const id = window.setInterval(() => {
+      void tick()
+    }, 1200)
+    return () => {
+      canceled = true
+      window.clearInterval(id)
+    }
+  }, [agentSetupPolling, agentEnablePending])
+
+  useEffect(() => {
+    if (!applyAgentEnable) return
+    setApplyAgentEnable(false)
+    void save({ enable_data_agent: true })
+  }, [applyAgentEnable])
 
   useEffect(() => {
     if (!pendingChatgptModel || !chatgptOauth.ready) return
@@ -678,11 +771,31 @@ export default function BotSettingsModal({
                     <input
                       type="checkbox"
                       checked={Boolean(bot.enable_data_agent)}
-                      onChange={(e) => void save({ enable_data_agent: e.target.checked })}
+                      disabled={saving || agentSetupBusy || agentSetupPolling}
+                      onChange={(e) => void handleToggleDataAgent(e.target.checked)}
                     />
                     <span className="muted">Enable additional data-agent behaviors (configured later).</span>
                   </label>
                 </div>
+                {agentSetup ? (
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    {agentSetup.message || (agentSetupPolling ? 'Building Isolated Workspace image...' : '')}
+                    {agentSetupPolling && agentSetup.image ? ` (${agentSetup.image})` : ''}
+                    {!agentSetup.docker_available ? (
+                      <>
+                        {' '}
+                        <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer">
+                          Download Docker Desktop
+                        </a>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+                {agentSetup?.logs?.length ? (
+                  <div className="muted" style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 }}>
+                    {agentSetup.logs[agentSetup.logs.length - 1]}
+                  </div>
+                ) : null}
                 {bot.enable_data_agent ? (
                   <>
                     <div className="formRowGrid2">

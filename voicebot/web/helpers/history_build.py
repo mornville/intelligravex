@@ -15,8 +15,16 @@ from voicebot.utils.prompt import system_prompt_with_runtime
 
 def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUID]) -> list[Message]:
     require_approval = bool(getattr(bot, "require_host_action_approval", False))
+    host_actions_enabled = bool(getattr(bot, "enable_host_actions", False))
     messages: list[Message] = [
-        Message(role="system", content=system_prompt_with_runtime(bot.system_prompt, require_approval=require_approval))
+        Message(
+            role="system",
+            content=system_prompt_with_runtime(
+                bot.system_prompt,
+                require_approval=require_approval,
+                host_actions_enabled=host_actions_enabled,
+            ),
+        )
     ]
     if not conversation_id:
         return messages
@@ -30,6 +38,7 @@ def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUI
             content=system_prompt_with_runtime(
                 ctx.render_template(bot.system_prompt, ctx=ctx_obj),
                 require_approval=require_approval,
+                host_actions_enabled=host_actions_enabled,
             ),
         )
     ]
@@ -94,10 +103,15 @@ def build_history_budgeted(
 
     if not conversation_id:
         require_approval = bool(getattr(bot, "require_host_action_approval", False))
+        host_actions_enabled = bool(getattr(bot, "enable_host_actions", False))
         return [
             Message(
                 role="system",
-                content=system_prompt_with_runtime(bot.system_prompt, require_approval=require_approval),
+                content=system_prompt_with_runtime(
+                    bot.system_prompt,
+                    require_approval=require_approval,
+                    host_actions_enabled=host_actions_enabled,
+                ),
             )
         ]
 
@@ -117,9 +131,11 @@ def build_history_budgeted(
 
     ctx_obj = {"meta": meta}
     require_approval = bool(getattr(bot, "require_host_action_approval", False))
+    host_actions_enabled = bool(getattr(bot, "enable_host_actions", False))
     system_prompt = system_prompt_with_runtime(
         ctx.render_template(bot.system_prompt, ctx=ctx_obj),
         require_approval=require_approval,
+        host_actions_enabled=host_actions_enabled,
     )
 
     db_msgs = ctx.list_messages(session, conversation_id=conversation_id)

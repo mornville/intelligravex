@@ -13,6 +13,11 @@ export function formatHostActionLabel(action: HostAction): { title: string; deta
         title: 'AppleScript',
         detail: String(payload.script || ''),
       }
+    case 'run_powershell':
+      return {
+        title: 'PowerShell',
+        detail: String(payload.script || payload.command || ''),
+      }
     default:
       return { title: action.action_type || 'Host action', detail: '' }
   }

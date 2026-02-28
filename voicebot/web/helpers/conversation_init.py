@@ -62,6 +62,7 @@ async def init_conversation_and_greet(
             sys_prompt = system_prompt_with_runtime(
                 render_template(bot.system_prompt, ctx={"meta": {}}),
                 require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+                host_actions_enabled=bool(getattr(bot, "enable_host_actions", False)),
             )
             msgs = [
                 Message(role="system", content=sys_prompt),

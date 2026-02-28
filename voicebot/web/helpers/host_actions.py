@@ -30,13 +30,24 @@ from voicebot.web.helpers.llm_keys import get_openai_api_key_global
 
 def parse_host_action_args(patch: dict) -> tuple[str, dict]:
     action = str(patch.get("action") or patch.get("action_type") or "").strip().lower()
-    if action not in {"run_shell", "run_applescript"}:
+    if action not in {"run_shell", "run_applescript", "run_powershell"}:
         raise ValueError("Unsupported host action")
     if action == "run_shell":
         command = str(patch.get("command") or patch.get("cmd") or "").strip()
         if not command:
             raise ValueError("Missing command")
         return action, {"command": command}
+    if action == "run_powershell":
+        script = str(
+            patch.get("script")
+            or patch.get("powershell")
+            or patch.get("command")
+            or patch.get("cmd")
+            or ""
+        ).strip()
+        if not script:
+            raise ValueError("Missing PowerShell script")
+        return action, {"script": script}
     script = str(patch.get("script") or patch.get("applescript") or "").strip()
     if not script:
         raise ValueError("Missing script")
@@ -233,7 +244,28 @@ def tool_error_message(tool_result: dict, *, fallback: str) -> str:
 
 def screencapture_command(target: Path) -> tuple[bool, str]:
     if sys.platform != "darwin":
-        return False, "Screenshot capture is only supported on macOS."
+        if sys.platform != "win32":
+            return False, "Screenshot capture is currently supported on macOS and Windows."
+        # Capture primary display via PowerShell + .NET (Windows Desktop runtime).
+        target_str = str(target)
+        target_ps = target_str.replace("'", "''")
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -AssemblyName System.Drawing; "
+            "$bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+            "$bmp=New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height; "
+            "$gfx=[System.Drawing.Graphics]::FromImage($bmp); "
+            "$gfx.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size); "
+            f"$bmp.Save('{target_ps}', [System.Drawing.Imaging.ImageFormat]::Png); "
+            "$gfx.Dispose(); "
+            "$bmp.Dispose();"
+        )
+        cmd = (
+            "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+            f'-Command "{script}"'
+        )
+        return True, cmd
     cmd = f"/usr/sbin/screencapture -x -t png {shlex.quote(str(target))}"
     return True, cmd
 
@@ -340,15 +372,44 @@ def execute_host_action(
     try:
         if action_type == "run_shell":
             command = str(payload.get("command") or "").strip()
-            is_screencapture = "screencapture" in command
+            result_rel_path = str(payload.get("result_path") or "").strip()
+            result_abs_path = str(payload.get("result_abs_path") or "").strip()
+            is_screencapture = bool(result_abs_path) or "screencapture" in command
             if is_screencapture and command:
                 logger.info("capture_screenshot: command=%s", command)
             res = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
             stdout, stderr, exit_code = res.stdout or "", res.stderr or "", res.returncode
             if exit_code == 0 and is_screencapture:
-                copied = maybe_copy_screenshot_from_command(command)
+                copied: Optional[Path] = None
+                if result_abs_path:
+                    copied = copy_screenshot_to_user_dir(Path(result_abs_path))
+                    if result_rel_path:
+                        result_payload["result_path"] = result_rel_path
+                else:
+                    copied = maybe_copy_screenshot_from_command(command)
                 if copied:
                     result_payload["saved_user_path"] = str(copied)
+        elif action_type == "run_powershell":
+            if sys.platform != "win32":
+                raise RuntimeError("PowerShell host actions are only supported on Windows")
+            script = str(payload.get("script") or payload.get("command") or "").strip()
+            if not script:
+                raise RuntimeError("Missing PowerShell script")
+            res = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+            stdout, stderr, exit_code = res.stdout or "", res.stderr or "", res.returncode
         elif action_type == "run_applescript":
             if sys.platform != "darwin":
                 raise RuntimeError("AppleScript is only supported on macOS")

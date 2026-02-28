@@ -38,6 +38,7 @@ def register(app, ctx) -> None:
             sys_prompt = append_host_action_approval_notice(
                 bot.system_prompt,
                 require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+                host_actions_enabled=bool(getattr(bot, "enable_host_actions", False)),
             )
             messages = [ctx.Message(role="system", content=sys_prompt), ctx.Message(role="user", content=text)]
 
@@ -294,6 +295,7 @@ def register(app, ctx) -> None:
         sys_prompt = append_host_action_approval_notice(
             bot.system_prompt,
             require_approval=bool(getattr(bot, "require_host_action_approval", False)),
+            host_actions_enabled=bool(getattr(bot, "enable_host_actions", False)),
         )
         messages = [ctx.Message(role="system", content=sys_prompt), ctx.Message(role="user", content=text)]
         out_text = llm.complete_text(messages=messages)

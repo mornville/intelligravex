@@ -148,7 +148,11 @@ async def process_public_tool_calls(
                             conv=conv,
                             bot=bot,
                             action_type="run_shell",
-                            payload={"command": cmd_or_err},
+                            payload={
+                                "command": cmd_or_err,
+                                "result_path": rel_path,
+                                "result_abs_path": str(target),
+                            },
                         )
                         if _host_action_requires_approval(bot):
                             tool_result = _build_host_action_tool_result(action, ok=True)
@@ -231,7 +235,9 @@ async def process_public_tool_calls(
                     needs_followup_llm = True
                     final = ""
                 else:
-                    if action_type == "run_shell" and not bool(getattr(bot, "enable_host_shell", False)):
+                    if action_type in {"run_shell", "run_powershell"} and not bool(
+                        getattr(bot, "enable_host_shell", False)
+                    ):
                         tool_result = {
                             "ok": False,
                             "error": {"message": "Shell commands are disabled for this bot."},

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID
 
 from .docker_runner_auth import _extract_preferred_repo, _normalize_host_path
@@ -130,40 +132,117 @@ def _get_data_agent_image() -> str:
     )
 
 
-def ensure_image_pulled() -> str:
+def data_agent_image_name() -> str:
+    return _get_data_agent_image().strip() or DEFAULT_DATA_AGENT_IMAGE
+
+
+def data_agent_image_status() -> dict:
+    image = data_agent_image_name()
+    if not _docker_available():
+        return {"docker_available": False, "image": image, "image_present": False}
+    p = _run(["docker", "image", "inspect", image], timeout_s=10.0)
+    if p.returncode == 0:
+        return {"docker_available": True, "image": image, "image_present": True}
+    return {
+        "docker_available": True,
+        "image": image,
+        "image_present": False,
+        "error": (p.stderr or p.stdout or "").strip(),
+    }
+
+
+def ensure_image_pulled(*, on_progress: Optional[Callable[[str], None]] = None) -> str:
+    def _emit(msg: str) -> None:
+        if not on_progress:
+            return
+        try:
+            on_progress(str(msg or ""))
+        except Exception:
+            pass
+
     if not _docker_available():
         raise RuntimeError("Docker is not available (cannot start Isolated Workspace runtime).")
-    image = _get_data_agent_image().strip() or DEFAULT_DATA_AGENT_IMAGE
+    image = data_agent_image_name()
     p = _run(["docker", "image", "inspect", image], timeout_s=10.0)
     if p.returncode == 0:
         logger.info("Isolated Workspace image present: %s", image)
+        _emit(f"Isolated Workspace image already available: {image}")
         return image
     logger.info("Isolated Workspace image missing; building locally: %s", image)
+    _emit(f"Isolated Workspace image missing. Building: {image}")
     if not _DATA_AGENT_DOCKERFILE.exists():
         raise RuntimeError("Missing Isolated Workspace Dockerfile. Expected packaging/data-agent/Dockerfile.")
-    build = _run(
-        [
-            "env",
-            "DOCKER_BUILDKIT=1",
-            "docker",
-            "build",
-            "-t",
-            image,
-            "-f",
-            str(_DATA_AGENT_DOCKERFILE),
-            str(_DATA_AGENT_DIR),
-        ],
-        timeout_s=1800.0,
-    )
-    if build.returncode != 0:
-        logger.error(
-            "Failed to build Isolated Workspace image rc=%s stdout_tail=%s stderr_tail=%s",
-            build.returncode,
-            (build.stdout or "")[-2000:],
-            (build.stderr or "")[-2000:],
-        )
-        raise RuntimeError("Failed to build Isolated Workspace image. Run ./scripts/build_data_agent_image.sh.")
+    cmd = [
+        "docker",
+        "build",
+        "--progress=plain",
+        "-t",
+        image,
+        "-f",
+        str(_DATA_AGENT_DOCKERFILE),
+        str(_DATA_AGENT_DIR),
+    ]
+    build_env = os.environ.copy()
+    build_env["DOCKER_BUILDKIT"] = "1"
+    if on_progress:
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(_ROOT_DIR),
+                env=build_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(str(exc) or "Docker CLI not found.") from exc
+        lines: list[str] = []
+        start = time.monotonic()
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = str(raw or "").rstrip()
+            if not line:
+                continue
+            lines.append(line)
+            if len(lines) > 300:
+                lines = lines[-300:]
+            _emit(line)
+            if (time.monotonic() - start) > 1800.0:
+                proc.kill()
+                proc.wait(timeout=5.0)
+                raise RuntimeError("Timed out while building Isolated Workspace image.")
+        rc = proc.wait(timeout=10.0)
+        out_tail = "\n".join(lines[-120:])
+        if rc != 0:
+            logger.error("Failed to build Isolated Workspace image rc=%s output_tail=%s", rc, out_tail[-2000:])
+            raise RuntimeError("Failed to build Isolated Workspace image. Run ./scripts/build_data_agent_image.sh.")
+    else:
+        try:
+            build = subprocess.run(
+                cmd,
+                cwd=str(_ROOT_DIR),
+                env=build_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=1800.0,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(str(exc) or "Docker CLI not found.") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Timed out while building Isolated Workspace image.") from exc
+        if build.returncode != 0:
+            logger.error(
+                "Failed to build Isolated Workspace image rc=%s stdout_tail=%s stderr_tail=%s",
+                build.returncode,
+                (build.stdout or "")[-2000:],
+                (build.stderr or "")[-2000:],
+            )
+            raise RuntimeError("Failed to build Isolated Workspace image. Run ./scripts/build_data_agent_image.sh.")
     logger.info("Built Isolated Workspace image: %s", image)
+    _emit(f"Build complete: {image}")
     return image
 
 

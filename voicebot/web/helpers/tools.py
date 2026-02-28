@@ -49,11 +49,17 @@ def host_action_tool() -> dict:
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["run_shell", "run_applescript"],
+                    "enum": ["run_shell", "run_applescript", "run_powershell"],
                     "description": "Type of host action.",
                 },
-                "command": {"type": "string", "description": "Shell command to run (for run_shell)."},
-                "script": {"type": "string", "description": "AppleScript to run (for run_applescript)."},
+                "command": {
+                    "type": "string",
+                    "description": "Command string for run_shell, or fallback script text for run_powershell.",
+                },
+                "script": {
+                    "type": "string",
+                    "description": "Script body for run_applescript (macOS) or run_powershell (Windows).",
+                },
                 "follow_up": {
                     "type": "boolean",
                     "description": "If true, force a follow-up assistant reply after the action runs.",

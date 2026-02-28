@@ -43,6 +43,8 @@ from voicebot.crypto import CryptoError, build_hint, get_crypto_box
 from voicebot.data_agent.docker_runner import (
     DEFAULT_DATA_AGENT_SYSTEM_PROMPT,
     container_name_for_conversation,
+    data_agent_image_name,
+    data_agent_image_status,
     default_workspace_dir_for_conversation,
     docker_available,
     ensure_conversation_container,
@@ -211,6 +213,34 @@ def create_app() -> FastAPI:
     group_ws_lock = asyncio.Lock()
     conversation_ws_clients: dict[str, dict[WebSocket, asyncio.AbstractEventLoop]] = {}
     conversation_ws_lock = threading.Lock()
+    try:
+        _initial_data_agent_image = data_agent_image_status()
+    except Exception:
+        _initial_data_agent_image = {
+            "docker_available": False,
+            "image": data_agent_image_name(),
+            "image_present": False,
+        }
+    _initial_da_image_name = str(_initial_data_agent_image.get("image") or data_agent_image_name())
+    _initial_da_image_ready = bool(_initial_data_agent_image.get("image_present", False))
+    data_agent_setup_lock = threading.Lock()
+    data_agent_setup_state: dict[str, Any] = {
+        "status": "ready" if _initial_da_image_ready else "idle",
+        "docker_available": bool(_initial_data_agent_image.get("docker_available", False)),
+        "image": _initial_da_image_name,
+        "image_ready": _initial_da_image_ready,
+        "message": (
+            f"{_initial_da_image_name} is ready. You may use the Isolated Workspace now."
+            if _initial_da_image_ready
+            else ""
+        ),
+        "error": "",
+        "logs": [],
+        "started_at": None,
+        "updated_at": None,
+        "finished_at": None,
+    }
+    data_agent_setup_thread: Optional[threading.Thread] = None
 
     download_base_url = (getattr(settings, "download_base_url", "") or "127.0.0.1:8000").strip()
 

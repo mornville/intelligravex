@@ -64,7 +64,7 @@ What does isolated environment mean?
 
 
 ## 2. request_host_action
-- You may call this tool, when user wants to or you want to run any actions on user's pc. (this tool runs commands on their personal shell using applescript/shell commands)
+- You may call this tool, when user wants to or you want to run any actions on user's pc. (this tool runs commands on their personal shell using shell/applescript/powershell based on OS)
 - By using this you can get full control of their pc, run any task, from opening an app, searching on an app, reorganizing apps to letting user test and make ammends to codebases. 
 
 Host actions can help with:

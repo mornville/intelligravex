@@ -39,7 +39,9 @@ def register(app, ctx) -> None:
         bot = ctx.get_bot(session, req_bot_id)
         if not bool(getattr(bot, "enable_host_actions", False)):
             raise ctx.HTTPException(status_code=400, detail="Host actions are disabled for this assistant.")
-        if action.action_type == "run_shell" and not bool(getattr(bot, "enable_host_shell", False)):
+        if action.action_type in {"run_shell", "run_powershell"} and not bool(
+            getattr(bot, "enable_host_shell", False)
+        ):
             raise ctx.HTTPException(status_code=400, detail="Shell commands are disabled for this assistant.")
 
         tool_result = ctx._execute_host_action_and_update(session, action=action)
