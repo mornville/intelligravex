@@ -1,4 +1,4 @@
-import { type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { apiDelete, apiGet, apiPost, BACKEND_URL, downloadFile } from '../api/client'
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -678,12 +678,12 @@ export default function DashboardPage() {
     setSelectedConversationId((prev) => (prev === assistantConversationId ? prev : assistantConversationId))
   }, [assistantConversationId, selectedType])
 
-  function clipPreview(text: string, max = 90) {
+  const clipPreview = useCallback((text: string, max = 90) => {
     const cleaned = (text || '').replace(/\s+/g, ' ').trim()
     if (!cleaned) return ''
     if (cleaned.length <= max) return cleaned
     return `${cleaned.slice(0, max - 3)}...`
-  }
+  }, [])
 
   function mergeGroupMessages(prev: ConversationMessage[], next: ConversationMessage[]) {
     const seen = new Set(prev.map((m) => m.id))
@@ -1175,20 +1175,37 @@ export default function DashboardPage() {
     }
   }
 
-  function handleCacheUpdate(conversationId: string, entry: ChatCacheEntry) {
+  const handleCacheUpdate = useCallback((conversationId: string, entry: ChatCacheEntry) => {
     if (!conversationId) return
-    setChatCache((prev) => ({ ...prev, [conversationId]: entry }))
+    setChatCache((prev) => {
+      const prevEntry = prev[conversationId]
+      if (
+        prevEntry &&
+        prevEntry.items === entry.items &&
+        prevEntry.lastAt === entry.lastAt &&
+        prevEntry.lastId === entry.lastId
+      ) {
+        return prev
+      }
+      return { ...prev, [conversationId]: entry }
+    })
     if (entry?.items?.length) {
       const last = [...entry.items].reverse().find((m) => m.role !== 'tool')
       if (last?.text) {
-        setPreviewByConversationId((prev) => ({ ...prev, [conversationId]: clipPreview(last.text) }))
+        const nextPreview = clipPreview(last.text)
+        if (nextPreview) {
+          setPreviewByConversationId((prev) => {
+            if (prev[conversationId] === nextPreview) return prev
+            return { ...prev, [conversationId]: nextPreview }
+          })
+        }
       }
     }
-  }
+  }, [clipPreview])
 
-  function notifySync() {
+  const notifySync = useCallback(() => {
     // no-op when single-tab only
-  }
+  }, [])
 
   useEffect(() => {
     if (loading) return
@@ -1566,8 +1583,7 @@ export default function DashboardPage() {
                           setSelectedBotId(b.id)
                         }}
                       >
-                        <div className="waAssistantHeader">
-                          <div className="waAvatar">{b.name.slice(0, 2).toUpperCase()}</div>
+                        <div className="waAssistantHeader noAvatar">
                           <div className="waAssistantTitle">
                             <div className="waAssistantName">{b.name}</div>
                             <div className="waConversationRow">
@@ -1580,17 +1596,19 @@ export default function DashboardPage() {
                                   : 'No conversations yet'}
                             </div>
                           </div>
-                          <button
-                            className="iconBtn small danger"
-                            title="Delete assistant"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              void deleteAssistantById(b.id)
-                            }}
-                          >
-                            <TrashIcon />
-                          </button>
-                          {showTyping ? <span className="waTyping">typing…</span> : unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
+                          <div className="waAssistantActions">
+                            {showTyping ? <span className="waTyping">typing…</span> : unseen > 0 ? <span className="waUnreadBadge">{unseen}</span> : null}
+                            <button
+                              className="iconBtn small danger"
+                              title="Delete assistant"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void deleteAssistantById(b.id)
+                              }}
+                            >
+                              <TrashIcon />
+                            </button>
+                          </div>
                         </div>
                       </button>
                     )

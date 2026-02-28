@@ -2438,6 +2438,16 @@ label {
   gap: 12px;
   align-items: center;
 }
+.waAssistantHeader.noAvatar {
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+.waAssistantActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+}
 .waAssistantTitle {
   min-width: 0;
 }

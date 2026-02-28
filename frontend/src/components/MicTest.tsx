@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
   CpuChipIcon,
   MicrophoneIcon,
@@ -105,6 +105,70 @@ export type ChatCacheEntry = {
   lastAt?: string
   lastId?: string
 }
+
+const LOADING_DOTS = (
+  <span className="loadingDots" aria-label="Loading">
+    <span>.</span>
+    <span>.</span>
+    <span>.</span>
+  </span>
+)
+
+const MessageRow = memo(function MessageRow({ it }: { it: ChatItem }) {
+  const role = it.role
+  const citations = role === 'assistant' ? normalizeCitations(it.citations) : []
+  const hasText = Boolean(it.text && it.text.trim())
+  const bubbleText = hasText ? it.text : role === 'assistant' ? LOADING_DOTS : '…'
+  const bubbleClass =
+    role === 'user'
+      ? 'bubble user'
+      : role === 'assistant'
+        ? `bubble assistant${it.interim ? ' interim' : ''}`
+        : 'bubble tool'
+
+  return (
+    <div className={`msgRow ${role}`}>
+      <div className={`avatar ${role}`} aria-hidden="true">
+        <RoleIcon role={role} />
+      </div>
+      <div className={bubbleClass}>
+        <div className="bubbleText">
+          {typeof bubbleText === 'string' ? <MarkdownText content={bubbleText} /> : bubbleText}
+        </div>
+        {role === 'assistant' && citations.length ? (
+          <div className="citationBlock">
+            <div className="citationTitle">Sources</div>
+            <ol className="citationList">
+              {citations.map((c, idx) => (
+                <li key={`${c.url}-${idx}`}>
+                  <a className="citationLink" href={c.url} target="_blank" rel="noreferrer">
+                    {c.title || c.url}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
+        {role === 'assistant' && it.timings ? (
+          <details className="details">
+            <summary>metrics</summary>
+            <div className="bubbleMeta">
+              ASR {fmtMs(it.timings.asr)} | LLM 1st {fmtMs(it.timings.llm_ttfb)} | LLM {fmtMs(it.timings.llm_total)} | TTS 1st{' '}
+              {fmtMs(it.timings.tts_first_audio)} | total {fmtMs(it.timings.total)}
+            </div>
+          </details>
+        ) : null}
+        {it.details ? (
+          <details className="details">
+            <summary>details</summary>
+            <pre className="pre">{JSON.stringify(it.details, null, 2)}</pre>
+          </details>
+        ) : null}
+        {it.created_at ? <div className="bubbleTime" title={it.created_at}>{fmtTime(it.created_at)}</div> : null}
+      </div>
+    </div>
+  )
+}, (prev, next) => prev.it === next.it)
 
 export default function MicTest({
   botId,
@@ -329,7 +393,10 @@ export default function MicTest({
   }, [conversationId, stageByConversationId])
 
   function setConversationStage(cid: string, next: Stage) {
-    setStageByConversationId((prev) => ({ ...prev, [cid]: next }))
+    setStageByConversationId((prev) => {
+      if (prev[cid] === next) return prev
+      return { ...prev, [cid]: next }
+    })
   }
 
   function clearInterim() {
@@ -1181,7 +1248,10 @@ export default function MicTest({
     setExpandedPaths(next)
   }, [showFilesPane, tree, expandedPaths])
 
-  const displayItems = showToolMessages ? items : items.filter((it) => it.role !== 'tool')
+  const displayItems = useMemo(
+    () => (showToolMessages ? items : items.filter((it) => it.role !== 'tool')),
+    [showToolMessages, items],
+  )
   const approvalActions = useMemo(() => {
     if (!hostActions?.length || !hostActionRequiresApproval) return []
     return hostActions.filter((action) => action.status === 'pending' && hostActionRequiresApproval(action))
@@ -1216,13 +1286,6 @@ export default function MicTest({
     observer.observe(row)
     return () => observer.disconnect()
   }, [compactTabs, showSettingsTabs, isolatedEnabled])
-  const loadingDots = (
-    <span className="loadingDots" aria-label="Loading">
-      <span>.</span>
-      <span>.</span>
-      <span>.</span>
-    </span>
-  )
   const approvalQueueNode = approvalActions.length ? (
     <div className="msgRow assistant">
       <div className="avatar assistant" aria-hidden="true">
@@ -1258,66 +1321,16 @@ export default function MicTest({
       </div>
     </div>
   ) : null
-  const messages = (
-    <>
-      {displayItems.map((it) => {
-        const role = it.role
-        const citations = role === 'assistant' ? normalizeCitations(it.citations) : []
-        const hasText = Boolean(it.text && it.text.trim())
-        const bubbleText = hasText ? it.text : role === 'assistant' ? loadingDots : '…'
-        const bubbleClass =
-          role === 'user'
-            ? 'bubble user'
-            : role === 'assistant'
-              ? `bubble assistant${it.interim ? ' interim' : ''}`
-              : 'bubble tool'
-        return (
-          <Fragment key={it.id}>
-            <div className={`msgRow ${role}`}>
-              <div className={`avatar ${role}`} aria-hidden="true">
-                <RoleIcon role={role} />
-              </div>
-              <div className={bubbleClass}>
-                <div className="bubbleText">
-                  {typeof bubbleText === 'string' ? <MarkdownText content={bubbleText} /> : bubbleText}
-                </div>
-                {role === 'assistant' && citations.length ? (
-                  <div className="citationBlock">
-                    <div className="citationTitle">Sources</div>
-                    <ol className="citationList">
-                      {citations.map((c, idx) => (
-                        <li key={`${c.url}-${idx}`}>
-                          <a className="citationLink" href={c.url} target="_blank" rel="noreferrer">
-                            {c.title || c.url}
-                          </a>
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                ) : null}
-                {role === 'assistant' && it.timings ? (
-                  <details className="details">
-                    <summary>metrics</summary>
-                    <div className="bubbleMeta">
-                      ASR {fmtMs(it.timings.asr)} | LLM 1st {fmtMs(it.timings.llm_ttfb)} | LLM {fmtMs(it.timings.llm_total)} | TTS 1st{' '}
-                      {fmtMs(it.timings.tts_first_audio)} | total {fmtMs(it.timings.total)}
-                    </div>
-                  </details>
-                ) : null}
-                {it.details ? (
-                  <details className="details">
-                    <summary>details</summary>
-                    <pre className="pre">{JSON.stringify(it.details, null, 2)}</pre>
-                  </details>
-                ) : null}
-                {it.created_at ? <div className="bubbleTime" title={it.created_at}>{fmtTime(it.created_at)}</div> : null}
-              </div>
-            </div>
-          </Fragment>
-        )
-      })}
-      {approvalQueueNode ? approvalQueueNode : null}
-    </>
+  const messages = useMemo(
+    () => (
+      <>
+        {displayItems.map((it) => (
+          <MessageRow key={it.id} it={it} />
+        ))}
+        {approvalQueueNode ? approvalQueueNode : null}
+      </>
+    ),
+    [displayItems, approvalQueueNode],
   )
 
   const workspacePane =
