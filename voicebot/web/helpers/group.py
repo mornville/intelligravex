@@ -27,7 +27,11 @@ def slugify(value: str) -> str:
 
 
 def group_bots_from_conv(conv: Conversation) -> list[dict[str, str]]:
-    bots = safe_json_loads(getattr(conv, "group_bots_json", "") or "[]") or []
+    raw = getattr(conv, "group_bots_json", "") or "[]"
+    try:
+        bots = json.loads(raw)
+    except Exception:
+        bots = []
     if not isinstance(bots, list):
         bots = []
     out: list[dict[str, str]] = []
@@ -250,11 +254,28 @@ def format_group_message_prefix(
 ) -> str:
     if not bool(getattr(conv, "is_group", False)):
         return ""
+    bots = group_bots_from_conv(conv)
+    slug_by_id = {str(b.get("id") or "").strip(): str(b.get("slug") or "").strip().lower() for b in bots}
+    name_by_id = {str(b.get("id") or "").strip(): str(b.get("name") or "").strip() for b in bots}
+
+    slug = ""
+    sender_id = str(sender_bot_id) if sender_bot_id else ""
+    if sender_id:
+        slug = slug_by_id.get(sender_id, "")
     name = (sender_name or "").strip()
-    if not name and sender_bot_id:
-        name = group_bot_name_lookup(conv).get(str(sender_bot_id), "")
+    if not name and sender_id:
+        name = name_by_id.get(sender_id, "")
+    if not slug and name:
+        lower_name = name.lower()
+        for b in bots:
+            b_name = str(b.get("name") or "").strip().lower()
+            if b_name and b_name == lower_name:
+                slug = str(b.get("slug") or "").strip().lower()
+                break
     if not name:
         name = "User" if fallback_role == "user" else "Assistant"
+    if fallback_role == "assistant" and slug:
+        return f"[{name} (@{slug})] "
     return f"[{name}] "
 
 
@@ -315,6 +336,9 @@ def group_conversation_payload(session: Session, conv: Conversation, *, include_
     individual_items = [
         {"bot_id": bid, "conversation_id": cid} for bid, cid in individual_map.items()
     ]
+    meta = safe_json_loads(conv.metadata_json or "{}") or {}
+    swarm = meta.get("group_swarm") if isinstance(meta, dict) else None
+    swarm_state = swarm if isinstance(swarm, dict) else None
     return {
         "conversation": {
             "id": str(conv.id),
@@ -322,6 +346,7 @@ def group_conversation_payload(session: Session, conv: Conversation, *, include_
             "default_bot_id": str(conv.bot_id),
             "default_bot_name": default_bot.get("name") if default_bot else None,
             "group_bots": bots,
+            "swarm_state": swarm_state,
             "individual_conversations": individual_items,
             "created_at": conv.created_at.isoformat(),
             "updated_at": conv.updated_at.isoformat(),

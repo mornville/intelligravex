@@ -1,5 +1,5 @@
 import { type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { apiDelete, apiGet, apiPost, BACKEND_URL, downloadFile } from '../api/client'
+import { apiDelete, apiGet, apiPatch, apiPost, BACKEND_URL, downloadFile } from '../api/client'
 import { authHeader } from '../auth'
 import LoadingSpinner from '../components/LoadingSpinner'
 import MicTest, { type ChatCacheEntry } from '../components/MicTest'
@@ -17,6 +17,8 @@ import type {
   GroupBot,
   GroupConversationDetail,
   GroupConversationSummary,
+  GroupSwarmConfig,
+  GroupSwarmState,
   ConversationFiles,
   HostAction,
   Options,
@@ -77,6 +79,14 @@ function clampSidebarWidth(next: number) {
 }
 
 const PAGE_SIZE = 10
+const DEFAULT_SWARM_MAX_TURNS = 6
+const DEFAULT_SWARM_MAX_PARALLEL = 2
+const DEFAULT_SWARM_MAX_HOPS = 3
+
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.min(max, Math.max(min, Math.round(value)))
+}
 
 type MessageCursor = {
   created_at: string
@@ -323,6 +333,13 @@ export default function DashboardPage() {
   const [groupDefaultId, setGroupDefaultId] = useState('')
   const [groupSaving, setGroupSaving] = useState(false)
   const [groupSaveErr, setGroupSaveErr] = useState<string | null>(null)
+  const [groupSwarmEnabled, setGroupSwarmEnabled] = useState(true)
+  const [groupCoordinatorMode, setGroupCoordinatorMode] = useState<'coordinator_first' | 'mentions_only'>('coordinator_first')
+  const [groupMaxTurns, setGroupMaxTurns] = useState(DEFAULT_SWARM_MAX_TURNS)
+  const [groupMaxParallel, setGroupMaxParallel] = useState(DEFAULT_SWARM_MAX_PARALLEL)
+  const [groupMaxHops, setGroupMaxHops] = useState(DEFAULT_SWARM_MAX_HOPS)
+  const [groupAllowRevisit, setGroupAllowRevisit] = useState(false)
+  const groupDetailRefreshTimerRef = useRef<number | null>(null)
   const [startToken, setStartToken] = useState(0)
   const [refreshToken, setRefreshToken] = useState(0)
   const [isVisible, setIsVisible] = useState(
@@ -377,7 +394,7 @@ export default function DashboardPage() {
     if (showDeveloperModal) setShowDeveloperModal(false)
     if (showSettingsModal) setShowSettingsModal(false)
     if (showCreateAssistant) setShowCreateAssistant(false)
-    if (showCreateGroup) setShowCreateGroup(false)
+    if (showCreateGroup) closeCreateGroupModal()
   }, anyModalOpen)
 
   function isNotFoundError(e: any) {
@@ -396,6 +413,29 @@ export default function DashboardPage() {
     setGroupMessages([])
     setGroupHasMore(true)
     setGroupOldestCursor(null)
+  }
+
+  function resetCreateGroupForm() {
+    setGroupTitle('')
+    setGroupFilter('')
+    setGroupSelected([])
+    setGroupDefaultId('')
+    setGroupSwarmEnabled(true)
+    setGroupCoordinatorMode('coordinator_first')
+    setGroupMaxTurns(DEFAULT_SWARM_MAX_TURNS)
+    setGroupMaxParallel(DEFAULT_SWARM_MAX_PARALLEL)
+    setGroupMaxHops(DEFAULT_SWARM_MAX_HOPS)
+    setGroupAllowRevisit(false)
+    setGroupSaveErr(null)
+  }
+
+  function openCreateGroupModal() {
+    resetCreateGroupForm()
+    setShowCreateGroup(true)
+  }
+
+  function closeCreateGroupModal() {
+    setShowCreateGroup(false)
   }
 
   function clearActiveConversationState() {
@@ -587,6 +627,15 @@ export default function DashboardPage() {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
+  useEffect(() => {
+    return () => {
+      if (groupDetailRefreshTimerRef.current) {
+        window.clearTimeout(groupDetailRefreshTimerRef.current)
+        groupDetailRefreshTimerRef.current = null
+      }
+    }
+  }, [])
+
   const q = query.trim().toLowerCase()
   const filteredBots = useMemo(() => {
     if (!q) return bots
@@ -611,6 +660,17 @@ export default function DashboardPage() {
   }, [bots, groupFilter])
   const selectedBots = useMemo(() => bots.filter((b) => groupSelected.includes(b.id)), [bots, groupSelected])
   const selectedSlugMap = useMemo(() => buildSlugMap(selectedBots), [selectedBots])
+  const createGroupSwarmConfig = useMemo(
+    () => ({
+      enabled: groupSwarmEnabled,
+      coordinator_mode: groupCoordinatorMode,
+      max_turns_per_run: clampInt(groupMaxTurns, 1, 40),
+      max_parallel_bots: clampInt(groupMaxParallel, 1, 8),
+      max_hops: clampInt(groupMaxHops, 0, 12),
+      allow_revisit: groupAllowRevisit,
+    }),
+    [groupAllowRevisit, groupCoordinatorMode, groupMaxHops, groupMaxParallel, groupMaxTurns, groupSwarmEnabled],
+  )
   useEffect(() => {
     if (!groupSelected.length) {
       if (groupDefaultId) setGroupDefaultId('')
@@ -703,6 +763,31 @@ export default function DashboardPage() {
     return merged
   }
 
+  const refreshGroupDetail = useCallback(
+    async (groupId: string) => {
+      if (!groupId) return
+      try {
+        const d = await apiGet<GroupConversationDetail>(`/api/group-conversations/${groupId}?include_messages=false`)
+        setGroupDetail(d)
+      } catch {
+        // ignore refresh errors
+      }
+    },
+    [],
+  )
+
+  const scheduleGroupDetailRefresh = useCallback(
+    (groupId: string) => {
+      if (!groupId) return
+      if (groupDetailRefreshTimerRef.current) return
+      groupDetailRefreshTimerRef.current = window.setTimeout(() => {
+        groupDetailRefreshTimerRef.current = null
+        void refreshGroupDetail(groupId)
+      }, 220)
+    },
+    [refreshGroupDetail],
+  )
+
   useEffect(() => {
     if (selectedType !== 'group' || !selectedGroupId) return
     setGroupMessages([])
@@ -713,10 +798,7 @@ export default function DashboardPage() {
       setGroupLoading(true)
       setGroupErr(null)
       try {
-        const d = await apiGet<GroupConversationDetail>(
-          `/api/group-conversations/${selectedGroupId}?include_messages=false`,
-        )
-        setGroupDetail(d)
+        await refreshGroupDetail(selectedGroupId)
         await loadGroupMessagesLatest(selectedGroupId)
       } catch (e: any) {
         setGroupErr(String(e?.message || e))
@@ -724,7 +806,7 @@ export default function DashboardPage() {
         setGroupLoading(false)
       }
     })()
-  }, [selectedGroupId, selectedType])
+  }, [refreshGroupDetail, selectedGroupId, selectedType])
 
   useLayoutEffect(() => {
     const el = groupScrollRef.current
@@ -810,6 +892,7 @@ export default function DashboardPage() {
       }
       if (payload.type === 'message' && payload.message) {
         setGroupMessages((prev) => mergeGroupMessages(prev, [payload.message]))
+        if (selectedGroupId) scheduleGroupDetailRefresh(selectedGroupId)
         if (selectedGroupId) {
           setUnseenByConversationId((prev) => ({ ...prev, [selectedGroupId]: 0 }))
           const preview = clipPreview(payload.message.content || '')
@@ -819,6 +902,7 @@ export default function DashboardPage() {
         }
       }
       if (payload.type === 'status') {
+        if (selectedGroupId) scheduleGroupDetailRefresh(selectedGroupId)
         setWorkingBots((prev) => {
           const next = { ...prev }
           if (payload.state === 'working') {
@@ -830,6 +914,7 @@ export default function DashboardPage() {
         })
       }
       if (payload.type === 'reset') {
+        if (selectedGroupId) scheduleGroupDetailRefresh(selectedGroupId)
         setWorkingBots({})
         setGroupMessages([])
         setGroupHasMore(true)
@@ -846,9 +931,10 @@ export default function DashboardPage() {
         // ignore
       }
     }
-  }, [selectedGroupId, selectedType])
+  }, [clipPreview, scheduleGroupDetailRefresh, selectedGroupId, selectedType])
 
-  const groupBots = groupDetail?.conversation.group_bots || []
+  const groupBots = groupDetail?.conversation?.group_bots || []
+  const groupSwarmState = (groupDetail?.conversation?.swarm_state || null) as GroupSwarmState | null
 
   const mentionOptions = useMemo(() => {
     if (!mention?.active) return []
@@ -946,7 +1032,7 @@ export default function DashboardPage() {
 
   async function sendGroupMessage() {
     if (!selectedGroupId || !groupText.trim()) return
-    if (!groupDetail?.conversation.default_bot_id) {
+    if (!groupDetail?.conversation?.default_bot_id) {
       setGroupSendErr('Pick a default assistant before starting the group chat.')
       return
     }
@@ -969,7 +1055,7 @@ export default function DashboardPage() {
   const activeConversationId = selectedType === 'group' ? selectedGroupId : assistantConversationId
   const activeBotId =
     selectedType === 'group'
-      ? groupDetail?.conversation.default_bot_id || groups.find((g) => g.id === selectedGroupId)?.default_bot_id || null
+      ? groupDetail?.conversation?.default_bot_id || groups.find((g) => g.id === selectedGroupId)?.default_bot_id || null
       : selectedBotId
   const activeBot = bots.find((b) => b.id === activeBotId) || null
   const canUpload = Boolean(activeConversationId && activeBot?.enable_data_agent)
@@ -1361,12 +1447,10 @@ export default function DashboardPage() {
         title: groupTitle.trim(),
         bot_ids: groupSelected,
         default_bot_id: groupDefaultId,
+        swarm_config: createGroupSwarmConfig,
       })
-      setShowCreateGroup(false)
-      setGroupTitle('')
-      setGroupFilter('')
-      setGroupSelected([])
-      setGroupDefaultId('')
+      closeCreateGroupModal()
+      resetCreateGroupForm()
       await reloadLists()
       setSelectedType('group')
       setSelectedGroupId(payload.conversation.id)
@@ -1374,6 +1458,19 @@ export default function DashboardPage() {
       setGroupSaveErr(String(e?.message || e))
     } finally {
       setGroupSaving(false)
+    }
+  }
+
+  async function updateGroupSwarmConfig(configPatch: GroupSwarmConfig) {
+    if (!selectedGroupId) return
+    try {
+      const next = await apiPatch<GroupConversationDetail>(
+        `/api/group-conversations/${selectedGroupId}/swarm-config`,
+        configPatch,
+      )
+      setGroupDetail(next)
+    } catch (e: any) {
+      throw new Error(String(e?.message || e))
     }
   }
 
@@ -1401,11 +1498,11 @@ export default function DashboardPage() {
     const ok = window.confirm('Reset this group chat? This clears the group thread and individual logs.')
     if (!ok) return
     try {
-      const res = await apiPost<GroupConversationDetail>(`/api/group-conversations/${selectedGroupId}/reset`, {})
-      setGroupDetail(res)
+      await apiPost(`/api/group-conversations/${selectedGroupId}/reset`, {})
       setGroupMessages([])
       setGroupHasMore(true)
       setGroupOldestCursor(null)
+      await refreshGroupDetail(selectedGroupId)
       void loadGroupMessagesLatest(selectedGroupId)
       setWorkingBots({})
     } catch (e: any) {
@@ -1620,7 +1717,7 @@ export default function DashboardPage() {
                 <>
                   <div className="chatSectionLabelRow">
                     <div className="chatSectionLabel">Groups</div>
-                    <button className="iconBtn small" onClick={() => setShowCreateGroup(true)} title="New group">
+                    <button className="iconBtn small" onClick={() => openCreateGroupModal()} title="New group">
                       <PlusIcon />
                     </button>
                   </div>
@@ -1663,7 +1760,7 @@ export default function DashboardPage() {
           <div>
             <h2>
               {selectedType === 'group'
-                ? groupDetail?.conversation.title || 'Group chat'
+                ? groupDetail?.conversation?.title || 'Group chat'
                 : bots.find((b) => b.id === selectedBotId)?.name || 'Assistant'}
             </h2>
             <div className="muted">
@@ -1788,6 +1885,12 @@ export default function DashboardPage() {
           {selectedType === 'group' ? (
             <>
               {groupErr ? <div className="alert">{groupErr}</div> : null}
+              <GroupSwarmPanel
+                state={groupSwarmState}
+                bots={groupBots}
+                workingBots={workingBots}
+                onSave={(cfg) => updateGroupSwarmConfig(cfg)}
+              />
               {groupLoading ? (
                 <div className="muted">
                   <LoadingSpinner />
@@ -2354,7 +2457,7 @@ export default function DashboardPage() {
                 <div className="cardTitle">New group</div>
                 <div className="muted">Pick assistants and a default.</div>
               </div>
-              <button className="iconBtn modalCloseBtn" onClick={() => setShowCreateGroup(false)} aria-label="Close">
+              <button className="iconBtn modalCloseBtn" onClick={() => closeCreateGroupModal()} aria-label="Close">
                 <XMarkIcon />
               </button>
             </div>
@@ -2392,13 +2495,259 @@ export default function DashboardPage() {
                 ))}
               </SelectField>
             </div>
+            <div className="formRow">
+              <label>Swarm coordinator mode</label>
+              <SelectField
+                value={groupCoordinatorMode}
+                onChange={(e) => setGroupCoordinatorMode((e.target.value as 'coordinator_first' | 'mentions_only') || 'coordinator_first')}
+              >
+                <option value="coordinator_first">Coordinator first</option>
+                <option value="mentions_only">Mentions only</option>
+              </SelectField>
+            </div>
+            <div className="formRow formRowGrid2">
+              <div>
+                <label>Max turns / run</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={40}
+                  value={groupMaxTurns}
+                  onChange={(e) => setGroupMaxTurns(clampInt(Number(e.target.value || DEFAULT_SWARM_MAX_TURNS), 1, 40))}
+                />
+              </div>
+              <div>
+                <label>Max parallel bots</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={groupMaxParallel}
+                  onChange={(e) => setGroupMaxParallel(clampInt(Number(e.target.value || DEFAULT_SWARM_MAX_PARALLEL), 1, 8))}
+                />
+              </div>
+            </div>
+            <div className="formRow formRowGrid2">
+              <div>
+                <label>Max hops</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={12}
+                  value={groupMaxHops}
+                  onChange={(e) => setGroupMaxHops(clampInt(Number(e.target.value || DEFAULT_SWARM_MAX_HOPS), 0, 12))}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <label className="checkRow">
+                  <input
+                    type="checkbox"
+                    checked={groupAllowRevisit}
+                    onChange={(e) => setGroupAllowRevisit(e.target.checked)}
+                  />
+                  Allow bot revisit
+                </label>
+              </div>
+            </div>
+            <div className="formRow">
+              <label className="checkRow">
+                <input
+                  type="checkbox"
+                  checked={groupSwarmEnabled}
+                  onChange={(e) => setGroupSwarmEnabled(e.target.checked)}
+                />
+                Enable swarm coordinator
+              </label>
+            </div>
             <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button className="btn primary" onClick={() => void createGroup()} disabled={groupSaving || !groupTitle.trim()}>
+              <button
+                className="btn primary"
+                onClick={() => void createGroup()}
+                disabled={groupSaving || !groupTitle.trim() || groupSelected.length === 0 || !groupDefaultId}
+              >
                 {groupSaving ? 'Creating…' : 'Create group'}
               </button>
             </div>
           </div>
         </div>
+      ) : null}
+    </div>
+  )
+}
+
+function renderSwarmBotList(ids: string[] | undefined, nameById: Record<string, string>) {
+  if (!ids || ids.length === 0) return '-'
+  return ids.map((id) => nameById[id] || id.slice(0, 8)).join(', ')
+}
+
+function GroupSwarmPanel({
+  state,
+  bots,
+  workingBots,
+  onSave,
+}: {
+  state: GroupSwarmState | null
+  bots: GroupBot[]
+  workingBots: Record<string, string>
+  onSave?: (cfg: GroupSwarmConfig) => Promise<void> | void
+}) {
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return true
+    return window.localStorage.getItem('igx_swarm_panel_collapsed') !== '0'
+  })
+  const nameById = useMemo(() => {
+    const out: Record<string, string> = {}
+    bots.forEach((b) => {
+      out[b.id] = `${b.name} (@${b.slug})`
+    })
+    return out
+  }, [bots])
+  const cfg = state?.config || null
+  const run = state?.active_run || null
+  const [enabled, setEnabled] = useState(Boolean(cfg?.enabled ?? true))
+  const [mode, setMode] = useState<'coordinator_first' | 'mentions_only'>(
+    (cfg?.coordinator_mode as 'coordinator_first' | 'mentions_only') || 'coordinator_first',
+  )
+  const [maxTurns, setMaxTurns] = useState(clampInt(Number(cfg?.max_turns_per_run ?? DEFAULT_SWARM_MAX_TURNS), 1, 40))
+  const [maxParallel, setMaxParallel] = useState(clampInt(Number(cfg?.max_parallel_bots ?? DEFAULT_SWARM_MAX_PARALLEL), 1, 8))
+  const [maxHops, setMaxHops] = useState(clampInt(Number(cfg?.max_hops ?? DEFAULT_SWARM_MAX_HOPS), 0, 12))
+  const [allowRevisit, setAllowRevisit] = useState(Boolean(cfg?.allow_revisit ?? false))
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    setEnabled(Boolean(cfg?.enabled ?? true))
+    setMode((cfg?.coordinator_mode as 'coordinator_first' | 'mentions_only') || 'coordinator_first')
+    setMaxTurns(clampInt(Number(cfg?.max_turns_per_run ?? DEFAULT_SWARM_MAX_TURNS), 1, 40))
+    setMaxParallel(clampInt(Number(cfg?.max_parallel_bots ?? DEFAULT_SWARM_MAX_PARALLEL), 1, 8))
+    setMaxHops(clampInt(Number(cfg?.max_hops ?? DEFAULT_SWARM_MAX_HOPS), 0, 12))
+    setAllowRevisit(Boolean(cfg?.allow_revisit ?? false))
+  }, [cfg?.allow_revisit, cfg?.coordinator_mode, cfg?.enabled, cfg?.max_hops, cfg?.max_parallel_bots, cfg?.max_turns_per_run])
+
+  const runStatus = (run?.status || (Object.keys(workingBots).length ? 'running' : 'idle')).toLowerCase()
+  const runLabel = runStatus === 'running' ? 'Running' : runStatus === 'done' ? 'Done' : runStatus === 'idle' ? 'Idle' : runStatus
+  const turns = `${run?.remaining_turns ?? '-'} / ${run?.max_turns ?? cfg?.max_turns_per_run ?? DEFAULT_SWARM_MAX_TURNS}`
+  const hops = `${run?.hop_count ?? 0} / ${run?.max_hops ?? cfg?.max_hops ?? DEFAULT_SWARM_MAX_HOPS}`
+  const coordinatorId = String(run?.coordinator_bot_id || '')
+  const coordinator = coordinatorId ? nameById[coordinatorId] || coordinatorId.slice(0, 8) : '-'
+  const conflicts = Array.isArray(run?.conflicts) ? run?.conflicts.slice(-5) : []
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('igx_swarm_panel_collapsed', collapsed ? '1' : '0')
+  }, [collapsed])
+
+  async function saveConfig() {
+    if (!onSave) return
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      await onSave({
+        enabled,
+        coordinator_mode: mode,
+        max_turns_per_run: clampInt(maxTurns, 1, 40),
+        max_parallel_bots: clampInt(maxParallel, 1, 8),
+        max_hops: clampInt(maxHops, 0, 12),
+        allow_revisit: allowRevisit,
+      })
+    } catch (e: any) {
+      setSaveErr(String(e?.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="swarmPanel">
+      <div className="swarmHead">
+        <strong>Swarm</strong>
+        <div className="row" style={{ gap: 8 }}>
+          <span className={`swarmStatus ${runStatus === 'running' ? 'running' : ''}`}>{runLabel}</span>
+          <button className="btn ghost" style={{ padding: '4px 8px' }} onClick={() => setCollapsed((v) => !v)}>
+            {collapsed ? 'Open' : 'Done'}
+          </button>
+        </div>
+      </div>
+      {!collapsed ? (
+        <>
+          <div className="swarmGrid">
+            <div><span className="muted">Coordinator</span><div>{coordinator}</div></div>
+            <div><span className="muted">Turns</span><div>{turns}</div></div>
+            <div><span className="muted">Hops</span><div>{hops}</div></div>
+            <div><span className="muted">Parallel</span><div>{cfg?.max_parallel_bots ?? DEFAULT_SWARM_MAX_PARALLEL}</div></div>
+          </div>
+          {run?.objective ? <div className="swarmObjective"><span className="muted">Objective:</span> {run.objective}</div> : null}
+          <div className="swarmLists">
+            <div><span className="muted">In-flight</span><div>{renderSwarmBotList(run?.inflight_bot_ids, nameById)}</div></div>
+            <div><span className="muted">Pending</span><div>{renderSwarmBotList(run?.pending_bot_ids, nameById)}</div></div>
+            <div><span className="muted">Completed</span><div>{renderSwarmBotList(run?.completed_bot_ids, nameById)}</div></div>
+            <div><span className="muted">Failed</span><div>{renderSwarmBotList(run?.failed_bot_ids, nameById)}</div></div>
+          </div>
+          {conflicts.length ? (
+            <div className="swarmConflicts">
+              <div className="muted">Recent conflicts</div>
+              {conflicts.map((c, idx) => (
+                <div key={`${c?.type || 'conflict'}-${idx}`}>
+                  {(c?.type || 'conflict').replace(/_/g, ' ')}
+                  {c?.bot_id ? ` · ${nameById[c.bot_id] || c.bot_id.slice(0, 8)}` : ''}
+                  {c?.reason ? ` · ${c.reason}` : ''}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {onSave ? (
+            <div className="swarmEditor">
+              <div className="swarmEditorGrid">
+                <label className="checkRow">
+                  <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+                  Enabled
+                </label>
+                <SelectField
+                  value={mode}
+                  onChange={(e) => setMode((e.target.value as 'coordinator_first' | 'mentions_only') || 'coordinator_first')}
+                  wrapClassName="compact"
+                >
+                  <option value="coordinator_first">Coordinator first</option>
+                  <option value="mentions_only">Mentions only</option>
+                </SelectField>
+                <input
+                  type="number"
+                  min={1}
+                  max={40}
+                  value={maxTurns}
+                  onChange={(e) => setMaxTurns(clampInt(Number(e.target.value || DEFAULT_SWARM_MAX_TURNS), 1, 40))}
+                  title="Max turns per run"
+                />
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={maxParallel}
+                  onChange={(e) => setMaxParallel(clampInt(Number(e.target.value || DEFAULT_SWARM_MAX_PARALLEL), 1, 8))}
+                  title="Max parallel bots"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={12}
+                  value={maxHops}
+                  onChange={(e) => setMaxHops(clampInt(Number(e.target.value || DEFAULT_SWARM_MAX_HOPS), 0, 12))}
+                  title="Max hops"
+                />
+                <label className="checkRow">
+                  <input type="checkbox" checked={allowRevisit} onChange={(e) => setAllowRevisit(e.target.checked)} />
+                  Revisit
+                </label>
+              </div>
+              <div className="swarmEditorActions">
+                <button className="btn" onClick={() => void saveConfig()} disabled={saving}>
+                  {saving ? 'Saving…' : 'Save swarm config'}
+                </button>
+                {saveErr ? <span className="muted">{saveErr}</span> : null}
+              </div>
+            </div>
+          ) : null}
+        </>
       ) : null}
     </div>
   )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from voicebot.web.helpers.group_run import extract_group_mentions, run_group_bot_turn, schedule_group_bots
+from voicebot.web.helpers.group_run import extract_group_mentions, run_group_bot_turn, schedule_group_bots, start_group_swarm_run
 from voicebot.web.helpers.history_build import (
     build_history,
     build_history_budgeted,
@@ -18,4 +18,5 @@ __all__ = [
     "get_conversation_meta",
     "run_group_bot_turn",
     "schedule_group_bots",
+    "start_group_swarm_run",
 ]

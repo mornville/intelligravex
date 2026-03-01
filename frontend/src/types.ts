@@ -148,6 +148,50 @@ export type GroupConversationSummary = {
   updated_at: string
 }
 
+export type GroupSwarmConfig = {
+  enabled?: boolean
+  coordinator_mode?: 'coordinator_first' | 'mentions_only' | string
+  max_turns_per_run?: number
+  max_parallel_bots?: number
+  max_hops?: number
+  allow_revisit?: boolean
+}
+
+export type GroupSwarmRun = {
+  run_id?: string
+  status?: string
+  sender_role?: string
+  objective?: string
+  trigger_message_id?: string | null
+  coordinator_bot_id?: UUID | null
+  max_turns?: number
+  remaining_turns?: number
+  max_hops?: number
+  hop_count?: number
+  requested_bot_ids?: UUID[]
+  pending_bot_ids?: UUID[]
+  scheduled_bot_ids?: UUID[]
+  inflight_bot_ids?: UUID[]
+  completed_bot_ids?: UUID[]
+  failed_bot_ids?: UUID[]
+  conflicts?: Array<{ at?: string; type?: string; bot_id?: UUID | null; source_bot_id?: UUID | null; reason?: string }>
+  by_bot?: Record<
+    string,
+    {
+      state?: string
+      updated_at?: string
+      reason?: string
+      source_bot_id?: UUID
+      error?: string
+    }
+  >
+}
+
+export type GroupSwarmState = {
+  config?: GroupSwarmConfig
+  active_run?: GroupSwarmRun
+}
+
 export type GroupConversationDetail = {
   conversation: {
     id: UUID
@@ -155,6 +199,7 @@ export type GroupConversationDetail = {
     default_bot_id: UUID
     default_bot_name: string | null
     group_bots: GroupBot[]
+    swarm_state?: GroupSwarmState | null
     individual_conversations?: { bot_id: UUID; conversation_id: UUID }[]
     created_at: string
     updated_at: string

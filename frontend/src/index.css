@@ -2851,6 +2851,78 @@ label {
 .chatWorking {
   padding: 0 20px 12px;
 }
+.swarmPanel {
+  margin: 10px 18px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(138, 180, 248, 0.26);
+  background: linear-gradient(180deg, rgba(138, 180, 248, 0.12), rgba(138, 180, 248, 0.04));
+}
+.swarmHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.swarmStatus {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.15);
+}
+.swarmStatus.running {
+  border-color: rgba(74, 222, 128, 0.45);
+  background: rgba(74, 222, 128, 0.18);
+}
+.swarmGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+.swarmObjective {
+  margin-bottom: 8px;
+}
+.swarmLists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+.swarmConflicts {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+.swarmEditor {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.swarmEditorGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.swarmEditorGrid .checkRow {
+  margin-top: 0;
+  font-size: 12px;
+}
+.swarmEditorActions {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+@media (max-width: 900px) {
+  .swarmGrid,
+  .swarmLists,
+  .swarmEditorGrid {
+    grid-template-columns: 1fr;
+  }
+}
 
 .chatWorkspace {
   border-left: 1px solid var(--border);

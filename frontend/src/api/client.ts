@@ -51,6 +51,16 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T
 }
 
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(withBase(path), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await safeErr(res))
+  return (await res.json()) as T
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(withBase(path), { method: 'DELETE', headers: { ...authHeader() } })
   if (!res.ok) throw new Error(await safeErr(res))

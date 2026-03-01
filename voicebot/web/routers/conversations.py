@@ -121,6 +121,8 @@ def register(app, ctx) -> None:
         for m in msgs_raw:
             if m.role == "tool":
                 continue
+            if m.role == "assistant" and not str(m.content or "").strip():
+                continue
             tool_obj = _safe_json_loads(m.content) if m.role == "tool" else None
             tool_name = tool_obj.get("tool") if tool_obj and isinstance(tool_obj.get("tool"), str) else None
             tool_kind = None
@@ -257,6 +259,8 @@ def register(app, ctx) -> None:
         messages = []
         for m in msgs_raw:
             if m.role == "tool" and not include_tools:
+                continue
+            if m.role == "assistant" and not str(m.content or "").strip():
                 continue
             tool_obj = None
             tool_name = None

@@ -6,11 +6,31 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, Request, WebSocket, WebSocketDisconnect
 from sqlmodel import Session
 
-from ..schemas import GroupConversationCreateRequest, GroupMessageRequest
+from ..schemas import GroupConversationCreateRequest, GroupMessageRequest, GroupSwarmConfigRequest
 
 
 def register(app, ctx) -> None:
     router = APIRouter()
+
+    def _clamp_int(value, *, default: int, lo: int, hi: int) -> int:
+        try:
+            n = int(value)
+        except Exception:
+            n = default
+        return min(hi, max(lo, n))
+
+    def _normalize_swarm_config(raw: dict | None) -> dict:
+        cfg = raw if isinstance(raw, dict) else {}
+        return {
+            "enabled": bool(cfg.get("enabled", True)),
+            "coordinator_mode": "coordinator_first"
+            if str(cfg.get("coordinator_mode") or "").strip().lower() != "mentions_only"
+            else "mentions_only",
+            "max_turns_per_run": _clamp_int(cfg.get("max_turns_per_run"), default=6, lo=1, hi=40),
+            "max_parallel_bots": _clamp_int(cfg.get("max_parallel_bots"), default=2, lo=1, hi=8),
+            "max_hops": _clamp_int(cfg.get("max_hops"), default=3, lo=0, hi=12),
+            "allow_revisit": bool(cfg.get("allow_revisit", False)),
+        }
 
     @router.get("/api/group-conversations")
     def api_list_group_conversations(request: Request, session: Session = Depends(ctx.get_session)) -> dict:
@@ -77,12 +97,16 @@ def register(app, ctx) -> None:
             group_bots.append({"id": str(b.id), "name": b.name, "slug": slug})
 
         now = ctx.dt.datetime.now(ctx.dt.timezone.utc)
+        metadata: dict = {}
+        if isinstance(payload.swarm_config, dict):
+            metadata["group_swarm"] = {"config": _normalize_swarm_config(payload.swarm_config)}
         conv = ctx.Conversation(
             bot_id=UUID(default_bot_id),
             test_flag=bool(payload.test_flag),
             is_group=True,
             group_title=title,
             group_bots_json=ctx.json.dumps(group_bots, ensure_ascii=False),
+            metadata_json=ctx.json.dumps(metadata, ensure_ascii=False) if metadata else "{}",
             created_at=now,
             updated_at=now,
         )
@@ -101,6 +125,64 @@ def register(app, ctx) -> None:
         if not bool(conv.is_group):
             raise ctx.HTTPException(status_code=404, detail="Group conversation not found")
         return ctx._group_conversation_payload(session, conv, include_messages=include_messages)
+
+    @router.patch("/api/group-conversations/{conversation_id}/swarm-config")
+    def api_update_group_swarm_config(
+        conversation_id: UUID,
+        payload: GroupSwarmConfigRequest = Body(...),
+        session: Session = Depends(ctx.get_session),
+    ) -> dict:
+        conv = ctx.get_conversation(session, conversation_id)
+        if not bool(conv.is_group):
+            raise ctx.HTTPException(status_code=404, detail="Group conversation not found")
+
+        meta = ctx.safe_json_loads(conv.metadata_json or "{}") or {}
+        if not isinstance(meta, dict):
+            meta = {}
+        swarm = meta.get("group_swarm")
+        if not isinstance(swarm, dict):
+            swarm = {}
+
+        prev = swarm.get("config")
+        if not isinstance(prev, dict):
+            prev = {}
+        incoming = payload.model_dump(exclude_none=True)
+        merged = {**prev, **incoming}
+        normalized = _normalize_swarm_config(merged)
+        swarm["config"] = normalized
+
+        active = swarm.get("active_run")
+        if isinstance(active, dict) and str(active.get("status") or "") == "running":
+            old_max_turns = _clamp_int(
+                active.get("max_turns"),
+                default=_clamp_int(prev.get("max_turns_per_run"), default=6, lo=1, hi=40),
+                lo=1,
+                hi=9999,
+            )
+            old_remaining = _clamp_int(active.get("remaining_turns"), default=0, lo=0, hi=9999)
+            consumed = max(0, old_max_turns - old_remaining)
+            new_max_turns = int(normalized["max_turns_per_run"])
+            active["max_turns"] = new_max_turns
+            active["remaining_turns"] = max(0, new_max_turns - consumed)
+            active["max_hops"] = int(normalized["max_hops"])
+            inflight = active.get("inflight_bot_ids")
+            scheduled = active.get("scheduled_bot_ids")
+            if not isinstance(inflight, list):
+                inflight = []
+            if not isinstance(scheduled, list):
+                scheduled = []
+            if int(active.get("remaining_turns") or 0) <= 0 and not inflight and not scheduled:
+                active["status"] = "done"
+            active["updated_at"] = ctx.dt.datetime.now(ctx.dt.timezone.utc).isoformat()
+            swarm["active_run"] = active
+
+        meta["group_swarm"] = swarm
+        conv.metadata_json = ctx.json.dumps(meta, ensure_ascii=False)
+        conv.updated_at = ctx.dt.datetime.now(ctx.dt.timezone.utc)
+        session.add(conv)
+        session.commit()
+        session.refresh(conv)
+        return ctx._group_conversation_payload(session, conv, include_messages=False)
 
     @router.get("/api/group-conversations/{conversation_id}/messages")
     def api_group_conversation_messages(
@@ -226,8 +308,24 @@ def register(app, ctx) -> None:
                 raise ctx.HTTPException(status_code=400, detail="Default assistant is not configured")
             targets = [conv.bot_id]
 
+        run_id = None
+        if sender_role == "user":
+            run_id, targets = ctx._start_group_swarm_run(
+                conversation_id=conversation_id,
+                trigger_message_id=msg.id,
+                objective=text,
+                requested_targets=targets,
+                sender_role=sender_role,
+            )
+
         if targets:
-            ctx._schedule_group_bots(conversation_id, targets)
+            ctx._schedule_group_bots(
+                conversation_id,
+                targets,
+                run_id=run_id,
+                reason="user_input",
+                source_bot_id=sender_bot_id,
+            )
 
         return ctx._group_conversation_payload(session, conv)
 

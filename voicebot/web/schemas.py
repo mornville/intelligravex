@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -15,6 +15,16 @@ class GroupConversationCreateRequest(BaseModel):
     bot_ids: list[str]
     default_bot_id: str
     test_flag: bool = False
+    swarm_config: Optional[dict[str, Any]] = None
+
+
+class GroupSwarmConfigRequest(BaseModel):
+    enabled: Optional[bool] = None
+    coordinator_mode: Optional[str] = None
+    max_turns_per_run: Optional[int] = None
+    max_parallel_bots: Optional[int] = None
+    max_hops: Optional[int] = None
+    allow_revisit: Optional[bool] = None
 
 
 class GroupMessageRequest(BaseModel):

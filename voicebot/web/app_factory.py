@@ -211,6 +211,7 @@ def create_app() -> FastAPI:
     openrouter_models_cache: dict[str, Any] = {"ts": 0.0, "models": [], "pricing": {}}
     group_ws_clients: dict[str, set[WebSocket]] = {}
     group_ws_lock = asyncio.Lock()
+    group_swarm_lock = threading.Lock()
     conversation_ws_clients: dict[str, dict[WebSocket, asyncio.AbstractEventLoop]] = {}
     conversation_ws_lock = threading.Lock()
     try:
@@ -473,6 +474,7 @@ def create_app() -> FastAPI:
     ctx._extract_group_mentions = partial(history_helpers.extract_group_mentions, ctx)
     ctx._run_group_bot_turn = partial(history_helpers.run_group_bot_turn, ctx)
     ctx._schedule_group_bots = partial(history_helpers.schedule_group_bots, ctx)
+    ctx._start_group_swarm_run = partial(history_helpers.start_group_swarm_run, ctx)
 
     ctx._data_agent_meta = data_agent_helpers.data_agent_meta
     ctx._data_agent_container_info = partial(data_agent_helpers.data_agent_container_info, ctx)
