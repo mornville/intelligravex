@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Integrations UI Concepts</title>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css" />
+  <style>
+    :root {
+      --bg0: #0c0d10;
+      --bg1: #101218;
+      --panel: #14161c;
+      --panel2: #1a1d24;
+      --panel3: #202530;
+      --chip: #1b1f26;
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e7e9ee;
+      --muted: #9aa3b2;
+      --accent: #8ab4f8;
+      --accent2: #5c8bff;
+      --accent3: #2dd4bf;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --glow: rgba(59, 130, 246, 0.18);
+      --glow2: rgba(45, 212, 191, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "General Sans", "Space Grotesk", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(900px 700px at 10% -10%, var(--glow), transparent 55%),
+        radial-gradient(900px 700px at 90% -15%, var(--glow2), transparent 55%),
+        linear-gradient(180deg, var(--bg0), var(--bg1));
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .wrap {
+      max-width: 1440px;
+      margin: 0 auto;
+      display: grid;
+      gap: 20px;
+    }
+
+    .header {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(19, 17, 24, 0.95), rgba(13, 11, 18, 0.8));
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .titleRow {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0.2px;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tags {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .tag {
+      font-size: 12px;
+      padding: 5px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #d9e4fb;
+    }
+
+    .plan {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 10px;
+    }
+
+    .planCard {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .planCard h3 {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+      letter-spacing: 0.2px;
+      color: #d6e3ff;
+    }
+
+    .planCard p {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .options {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(320px, 1fr));
+      gap: 14px;
+    }
+
+    .option {
+      border: 1px solid rgba(138, 180, 248, 0.24);
+      background: linear-gradient(180deg, rgba(20, 24, 34, 0.9), rgba(15, 18, 26, 0.9));
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 280px;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .optionHead {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .optionTitle {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.2px;
+    }
+
+    .optionNote {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mock {
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    .pill {
+      border: 1px solid var(--border);
+      background: var(--chip);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      color: #dbe4f6;
+    }
+
+    .pill.active {
+      border-color: rgba(138, 180, 248, 0.56);
+      background: rgba(92, 139, 255, 0.2);
+      color: #f0f6ff;
+    }
+
+    .panel {
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      margin-bottom: 9px;
+    }
+
+    .step:last-child { margin-bottom: 0; }
+
+    .chip {
+      font-size: 11px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .chip.ok {
+      border-color: rgba(52, 211, 153, 0.45);
+      background: rgba(16, 185, 129, 0.16);
+      color: #c8f9e8;
+    }
+
+    .chip.warn {
+      border-color: rgba(251, 191, 36, 0.45);
+      background: rgba(251, 191, 36, 0.14);
+      color: #fceec1;
+    }
+
+    .btn {
+      border: 1px solid rgba(138, 180, 248, 0.4);
+      background: linear-gradient(120deg, rgba(138, 180, 248, 0.88), rgba(92, 139, 255, 0.86));
+      color: #0b0f16;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btnGhost {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: #dde6f6;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+
+    .cols2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 8px;
+    }
+
+    .list li {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.02);
+      font-size: 12px;
+      line-height: 1.5;
+      color: #dae4f6;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .bar {
+      height: 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+    }
+
+    .bar > span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, rgba(45, 212, 191, 0.85), rgba(92, 139, 255, 0.9));
+      width: 64%;
+    }
+
+    .rail {
+      display: grid;
+      grid-template-columns: 132px 1fr;
+      gap: 8px;
+    }
+
+    .leftNav {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      display: grid;
+      gap: 6px;
+      align-content: start;
+    }
+
+    .navItem {
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 7px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .navItem.active {
+      color: #edf4ff;
+      border-color: rgba(138, 180, 248, 0.46);
+      background: rgba(92, 139, 255, 0.2);
+    }
+
+    .stack {
+      display: grid;
+      gap: 8px;
+    }
+
+    .quote {
+      margin: 0;
+      font-size: 11px;
+      color: var(--muted);
+      border-left: 2px solid rgba(138, 180, 248, 0.45);
+      padding-left: 8px;
+      line-height: 1.7;
+    }
+
+    .spacedFlow .step { margin-bottom: 10px; }
+    .spacedFlow .quote { margin: 4px 0 14px 0; }
+    .spacedFlow .quote:last-child { margin-bottom: 4px; }
+
+    @media (max-width: 1100px) {
+      .options { grid-template-columns: 1fr; }
+      .plan { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 700px) {
+      body { padding: 12px; }
+      .plan { grid-template-columns: 1fr; }
+      .rail { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="header">
+      <div class="titleRow">
+        <div>
+          <h1>Settings → Integrations (UI Option Gallery)</h1>
+          <p class="sub">Goal: move GitHub/GitLab out of isolated workspace into a reusable integrations hub.</p>
+        </div>
+        <div class="tags">
+          <span class="tag"><i class="fa-brands fa-github"></i> GitHub</span>
+          <span class="tag"><i class="fa-brands fa-gitlab"></i> GitLab</span>
+          <span class="tag"><i class="fa-brands fa-slack"></i> Slack (later)</span>
+          <span class="tag"><i class="fa-brands fa-whatsapp"></i> WhatsApp (later)</span>
+        </div>
+      </div>
+      <div class="plan">
+        <article class="planCard">
+          <h3>1) IA / Placement</h3>
+          <p>New top-level in Settings: Integrations. Each provider gets status, auth, scopes, repo binding, and health.</p>
+        </article>
+        <article class="planCard">
+          <h3>2) Onboarding Flow</h3>
+          <p>Step A auth (OAuth/SSH), Step B verify access, Step C optional repo/project link (skippable), Step D done.</p>
+        </article>
+        <article class="planCard">
+          <h3>3) Future-Proof Model</h3>
+          <p>Shared provider shell + capability blocks (repos, messaging, webhooks, notifications) for Slack/WhatsApp later.</p>
+        </article>
+        <article class="planCard">
+          <h3>4) UX Principle</h3>
+          <p>Fast path first. One clear primary button, advanced controls hidden behind “Advanced”. Minimal required fields.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="options">
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 1: Left Rail + Step Wizard</h2>
+            <p class="optionNote">Best for structured onboarding.</p>
+          </div>
+          <span class="chip ok">Recommended</span>
+        </header>
+        <div class="mock rail">
+          <nav class="leftNav">
+            <div class="navItem active"><i class="fa-brands fa-github"></i> GitHub</div>
+            <div class="navItem"><i class="fa-brands fa-gitlab"></i> GitLab</div>
+            <div class="navItem"><i class="fa-brands fa-slack"></i> Slack</div>
+            <div class="navItem"><i class="fa-brands fa-whatsapp"></i> WhatsApp</div>
+          </nav>
+          <div class="stack">
+            <div class="row">
+              <span class="pill active">1. Add SSH Key</span>
+              <span class="pill">2. Connect Account</span>
+              <span class="pill">3. Link Repo (Optional)</span>
+              <span class="pill">4. Local Repo Cache (Optional)</span>
+            </div>
+            <div class="panel spacedFlow">
+              <div class="step"><span><i class="fa-solid fa-key"></i> Workspace SSH key</span><span class="chip ok">done</span></div>
+              <p class="quote">Used by isolated workspace to run Git operations (clone/fetch/pull/push) without per-provider keys.</p>
+              <div class="step"><span><i class="fa-solid fa-shield-halved"></i> OAuth / PAT access</span><span class="chip warn">pending</span></div>
+              <p class="quote">Authorizes GitHub/GitLab API calls for listing repos, opening PRs, and metadata sync.</p>
+              <div class="step"><span><i class="fa-solid fa-code-branch"></i> Repo link</span><span class="chip">skip</span></div>
+              <p class="quote">Optional shortcut: preselect repo so clone/setup is one click. If skipped, integration still stays connected.</p>
+              <div class="step"><span><i class="fa-solid fa-hard-drive"></i> Local repo cache path</span><span class="chip">optional</span></div>
+              <p class="quote">For large repos, reuse local checkout to avoid cloning repeatedly and speed up isolated workspace startup.</p>
+            </div>
+            <div class="row"><button class="btn"><i class="fa-solid fa-arrow-right"></i> Continue</button><button class="btnGhost">Skip optional steps</button></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 2: Provider Cards + Quick Connect</h2>
+            <p class="optionNote">Best for very fast first-time setup.</p>
+          </div>
+          <span class="chip">Fast path</span>
+        </header>
+        <div class="mock">
+          <div class="cols2">
+            <div class="panel">
+              <div class="row"><span class="pill active"><i class="fa-brands fa-github"></i> GitHub</span><span class="chip warn">not connected</span></div>
+              <p class="quote">Connect in 2 steps. Repo linking optional.</p>
+              <button class="btn"><i class="fa-solid fa-link"></i> Connect GitHub</button>
+            </div>
+            <div class="panel">
+              <div class="row"><span class="pill active"><i class="fa-brands fa-gitlab"></i> GitLab</span><span class="chip">idle</span></div>
+              <p class="quote">Use same flow as GitHub for consistency.</p>
+              <button class="btnGhost">Open GitLab flow</button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="step"><span><i class="fa-solid fa-wand-magic-sparkles"></i> Smart onboarding: asks only missing inputs</span><span class="chip ok">enabled</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 3: Single Modal Onboarding</h2>
+            <p class="optionNote">Compact flow with progress inside modal.</p>
+          </div>
+          <span class="chip">Modal-heavy</span>
+        </header>
+        <div class="mock">
+          <div class="panel">
+            <div class="row" style="justify-content:space-between"><strong>Connect GitHub</strong><span class="chip">Step 2 / 3</span></div>
+            <div class="bar"><span></span></div>
+            <div class="step"><span><i class="fa-solid fa-key"></i> SSH Key</span><span class="chip ok">complete</span></div>
+            <div class="step"><span><i class="fa-solid fa-user-check"></i> Authorize account</span><span class="chip warn">current</span></div>
+            <div class="step"><span><i class="fa-solid fa-folder-tree"></i> Add repository</span><span class="chip">optional</span></div>
+            <div class="row"><button class="btnGhost">Back</button><button class="btn">Authorize</button></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 4: Timeline Setup</h2>
+            <p class="optionNote">Good for transparent state + audit trail.</p>
+          </div>
+          <span class="chip">Verbose</span>
+        </header>
+        <div class="mock">
+          <ul class="list">
+            <li><span><i class="fa-solid fa-circle-check" style="color:var(--success)"></i> SSH key added</span><span class="chip ok">11:02</span></li>
+            <li><span><i class="fa-solid fa-clock" style="color:var(--warning)"></i> OAuth pending</span><span class="chip warn">action needed</span></li>
+            <li><span><i class="fa-solid fa-circle"></i> Repo link skipped</span><span class="chip">optional</span></li>
+          </ul>
+          <div class="row"><button class="btn">Resume setup</button><button class="btnGhost">Open logs</button></div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 5: Split Pane (Providers / Details)</h2>
+            <p class="optionNote">Scales well once many integrations exist.</p>
+          </div>
+          <span class="chip">Scalable</span>
+        </header>
+        <div class="mock rail">
+          <div class="leftNav">
+            <div class="navItem active"><i class="fa-brands fa-github"></i> GitHub</div>
+            <div class="navItem"><i class="fa-brands fa-gitlab"></i> GitLab</div>
+            <div class="navItem"><i class="fa-brands fa-slack"></i> Slack</div>
+            <div class="navItem"><i class="fa-brands fa-whatsapp"></i> WhatsApp</div>
+          </div>
+          <div class="panel">
+            <div class="row"><span class="pill active">Connection</span><span class="pill">Repos</span><span class="pill">Webhooks</span></div>
+            <div class="step"><span>Account</span><span class="chip ok">connected</span></div>
+            <div class="step"><span>SSH key</span><span class="chip ok">configured</span></div>
+            <div class="step"><span>Primary repository</span><span class="chip">not set</span></div>
+            <button class="btn">Set repository</button>
+          </div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 6: Checklist Cards</h2>
+            <p class="optionNote">Very beginner friendly, onboarding style.</p>
+          </div>
+          <span class="chip">Beginner</span>
+        </header>
+        <div class="mock">
+          <div class="cols2">
+            <div class="panel">
+              <strong><i class="fa-brands fa-github"></i> GitHub</strong>
+              <div class="step"><span>Add SSH key</span><span class="chip ok">done</span></div>
+              <div class="step"><span>Connect account</span><span class="chip warn">next</span></div>
+              <div class="step"><span>Pick repo</span><span class="chip">skip</span></div>
+            </div>
+            <div class="panel">
+              <strong><i class="fa-brands fa-gitlab"></i> GitLab</strong>
+              <div class="step"><span>Add deploy key</span><span class="chip">todo</span></div>
+              <div class="step"><span>Connect account</span><span class="chip">todo</span></div>
+              <div class="step"><span>Pick project</span><span class="chip">skip</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 7: Command Bar + Templates</h2>
+            <p class="optionNote">Power-user flow with suggested actions.</p>
+          </div>
+          <span class="chip">Power user</span>
+        </header>
+        <div class="mock">
+          <div class="panel row" style="justify-content:space-between;">
+            <span class="muted"><i class="fa-solid fa-magnifying-glass"></i> Type action: connect github</span>
+            <span class="chip">Cmd+K</span>
+          </div>
+          <ul class="list">
+            <li><span><i class="fa-brands fa-github"></i> Connect GitHub (OAuth)</span><i class="fa-solid fa-arrow-right"></i></li>
+            <li><span><i class="fa-solid fa-key"></i> Add SSH key</span><i class="fa-solid fa-arrow-right"></i></li>
+            <li><span><i class="fa-solid fa-code-branch"></i> Attach repository</span><i class="fa-solid fa-arrow-right"></i></li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 8: Tabs + Embedded Drawer</h2>
+            <p class="optionNote">Balanced between compact and guided.</p>
+          </div>
+          <span class="chip">Balanced</span>
+        </header>
+        <div class="mock">
+          <div class="row"><span class="pill active">All</span><span class="pill">Code</span><span class="pill">Messaging</span></div>
+          <div class="panel">
+            <div class="row" style="justify-content:space-between"><strong><i class="fa-brands fa-github"></i> GitHub</strong><button class="btnGhost">Configure</button></div>
+            <div class="step"><span>Status</span><span class="chip ok">connected</span></div>
+          </div>
+          <div class="panel" style="border-style:dashed;">
+            <div class="row" style="justify-content:space-between"><strong>Setup Drawer Preview</strong><span class="chip">slides from right</span></div>
+            <p class="quote">Shows 3 setup steps with one primary CTA per step.</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 9: Kanban by Stage</h2>
+            <p class="optionNote">Useful if team manages many accounts.</p>
+          </div>
+          <span class="chip">Ops view</span>
+        </header>
+        <div class="mock cols2" style="grid-template-columns:repeat(3,minmax(0,1fr));">
+          <div class="panel">
+            <strong class="sub">To Connect</strong>
+            <div class="step"><span><i class="fa-brands fa-gitlab"></i> GitLab</span></div>
+          </div>
+          <div class="panel">
+            <strong class="sub">In Progress</strong>
+            <div class="step"><span><i class="fa-brands fa-github"></i> GitHub OAuth</span></div>
+          </div>
+          <div class="panel">
+            <strong class="sub">Connected</strong>
+            <div class="step"><span><i class="fa-brands fa-slack"></i> Slack</span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="option">
+        <header class="optionHead">
+          <div>
+            <h2 class="optionTitle">Option 10: One-Click Primary + Advanced</h2>
+            <p class="optionNote">Lowest friction, best for non-technical users.</p>
+          </div>
+          <span class="chip ok">Simple</span>
+        </header>
+        <div class="mock">
+          <div class="panel">
+            <div class="row" style="justify-content:space-between">
+              <div>
+                <strong><i class="fa-brands fa-github"></i> GitHub Integration</strong>
+                <p class="quote">Click once. We guide remaining required steps inline.</p>
+              </div>
+              <button class="btn">Connect</button>
+            </div>
+          </div>
+          <div class="panel">
+            <details>
+              <summary class="sub">Advanced setup</summary>
+              <div class="step"><span>Manual SSH key</span><span class="chip">optional</span></div>
+              <div class="step"><span>Repo preselect</span><span class="chip">optional</span></div>
+            </details>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

@@ -5,6 +5,7 @@ import MicTest from '../components/MicTest'
 import SelectField from '../components/SelectField'
 import LoadingSpinner from '../components/LoadingSpinner'
 import InlineHelpTip from '../components/InlineHelpTip'
+import BotGitIntegrationsPanel from '../components/BotGitIntegrationsPanel'
 import type { Bot, ConversationSummary, DataAgentSetupStatus, IntegrationTool, Options, SystemTool } from '../types'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
@@ -35,10 +36,6 @@ export default function BotDetailPage() {
   const [listErr, setListErr] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [showToolModal, setShowToolModal] = useState(false)
-  const [gitSshKeyPath, setGitSshKeyPath] = useState('')
-  const [preferredRepoUrl, setPreferredRepoUrl] = useState('')
-  const [preferredRepoCachePath, setPreferredRepoCachePath] = useState('')
-  const [preferredRepoSourcePath, setPreferredRepoSourcePath] = useState('')
   const [toolForm, setToolForm] = useState({
     id: '',
     name: '',
@@ -101,22 +98,12 @@ Rules:
   const [agentSetupPolling, setAgentSetupPolling] = useState(false)
   const [agentEnablePending, setAgentEnablePending] = useState(false)
   const [applyAgentEnable, setApplyAgentEnable] = useState(false)
-  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'tools'>('llm')
+  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'tools'>('llm')
   const [showSettings, setShowSettings] = useState(false)
   useEscapeClose(() => {
     if (showSettings) setShowSettings(false)
     if (showToolModal) setShowToolModal(false)
   }, showSettings || showToolModal)
-
-  function parseAuthJson(raw?: string): Record<string, any> | null {
-    try {
-      const obj = JSON.parse((raw || '').trim() || '{}')
-      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
-      return obj
-    } catch {
-      return null
-    }
-  }
 
   function llmModels(provider: string, fallback: string): string[] {
     if (provider === 'local') {
@@ -162,23 +149,6 @@ Rules:
       }
     })()
   }, [])
-
-  useEffect(() => {
-    const obj = parseAuthJson(bot?.data_agent_auth_json)
-    if (!obj) return
-    const keyPath = String(obj.ssh_private_key_path || obj.ssh_key_path || '')
-    setGitSshKeyPath(keyPath)
-    const repoUrl = String(obj.preferred_repo_url || obj.git_preferred_repo_url || obj.git_repo_url || obj.preferred_repo || '')
-    const repoCache = String(
-      obj.preferred_repo_cache_path || obj.git_repo_cache_path || obj.preferred_repo_path || '',
-    )
-    const repoSource = String(
-      obj.preferred_repo_source_path || obj.git_repo_source_path || obj.preferred_repo_working_path || '',
-    )
-    setPreferredRepoUrl(repoUrl)
-    setPreferredRepoCachePath(repoCache)
-    setPreferredRepoSourcePath(repoSource)
-  }, [bot?.data_agent_auth_json])
 
   useEffect(() => {
     if (!botId) return
@@ -305,56 +275,6 @@ Rules:
     setApplyAgentEnable(false)
     void save({ enable_data_agent: true })
   }, [applyAgentEnable])
-
-  async function saveGitSshKeyPath() {
-    if (!bot) return
-    const base = parseAuthJson(bot.data_agent_auth_json) || {}
-    const trimmed = gitSshKeyPath.trim()
-    if (trimmed) {
-      base.ssh_private_key_path = trimmed
-      delete base.ssh_key_path
-      base.git_auth_method = 'ssh'
-    } else {
-      delete base.ssh_private_key_path
-      delete base.ssh_key_path
-      if (String(base.git_auth_method || '').toLowerCase() === 'ssh') {
-        delete base.git_auth_method
-      }
-    }
-    const nextJson = JSON.stringify(base, null, 2)
-    setBot({ ...bot, data_agent_auth_json: nextJson })
-    await save({ data_agent_auth_json: nextJson })
-  }
-
-  async function savePreferredRepoCache() {
-    if (!bot) return
-    const base = parseAuthJson(bot.data_agent_auth_json) || {}
-    const url = preferredRepoUrl.trim()
-    const cachePath = preferredRepoCachePath.trim()
-    const sourcePath = preferredRepoSourcePath.trim()
-    if (url || cachePath) {
-      if (url) base.preferred_repo_url = url
-      else delete base.preferred_repo_url
-      if (cachePath) base.preferred_repo_cache_path = cachePath
-      else delete base.preferred_repo_cache_path
-      if (sourcePath) base.preferred_repo_source_path = sourcePath
-      else delete base.preferred_repo_source_path
-    } else {
-      delete base.preferred_repo_url
-      delete base.preferred_repo_cache_path
-      delete base.preferred_repo_source_path
-      delete base.git_preferred_repo_url
-      delete base.git_repo_url
-      delete base.git_repo_cache_path
-      delete base.preferred_repo
-      delete base.preferred_repo_path
-      delete base.git_repo_source_path
-      delete base.preferred_repo_working_path
-    }
-    const nextJson = JSON.stringify(base, null, 2)
-    setBot({ ...bot, data_agent_auth_json: nextJson })
-    await save({ data_agent_auth_json: nextJson })
-  }
 
   async function onDelete() {
     if (!bot) return
@@ -634,6 +554,9 @@ Rules:
             <button className={activeTab === 'agent' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('agent')}>
               Isolated Workspace
             </button>
+            <button className={activeTab === 'integrations' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('integrations')}>
+              Connected apps
+            </button>
             <button className={activeTab === 'tools' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tools')}>
               Tools
             </button>
@@ -872,6 +795,9 @@ Rules:
                   <div className="muted" style={{ marginBottom: 8 }}>
                     Isolated Workspace requires Docker. Install and start Docker before enabling.
                   </div>
+                  <div className="muted" style={{ marginBottom: 8 }}>
+                    GitHub/GitLab connection has moved to Connected apps.
+                  </div>
                   <div className="formRow">
                     <label>Enable Isolated Workspace</label>
                     <label className="checkRow">
@@ -997,64 +923,12 @@ Rules:
                           rows={6}
                           placeholder='{"Authorization":"Bearer ..."}'
                         />
-                        <div className="muted">Stored as plaintext (not masked). Put only what you’re comfortable storing.</div>
+                        <div className="muted">
+                          Used by Isolated Workspace API calls. Git provider auth is managed in Connected apps.
+                        </div>
                         <div className="row">
                           <button className="btn" onClick={() => void save({ data_agent_auth_json: bot.data_agent_auth_json || '{}' })}>
                             Save auth JSON
-                          </button>
-                        </div>
-                      </div>
-                      <div className="formRow">
-                        <label>Git SSH key path (per bot)</label>
-                        <input
-                          value={gitSshKeyPath}
-                          onChange={(e) => setGitSshKeyPath(e.target.value)}
-                          placeholder="/Users/you/.ssh/id_ed25519"
-                        />
-                        <div className="muted">
-                          Stored as a path in the bot's auth JSON. The key file must exist on the server host. Clear to
-                          fall back to the saved GitHub token.
-                        </div>
-                        <div className="row">
-                          <button className="btn" onClick={() => void saveGitSshKeyPath()}>
-                            Save SSH key path
-                          </button>
-                        </div>
-                      </div>
-                      <div className="formRow">
-                        <label>Preferred repo (URL)</label>
-                        <input
-                          value={preferredRepoUrl}
-                          onChange={(e) => setPreferredRepoUrl(e.target.value)}
-                          placeholder="git@github.com:org/repo.git"
-                        />
-                        <div className="muted">Used to prime a local mirror for faster clones in each conversation.</div>
-                      </div>
-                      <div className="formRow">
-                        <label>Preferred repo cache path (host)</label>
-                        <input
-                          value={preferredRepoCachePath}
-                          onChange={(e) => setPreferredRepoCachePath(e.target.value)}
-                          placeholder="/Users/you/.igx_repo_cache/xxxxxx.git"
-                        />
-                        <div className="muted">
-                          This is a shared bare mirror on the host. Each conversation will clone from it instead of the
-                          network.
-                        </div>
-                      </div>
-                      <div className="formRow">
-                        <label>Preferred repo source path (host)</label>
-                        <input
-                          value={preferredRepoSourcePath}
-                          onChange={(e) => setPreferredRepoSourcePath(e.target.value)}
-                          placeholder="/Users/you/Desktop/xxxx/xxxxxxx"
-                        />
-                        <div className="muted">
-                          Optional: a local working repo to use as a reference source for fast clones per conversation.
-                        </div>
-                        <div className="row">
-                          <button className="btn" onClick={() => void savePreferredRepoCache()}>
-                            Save repo preferences
                           </button>
                         </div>
                       </div>
@@ -1075,6 +949,10 @@ Rules:
                     </>
                   ) : null}
                 </>
+              ) : null}
+
+              {activeTab === 'integrations' && bot ? (
+                <BotGitIntegrationsPanel bot={bot} save={save} saving={saving} />
               ) : null}
 
               {activeTab === 'tools' && systemTools.length ? (

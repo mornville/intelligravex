@@ -6,6 +6,13 @@ import { authHeader } from '../auth'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel } from '../utils/llmProviders'
 
+const PROVIDER_ICON_URL: Record<'chatgpt' | 'openai' | 'openrouter' | 'local', string> = {
+  chatgpt: '/brands/openai.svg',
+  openai: '/brands/openai.svg',
+  openrouter: '/brands/openrouter.svg',
+  local: '/marketing/static/igx-logo.svg',
+}
+
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<{
     openai_key_configured: boolean
@@ -332,6 +339,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     const usingChatgpt = llmProvider === 'chatgpt'
     const showCustom = localModelId === '__custom__'
     const progress = localStatus?.percent ? `${localStatus.percent}%` : ''
+    const providerIcon = PROVIDER_ICON_URL[llmProvider]
     return (
       <div className="authWrap">
         <div className="authCard">
@@ -347,12 +355,15 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               <div className="setupHeading">LLM setup</div>
               <div className="formRow">
                 <label>Provider</label>
-                <select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value as any)}>
-                  <option value="chatgpt">{formatProviderLabel('chatgpt')}</option>
-                  <option value="openai">{formatProviderLabel('openai')}</option>
-                  <option value="openrouter">{formatProviderLabel('openrouter')}</option>
-                  <option value="local">{formatProviderLabel('local')} model (no API key)</option>
-                </select>
+                <div className="setupProviderSelect">
+                  <img src={providerIcon} alt="" aria-hidden="true" className="setupProviderLogoInline" loading="lazy" />
+                  <select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value as any)}>
+                    <option value="chatgpt">{formatProviderLabel('chatgpt')}</option>
+                    <option value="openai">{formatProviderLabel('openai')}</option>
+                    <option value="openrouter">{formatProviderLabel('openrouter')}</option>
+                    <option value="local">{formatProviderLabel('local')} model (no API key)</option>
+                  </select>
+                </div>
               </div>
               {!usingLocal ? (
                 usingChatgpt ? (
@@ -366,6 +377,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                     </div>
                     <div className="row gap">
                       <button className="btn primary" onClick={() => void startChatgptAuth()} disabled={chatgptAuthBusy || !!chatgptAuthState}>
+                        <img src={PROVIDER_ICON_URL.chatgpt} alt="" aria-hidden="true" className="setupActionIcon" loading="lazy" />
                         {chatgptAuthBusy ? 'Starting…' : chatgptAuthState ? 'Waiting for approval…' : 'Sign in with ChatGPT'}
                       </button>
                       {chatgptAuthUrl ? (
@@ -470,9 +482,19 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               </div>
               {pullMessage ? <div className="alert" style={{ borderColor: 'rgba(80, 200, 160, 0.4)', background: 'rgba(80, 200, 160, 0.1)' }}>{pullMessage}</div> : null}
               {!status?.docker_available ? (
-                <div className="muted" style={{ marginBottom: 12 }}>
-                  Install Docker Desktop (macOS) or Docker Engine (Linux) to enable it.
-                </div>
+                <>
+                  <div className="muted" style={{ marginBottom: 8 }}>
+                    Install Docker Desktop (macOS) or Docker Engine (Linux) to enable it.
+                  </div>
+                  <a
+                    className="setupDockerLink"
+                    href="https://www.docker.com/products/docker-desktop/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Get Docker
+                  </a>
+                </>
               ) : null}
               <div className="row gap">
                 <button className="btn" onClick={() => void pullDataAgentImage()} disabled={pullingImage || !status?.docker_available}>
