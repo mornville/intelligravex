@@ -91,7 +91,9 @@ def register(app, ctx) -> None:
             ),
         )
         items = payload.get("items") or []
-        max_items = int(payload.get("max_items") or 0)
+        max_items_raw = payload.get("max_items")
+        max_items = int(max_items_raw) if isinstance(max_items_raw, int) else 0
+        max_items_label = str(max_items) if max_items > 0 else "none"
         req_rel = str(payload.get("path") or "")
 
         fmt = (format or "").strip().lower()
@@ -207,7 +209,7 @@ def register(app, ctx) -> None:
     <div class=\"header\">
       <div>
         <h1>Files for conversation {ctx.html.escape(str(conversation_id))}</h1>
-        <div class=\"sub\">Path: /{ctx.html.escape(req_rel)} • Items: {len(items)} (max {max_items})</div>
+        <div class=\"sub\">Path: /{ctx.html.escape(req_rel)} • Items: {len(items)} (max {max_items_label})</div>
       </div>
       <div class=\"actions\">
         <a class=\"btn\" href=\"{ctx.html.escape(transcript_href)}\">Transcript</a>

@@ -1,9 +1,10 @@
 from __future__ import annotations
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlmodel import Session
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 
 def register(app, ctx) -> None:
@@ -58,7 +59,7 @@ def register(app, ctx) -> None:
     @router.post("/api/conversations/{conversation_id}/files/upload")
     async def api_conversation_files_upload(
         conversation_id: UUID,
-        files: list[UploadFile] = File(...),
+        request: Request,
         session: Session = Depends(ctx.get_session),
     ) -> dict:
         conv = ctx.get_conversation(session, conversation_id)
@@ -77,18 +78,44 @@ def register(app, ctx) -> None:
         workspace_dir = ctx._initialize_data_agent_workspace(session, bot=bot, conversation_id=conversation_id, meta=meta)
         root = ctx.Path(workspace_dir).resolve()
 
-        saved: list[str] = []
-        for f in files:
-            rel = ctx._sanitize_upload_path(f.filename or "")
-            if not rel:
+        try:
+            form = await request.form(
+                max_files=10_000_000,
+                max_fields=10_000_000,
+                max_part_size=10 * 1024 * 1024 * 1024,
+            )
+        except Exception as exc:
+            raise ctx.HTTPException(status_code=400, detail=str(exc))
+
+        files: list[UploadFile] = []
+        for key, value in form.multi_items():
+            if key != "files":
                 continue
-            target = (root / rel).resolve()
-            if not ctx._is_path_within_root(root, target):
-                raise ctx.HTTPException(status_code=400, detail="Invalid filename")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("wb") as out:
-                ctx.shutil.copyfileobj(f.file, out)
-            saved.append(rel)
+            # Starlette form parser may return starlette UploadFile objects directly.
+            if isinstance(value, (UploadFile, StarletteUploadFile)):
+                files.append(value)
+        if not files:
+            raise ctx.HTTPException(status_code=400, detail="No files uploaded")
+
+        saved: list[str] = []
+        try:
+            for f in files:
+                rel = ctx._sanitize_upload_path(f.filename or "")
+                if not rel:
+                    continue
+                target = (root / rel).resolve()
+                if not ctx._is_path_within_root(root, target):
+                    raise ctx.HTTPException(status_code=400, detail="Invalid filename")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("wb") as out:
+                    ctx.shutil.copyfileobj(f.file, out)
+                saved.append(rel)
+        finally:
+            for f in files:
+                try:
+                    await f.close()
+                except Exception:
+                    pass
 
         return {"ok": True, "files": saved, "workspace_dir": str(root)}
 

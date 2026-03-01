@@ -10,10 +10,49 @@ export type GitProviderConfig = {
   repo_source_path: string
 }
 
+export type JiraConfig = {
+  domain: string
+  email: string
+  api_token: string
+  default_project_key: string
+  default_issue_type: string
+  default_jql: string
+}
+
+export type DatabaseCredential = {
+  id: string
+  nickname: string
+  engine: string
+  host: string
+  port: string
+  database: string
+  user: string
+  password: string
+  options: string
+  server_ca: string
+  client_cert: string
+  client_key: string
+}
+
+export type GmailConfig = {
+  connected: boolean
+  account_email: string
+  scope: string
+  token_type: string
+  access_token: string
+  refresh_token: string
+  expires_at: number | null
+  connected_at: string
+  error: string
+}
+
 export type GitIntegrationsState = {
   provider: GitProvider
   ssh_key_path: string
   providers: Record<GitProvider, GitProviderConfig>
+  jira: JiraConfig
+  gmail: GmailConfig
+  db_credentials: DatabaseCredential[]
 }
 
 const DEFAULT_PROVIDER_CFG: GitProviderConfig = {
@@ -32,6 +71,41 @@ const DEFAULT_STATE: GitIntegrationsState = {
     github: { ...DEFAULT_PROVIDER_CFG },
     gitlab: { ...DEFAULT_PROVIDER_CFG },
   },
+  jira: {
+    domain: '',
+    email: '',
+    api_token: '',
+    default_project_key: '',
+    default_issue_type: '',
+    default_jql: '',
+  },
+  gmail: {
+    connected: false,
+    account_email: '',
+    scope: '',
+    token_type: '',
+    access_token: '',
+    refresh_token: '',
+    expires_at: null,
+    connected_at: '',
+    error: '',
+  },
+  db_credentials: [],
+}
+
+const DEFAULT_DB_CREDENTIAL: DatabaseCredential = {
+  id: '',
+  nickname: '',
+  engine: 'postgresql',
+  host: '',
+  port: '',
+  database: '',
+  user: '',
+  password: '',
+  options: '',
+  server_ca: '',
+  client_cert: '',
+  client_key: '',
 }
 
 function safeParse(raw: string | undefined): Record<string, any> {
@@ -62,6 +136,151 @@ function providerCfg(raw: any): GitProviderConfig {
     repo_url: String(raw.repo_url || '').trim(),
     repo_cache_path: String(raw.repo_cache_path || '').trim(),
     repo_source_path: String(raw.repo_source_path || '').trim(),
+  }
+}
+
+function jiraCfg(raw: any): JiraConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      domain: '',
+      email: '',
+      api_token: '',
+      default_project_key: '',
+      default_issue_type: '',
+      default_jql: '',
+    }
+  }
+  return {
+    domain: String(raw.domain || raw.site || raw.base_url || '').trim(),
+    email: String(raw.email || '').trim(),
+    api_token: String(raw.api_token || raw.token || '').trim(),
+    default_project_key: String(raw.default_project_key || raw.project_key || '').trim(),
+    default_issue_type: String(raw.default_issue_type || raw.issue_type || '').trim(),
+    default_jql: String(raw.default_jql || raw.jql || '').trim(),
+  }
+}
+
+function gmailCfg(raw: any): GmailConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      connected: false,
+      account_email: '',
+      scope: '',
+      token_type: '',
+      access_token: '',
+      refresh_token: '',
+      expires_at: null,
+      connected_at: '',
+      error: '',
+    }
+  }
+  const scope = String(raw.scope || raw.scopes || '').trim()
+  const refreshToken = String(raw.refresh_token || '').trim()
+  const accessToken = String(raw.access_token || '').trim()
+  const connectedRaw = raw.connected
+  const connected = typeof connectedRaw === 'boolean' ? connectedRaw : Boolean(refreshToken || accessToken)
+  const expiresRaw = raw.expires_at
+  const expires_at = typeof expiresRaw === 'number' && Number.isFinite(expiresRaw) ? Number(expiresRaw) : null
+  return {
+    connected,
+    account_email: String(raw.account_email || raw.email || '').trim(),
+    scope,
+    token_type: String(raw.token_type || '').trim(),
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_at,
+    connected_at: String(raw.connected_at || '').trim(),
+    error: String(raw.error || '').trim(),
+  }
+}
+
+function mergeGmailFallbacks(gmail: GmailConfig, obj: Record<string, any>): GmailConfig {
+  const next = { ...gmail }
+  if (!next.account_email) next.account_email = String(obj.gmail_account_email || obj.gmail_email || '').trim()
+  if (!next.scope) next.scope = String(obj.gmail_scope || '').trim()
+  if (!next.token_type) next.token_type = String(obj.gmail_token_type || '').trim()
+  if (!next.access_token) next.access_token = String(obj.gmail_access_token || '').trim()
+  if (!next.refresh_token) next.refresh_token = String(obj.gmail_refresh_token || '').trim()
+  if (!next.connected_at) next.connected_at = String(obj.gmail_connected_at || '').trim()
+  if (!next.error) next.error = String(obj.gmail_error || '').trim()
+  if (next.expires_at == null) {
+    const expRaw = obj.gmail_expires_at
+    if (typeof expRaw === 'number' && Number.isFinite(expRaw)) next.expires_at = Number(expRaw)
+  }
+  if (!next.connected) next.connected = Boolean(next.refresh_token || next.access_token || obj.gmail_connected)
+  return next
+}
+
+function disconnectedGmailState(): GmailConfig {
+  return {
+    connected: false,
+    account_email: '',
+    scope: '',
+    token_type: '',
+    access_token: '',
+    refresh_token: '',
+    expires_at: null,
+    connected_at: '',
+    error: '',
+  }
+}
+
+export function gmailConnected(gmail: GmailConfig): boolean {
+  return Boolean(gmail.connected || gmail.refresh_token.trim() || gmail.access_token.trim())
+}
+
+export function clearGmailConfig(gmail: GmailConfig): GmailConfig {
+  return {
+    ...disconnectedGmailState(),
+    scope: gmail.scope,
+  }
+}
+
+function dbCredential(raw: any, index: number): DatabaseCredential {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      ...DEFAULT_DB_CREDENTIAL,
+      id: `db_${index + 1}`,
+    }
+  }
+  return {
+    id: String(raw.id || `db_${index + 1}`).trim(),
+    nickname: String(raw.nickname || raw.name || '').trim(),
+    engine: String(raw.engine || raw.driver || 'postgresql').trim() || 'postgresql',
+    host: String(raw.host || '').trim(),
+    port: String(raw.port || '').trim(),
+    database: String(raw.database || raw.db || '').trim(),
+    user: String(raw.user || raw.username || '').trim(),
+    password: String(raw.password || raw.pass || '').trim(),
+    options: String(raw.options || raw.params || '').trim(),
+    server_ca: String(raw.server_ca || raw.serverCa || '').trim(),
+    client_cert: String(raw.client_cert || raw.clientCert || '').trim(),
+    client_key: String(raw.client_key || raw.clientKey || '').trim(),
+  }
+}
+
+function dbCredentials(raw: any): DatabaseCredential[] {
+  if (!Array.isArray(raw)) return []
+  const used = new Set<string>()
+  return raw.map((item, index) => {
+    const next = dbCredential(item, index)
+    const baseId = next.id || `db_${index + 1}`
+    let id = baseId
+    let suffix = 2
+    while (used.has(id)) {
+      id = `${baseId}_${suffix}`
+      suffix += 1
+    }
+    used.add(id)
+    return { ...next, id }
+  })
+}
+
+export function newDatabaseCredential(): DatabaseCredential {
+  const rand = Math.random().toString(36).slice(2, 8)
+  return {
+    ...DEFAULT_DB_CREDENTIAL,
+    id: `db_${Date.now()}_${rand}`,
   }
 }
 
@@ -100,6 +319,31 @@ export function readGitIntegrationsState(authJson: string | undefined): GitInteg
     const mode = String(obj.git_auth_method || '').trim().toLowerCase()
     if (mode === 'ssh') selected.auth_mode = 'ssh'
   }
+
+  const connectedApps = obj.connected_apps
+  if (connectedApps && typeof connectedApps === 'object' && !Array.isArray(connectedApps)) {
+    state.jira = jiraCfg((connectedApps as Record<string, any>).jira)
+    state.gmail = gmailCfg((connectedApps as Record<string, any>).gmail)
+  } else {
+    state.jira = jiraCfg(obj.jira_integration)
+    state.gmail = gmailCfg(obj.gmail_integration)
+  }
+  state.gmail = mergeGmailFallbacks(state.gmail, obj)
+  const connectedDbCreds =
+    connectedApps && typeof connectedApps === 'object' && !Array.isArray(connectedApps)
+      ? dbCredentials(
+          (connectedApps as Record<string, any>).database_credentials || (connectedApps as Record<string, any>).db_credentials
+        )
+      : []
+  const topLevelDbCreds = dbCredentials(obj.db_credentials || obj.database_credentials)
+  state.db_credentials = connectedDbCreds.length ? connectedDbCreds : topLevelDbCreds
+
+  if (!state.jira.domain) state.jira.domain = String(obj.jira_domain || obj.atlassian_domain || '').trim()
+  if (!state.jira.email) state.jira.email = String(obj.jira_email || obj.atlassian_email || '').trim()
+  if (!state.jira.api_token) state.jira.api_token = String(obj.jira_api_token || obj.atlassian_api_token || '').trim()
+  if (!state.jira.default_project_key) state.jira.default_project_key = String(obj.jira_project_key || '').trim()
+  if (!state.jira.default_issue_type) state.jira.default_issue_type = String(obj.jira_issue_type || '').trim()
+  if (!state.jira.default_jql) state.jira.default_jql = String(obj.jira_default_jql || obj.jira_jql || '').trim()
 
   return state
 }
@@ -184,6 +428,105 @@ export function buildGitIntegrationsAuthJson(rawAuthJson: string | undefined, st
   else delete base.preferred_repo_cache_path
   if (repoSource) base.preferred_repo_source_path = repoSource
   else delete base.preferred_repo_source_path
+
+  const connectedApps =
+    base.connected_apps && typeof base.connected_apps === 'object' && !Array.isArray(base.connected_apps)
+      ? { ...base.connected_apps }
+      : {}
+  connectedApps.jira = {
+    domain: state.jira.domain.trim(),
+    email: state.jira.email.trim(),
+    api_token: state.jira.api_token.trim(),
+    default_project_key: state.jira.default_project_key.trim(),
+    default_issue_type: state.jira.default_issue_type.trim(),
+    default_jql: state.jira.default_jql.trim(),
+  }
+  connectedApps.gmail = gmailConnected(state.gmail)
+    ? {
+        connected: true,
+        account_email: state.gmail.account_email.trim(),
+        scope: state.gmail.scope.trim(),
+        token_type: state.gmail.token_type.trim(),
+        access_token: state.gmail.access_token.trim(),
+        refresh_token: state.gmail.refresh_token.trim(),
+        expires_at: state.gmail.expires_at,
+        connected_at: state.gmail.connected_at.trim(),
+        error: state.gmail.error.trim(),
+      }
+    : disconnectedGmailState()
+  const dbCreds = (state.db_credentials || []).map((item, index) => {
+    const next = dbCredential(item, index)
+    return {
+      id: next.id,
+      nickname: next.nickname,
+      engine: next.engine,
+      host: next.host,
+      port: next.port,
+      database: next.database,
+      user: next.user,
+      password: next.password,
+      options: next.options,
+      server_ca: next.server_ca,
+      client_cert: next.client_cert,
+      client_key: next.client_key,
+    }
+  })
+  connectedApps.database_credentials = dbCreds
+  base.connected_apps = connectedApps
+  base.jira_integration = connectedApps.jira
+  base.gmail_integration = connectedApps.gmail
+  base.db_credentials = dbCreds
+
+  const jiraDomain = state.jira.domain.trim()
+  const jiraEmail = state.jira.email.trim()
+  const jiraApiToken = state.jira.api_token.trim()
+  const jiraProjectKey = state.jira.default_project_key.trim()
+  const jiraIssueType = state.jira.default_issue_type.trim()
+  const jiraJql = state.jira.default_jql.trim()
+  if (jiraDomain) base.jira_domain = jiraDomain
+  else delete base.jira_domain
+  if (jiraEmail) base.jira_email = jiraEmail
+  else delete base.jira_email
+  if (jiraApiToken) base.jira_api_token = jiraApiToken
+  else delete base.jira_api_token
+  if (jiraProjectKey) base.jira_project_key = jiraProjectKey
+  else delete base.jira_project_key
+  if (jiraIssueType) base.jira_issue_type = jiraIssueType
+  else delete base.jira_issue_type
+  if (jiraJql) base.jira_default_jql = jiraJql
+  else delete base.jira_default_jql
+
+  const gmailAccountEmail = state.gmail.account_email.trim()
+  const gmailScope = state.gmail.scope.trim()
+  const gmailTokenType = state.gmail.token_type.trim()
+  const gmailAccessToken = state.gmail.access_token.trim()
+  const gmailRefreshToken = state.gmail.refresh_token.trim()
+  const gmailConnectedAt = state.gmail.connected_at.trim()
+  const gmailError = state.gmail.error.trim()
+  const gmailExpiresAt = state.gmail.expires_at
+  const isGmailConnected = gmailConnected(state.gmail)
+  if (gmailAccountEmail) base.gmail_account_email = gmailAccountEmail
+  else delete base.gmail_account_email
+  if (gmailScope) base.gmail_scope = gmailScope
+  else delete base.gmail_scope
+  if (gmailTokenType) base.gmail_token_type = gmailTokenType
+  else delete base.gmail_token_type
+  if (gmailAccessToken) base.gmail_access_token = gmailAccessToken
+  else delete base.gmail_access_token
+  if (gmailRefreshToken) base.gmail_refresh_token = gmailRefreshToken
+  else delete base.gmail_refresh_token
+  if (gmailConnectedAt) base.gmail_connected_at = gmailConnectedAt
+  else delete base.gmail_connected_at
+  if (gmailError) base.gmail_error = gmailError
+  else delete base.gmail_error
+  if (typeof gmailExpiresAt === 'number' && Number.isFinite(gmailExpiresAt)) base.gmail_expires_at = gmailExpiresAt
+  else delete base.gmail_expires_at
+  if (isGmailConnected) base.gmail_connected = true
+  else delete base.gmail_connected
+  delete base.gmail_client_id
+  delete base.gmail_client_secret
+  delete base.gmail_sender_email
+  delete base.gmail_reply_to_email
 
   delete base.git_preferred_repo_url
   delete base.git_repo_url

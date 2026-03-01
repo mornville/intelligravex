@@ -6,10 +6,11 @@ import json
 from typing import Any, Callable, Optional
 from uuid import UUID
 
-from sqlmodel import Session, delete
+from sqlmodel import Session
 
 from voicebot.llm.openai_llm import Message
-from voicebot.models import Bot, ConversationMessage
+from voicebot.models import Bot
+from voicebot.web.helpers.connected_apps_prompt import build_connected_apps_prompt_context
 from voicebot.utils.prompt import system_prompt_with_runtime
 
 
@@ -233,6 +234,7 @@ def _build_group_system_messages(
 def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUID]) -> list[Message]:
     require_approval = bool(getattr(bot, "require_host_action_approval", False))
     host_actions_enabled = bool(getattr(bot, "enable_host_actions", False))
+    connected_apps_context = build_connected_apps_prompt_context(bot)
     messages: list[Message] = [
         Message(
             role="system",
@@ -243,6 +245,8 @@ def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUI
             ),
         )
     ]
+    if connected_apps_context:
+        messages.append(Message(role="system", content=connected_apps_context))
     if not conversation_id:
         return messages
     conv = ctx.get_conversation(session, conversation_id)
@@ -259,6 +263,8 @@ def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUI
             ),
         )
     ]
+    if connected_apps_context:
+        messages.append(Message(role="system", content=connected_apps_context))
     if meta:
         messages.append(
             Message(role="system", content=f"Conversation metadata (JSON): {json.dumps(meta, ensure_ascii=False)}")
@@ -316,10 +322,11 @@ def build_history_budgeted(
     HISTORY_TOKEN_BUDGET = 400000
     SUMMARY_BATCH_MIN_MESSAGES = 8
 
+    connected_apps_context = build_connected_apps_prompt_context(bot)
     if not conversation_id:
         require_approval = bool(getattr(bot, "require_host_action_approval", False))
         host_actions_enabled = bool(getattr(bot, "enable_host_actions", False))
-        return [
+        messages = [
             Message(
                 role="system",
                 content=system_prompt_with_runtime(
@@ -329,6 +336,9 @@ def build_history_budgeted(
                 ),
             )
         ]
+        if connected_apps_context:
+            messages.append(Message(role="system", content=connected_apps_context))
+        return messages
 
     conv = ctx.get_conversation(session, conversation_id)
     ctx._assert_bot_in_conversation(conv, bot.id)
@@ -354,11 +364,6 @@ def build_history_budgeted(
     )
 
     db_msgs = ctx.list_messages(session, conversation_id=conversation_id)
-    latest_user_text = ""
-    for m in reversed(db_msgs):
-        if m.role == "user" and str(m.content or "").strip():
-            latest_user_text = str(m.content or "")
-            break
     try:
         n_turns = int(getattr(bot, "history_window_turns", 16) or 16)
     except Exception:
@@ -434,19 +439,29 @@ def build_history_budgeted(
         )
         new_summary = ""
         new_pinned = ""
+        new_open_tasks = ""
+        summary_generated = False
         try:
             obj = json.loads(text)
             if isinstance(obj, dict):
                 new_summary = str(obj.get("summary") or "").strip()
                 new_pinned = str(obj.get("pinned_facts") or "").strip()
+                open_tasks_obj = obj.get("open_tasks")
+                if isinstance(open_tasks_obj, list):
+                    items = [str(x or "").strip() for x in open_tasks_obj if str(x or "").strip()]
+                    if items:
+                        new_open_tasks = "\n".join(f"- {x}" for x in items[:12])
+                else:
+                    new_open_tasks = str(open_tasks_obj or "").strip()
+                summary_generated = bool(new_summary)
         except Exception:
-            new_summary = memory_summary
-            new_pinned = pinned_facts
+            summary_generated = False
 
-        if new_summary:
+        if summary_generated:
             patch = {
                 "memory.summary": new_summary,
                 "memory.pinned_facts": new_pinned,
+                "memory.open_tasks": new_open_tasks,
                 "memory.last_summarized_message_id": str(getattr(new_old_msgs[-1], "id", "")) if new_old_msgs else last_summarized_id,
                 "memory.updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             }
@@ -456,16 +471,59 @@ def build_history_budgeted(
                 if isinstance(memory, dict):
                     memory_summary = str(memory.get("summary") or "").strip()
                     pinned_facts = str(memory.get("pinned_facts") or "").strip()
-            if new_old_msgs:
-                try:
-                    ids = [m.id for m in new_old_msgs if getattr(m, "id", None)]
-                    if ids:
-                        session.exec(delete(ConversationMessage).where(ConversationMessage.id.in_(ids)))
-                        session.commit()
-                except Exception:
-                    session.rollback()
+            checkpoint_parts = ["[SUMMARY_CHECKPOINT]", f"Summary:\n{new_summary}"]
+            if new_pinned:
+                checkpoint_parts.append(f"Pinned facts:\n{new_pinned}")
+            if new_open_tasks:
+                checkpoint_parts.append(f"Open tasks:\n{new_open_tasks}")
+            checkpoint_content = "\n\n".join(checkpoint_parts)
+            checkpoint_msg = ctx.add_message_with_metrics(
+                session,
+                conversation_id=conversation_id,
+                role="system",
+                content=checkpoint_content,
+                sender_name="Summary",
+            )
+            meta = ctx.merge_conversation_metadata(
+                session,
+                conversation_id=conversation_id,
+                patch={
+                    "memory.last_summary_checkpoint_message_id": str(getattr(checkpoint_msg, "id", "") or ""),
+                },
+            )
+            if isinstance(meta, dict):
+                memory = meta.get("memory") if isinstance(meta.get("memory"), dict) else {}
+                if isinstance(memory, dict):
+                    memory_summary = str(memory.get("summary") or "").strip()
+                    pinned_facts = str(memory.get("pinned_facts") or "").strip()
+            # Keep all raw rows; refresh list so this checkpoint can participate in the same turn history.
+            db_msgs = ctx.list_messages(session, conversation_id=conversation_id)
+            user_indices = [i for i, m in enumerate(db_msgs) if m.role == "user"]
+            if len(user_indices) > n_turns:
+                start_idx = user_indices[-n_turns]
+            else:
+                start_idx = 0
+
+    latest_user_text = ""
+    for m in reversed(db_msgs):
+        if m.role == "user" and str(m.content or "").strip():
+            latest_user_text = str(m.content or "")
+            break
+
+    history_start_idx = start_idx
+    checkpoint_id = ""
+    mem_after = meta.get("memory") if isinstance(meta.get("memory"), dict) else {}
+    if isinstance(mem_after, dict):
+        checkpoint_id = str(mem_after.get("last_summary_checkpoint_message_id") or "").strip()
+    if checkpoint_id:
+        for i, m in enumerate(db_msgs):
+            if str(getattr(m, "id", "") or "") == checkpoint_id:
+                history_start_idx = i
+                break
 
     messages: list[Message] = [Message(role="system", content=system_prompt)]
+    if connected_apps_context:
+        messages.append(Message(role="system", content=connected_apps_context))
     if bool(conv.is_group):
         messages.extend(
             _build_group_system_messages(
@@ -481,7 +539,7 @@ def build_history_budgeted(
     if pinned_facts:
         messages.append(Message(role="system", content=f"Pinned facts:\n{pinned_facts}"))
 
-    for m in db_msgs[start_idx:]:
+    for m in db_msgs[history_start_idx:]:
         prefix = ctx._format_group_message_prefix(
             conv=conv,
             sender_bot_id=m.sender_bot_id,

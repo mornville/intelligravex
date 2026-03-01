@@ -13,6 +13,19 @@
 
 Gravex gives you a dashboard to create agents, run real tasks, and keep files, configs, and context on-device. Use local LLMs or OpenAI, add tools, and scale from one agent to teams.
 
+## Integrations
+
+<table>
+  <tr>
+    <td align="center"><img src="frontend/public/brands/openai.svg" width="80" alt="OpenAI" /><br/>OpenAI</td>
+    <td align="center"><img src="https://cdn.simpleicons.org/github/181717" width="80" alt="GitHub" /><br/>GitHub</td>
+    <td align="center"><img src="https://cdn.simpleicons.org/gitlab/fc6d26" width="80" alt="GitLab" /><br/>GitLab</td>
+    <td align="center"><img src="frontend/public/brands/jira.svg" width="80" alt="Jira" /><br/>Jira</td>
+    <td align="center"><img src="https://cdn.simpleicons.org/gmail/ea4335" width="80" alt="Gmail" /><br/>Gmail</td>
+    <td align="center"><img src="https://cdn.simpleicons.org/postgresql/4169e1" width="80" alt="Database" /><br/>Database</td>
+  </tr>
+</table>
+
 ## Default Assistants
 
 - **GravexStudio Guide** (system helper)
@@ -24,7 +37,7 @@ Gravex gives you a dashboard to create agents, run real tasks, and keep files, c
 - Download Docker Desktop for full features (Isolated Workspaces): https://www.docker.com/products/docker-desktop/
 - Local models download automatically when selected.
 
-> The overlay is macOS‑only. The dashboard works everywhere.
+> The dashboard works on macOS, Linux, and Windows.
 
 ```bash
 ./start.sh web -v
@@ -70,6 +83,7 @@ First‑time setup in the UI:
 - Isolated Workspace is optional and requires Docker.
 - For Local models, you can pick a bundled model or use **Custom URL** to provide a direct download link.
  - The Isolated Workspace image is built locally on first use (or run `./scripts/build_data_agent_image.sh`).
+- Set up **Connected apps** if needed (GitHub, GitLab, Jira, Gmail OAuth, DB credentials).
 
 ## Why Local‑First
 
@@ -89,7 +103,7 @@ First‑time setup in the UI:
 - Codex post‑processing for cleaner structured outputs.
 - Isolated Workspaces per agent (optional, Docker).
 - Local or OpenAI models for chat and automation.
-- Always‑on mic overlay (macOS‑only).
+- Connected apps hub for GitHub/GitLab, Jira, Gmail OAuth, and database profiles.
 
 ## Screenshots
 
@@ -116,5 +130,3 @@ Outputs:
 - macOS: `dist/GravexStudio.app`
 - Linux: `dist/GravexStudio-x86_64.AppImage`
 - Windows: `dist/GravexStudio.exe`
-
-

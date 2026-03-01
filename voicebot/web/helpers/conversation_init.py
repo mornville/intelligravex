@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlmodel import Session
 
 from voicebot.utils.prompt import system_prompt_with_runtime
+from voicebot.web.helpers.connected_apps_prompt import build_connected_apps_prompt_context
 
 
 def bind_ctx(ctx):
@@ -64,10 +65,11 @@ async def init_conversation_and_greet(
                 require_approval=bool(getattr(bot, "require_host_action_approval", False)),
                 host_actions_enabled=bool(getattr(bot, "enable_host_actions", False)),
             )
-            msgs = [
-                Message(role="system", content=sys_prompt),
-                Message(role="user", content=_make_start_message_instruction(bot)),
-            ]
+            msgs = [Message(role="system", content=sys_prompt)]
+            connected_apps_context = build_connected_apps_prompt_context(bot)
+            if connected_apps_context:
+                msgs.append(Message(role="system", content=connected_apps_context))
+            msgs.append(Message(role="user", content=_make_start_message_instruction(bot)))
             if debug:
                 await _emit_llm_debug_payload(
                     ws=ws,

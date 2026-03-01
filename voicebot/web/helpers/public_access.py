@@ -358,7 +358,6 @@ def conversation_files_payload(
         path=path,
         include_hidden=include_hidden,
     )
-    max_items = 2000
     if not target.exists():
         if not req_rel:
             return {
@@ -370,7 +369,7 @@ def conversation_files_payload(
                 "path": req_rel,
                 "recursive": bool(recursive),
                 "items": [],
-                "max_items": max_items,
+                "max_items": None,
             }
         raise HTTPException(status_code=404, detail="Path not found")
 
@@ -409,13 +408,9 @@ def conversation_files_payload(
         _add_item(target)
         if recursive:
             for p in sorted(target.rglob("*")):
-                if len(items) >= max_items:
-                    break
                 _add_item(p)
         else:
             for p in sorted(target.iterdir()):
-                if len(items) >= max_items:
-                    break
                 _add_item(p)
 
     return {
@@ -427,5 +422,5 @@ def conversation_files_payload(
         "path": req_rel,
         "recursive": bool(recursive),
         "items": items,
-        "max_items": max_items,
+        "max_items": None,
     }

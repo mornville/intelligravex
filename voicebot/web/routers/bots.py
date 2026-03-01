@@ -1,14 +1,673 @@
 from __future__ import annotations
+import base64
+import hashlib
+import json
+import os
+import secrets
+import socket
+import threading
+import time
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Optional
+from urllib.parse import parse_qs, parse_qsl, quote_plus, urlencode, urlparse
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlmodel import Session
 
 from ..schemas import BotCreateRequest, BotUpdateRequest, IntegrationToolCreateRequest, IntegrationToolUpdateRequest
 
 
+GMAIL_AUTH_BASE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GMAIL_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+GMAIL_DEFAULT_REDIRECT_URI = "http://localhost:1466/auth/callback"
+GMAIL_DEFAULT_SCOPE = "openid email profile https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly"
+
+
+@dataclass
+class GmailOAuthSession:
+    state: str
+    bot_id: str
+    code_verifier: str
+    created_at: float
+    code: Optional[str] = None
+    error: Optional[str] = None
+
+
+_gmail_sessions: dict[str, GmailOAuthSession] = {}
+_gmail_sessions_lock = threading.Lock()
+_gmail_server_started = False
+_gmail_server_error: Optional[str] = None
+
+
+def _env_value(name: str) -> str:
+    raw = (os.environ.get(name) or "").strip()
+    if raw:
+        return raw
+    prefixed = (os.environ.get(f"VOICEBOT_{name}") or "").strip()
+    if prefixed:
+        return prefixed
+    try:
+        from dotenv import dotenv_values  # type: ignore
+
+        values = dotenv_values(".env")
+        if isinstance(values, dict):
+            from_file = str(values.get(name) or "").strip()
+            if from_file:
+                return from_file
+            from_file_prefixed = str(values.get(f"VOICEBOT_{name}") or "").strip()
+            if from_file_prefixed:
+                return from_file_prefixed
+    except Exception:
+        pass
+    return ""
+
+
+def _gmail_client_id() -> str:
+    return _env_value("GMAIL_OAUTH_CLIENT_ID")
+
+
+def _gmail_client_secret() -> str:
+    return _env_value("GMAIL_OAUTH_CLIENT_SECRET")
+
+
+def _gmail_redirect_uri() -> str:
+    return _env_value("GMAIL_OAUTH_REDIRECT_URI") or GMAIL_DEFAULT_REDIRECT_URI
+
+
+def _gmail_scope() -> str:
+    return _env_value("GMAIL_OAUTH_SCOPE") or GMAIL_DEFAULT_SCOPE
+
+
+def _gmail_pkce_pair() -> tuple[str, str]:
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+    challenge = hashlib.sha256(verifier.encode("utf-8")).digest()
+    challenge_b64 = base64.urlsafe_b64encode(challenge).decode("utf-8").rstrip("=")
+    return verifier, challenge_b64
+
+
+def _gmail_auth_url(state: str, code_challenge: str) -> str:
+    params = {
+        "response_type": "code",
+        "client_id": _gmail_client_id(),
+        "redirect_uri": _gmail_redirect_uri(),
+        "scope": _gmail_scope(),
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    }
+    return f"{GMAIL_AUTH_BASE_URL}?{urlencode(params)}"
+
+
+def _gmail_exchange_code(code: str, code_verifier: str) -> dict:
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": _gmail_client_id(),
+        "client_secret": _gmail_client_secret(),
+        "code": code,
+        "redirect_uri": _gmail_redirect_uri(),
+        "code_verifier": code_verifier,
+    }
+    resp = httpx.post(GMAIL_TOKEN_URL, data=data, timeout=12.0)
+    if resp.status_code >= 400:
+        try:
+            err = resp.json()
+            msg = str((err or {}).get("error_description") or (err or {}).get("error") or "")
+        except Exception:
+            msg = ""
+        raise RuntimeError(msg or f"Gmail OAuth token exchange failed ({resp.status_code}).")
+    obj = resp.json()
+    if not isinstance(obj, dict) or not obj.get("access_token"):
+        raise RuntimeError("Gmail OAuth token exchange failed (missing access token).")
+    return obj
+
+
+def _gmail_userinfo(access_token: str) -> dict:
+    token = str(access_token or "").strip()
+    if not token:
+        return {}
+    resp = httpx.get(
+        GMAIL_USERINFO_URL,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10.0,
+    )
+    if resp.status_code >= 400:
+        return {}
+    try:
+        obj = resp.json()
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _make_gmail_handler():
+    expected_path = urlparse(_gmail_redirect_uri()).path or "/auth/callback"
+
+    class GmailCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                return
+            qs = parse_qs(parsed.query)
+            state = (qs.get("state") or [None])[0]
+            code = (qs.get("code") or [None])[0]
+            error = (qs.get("error") or [None])[0]
+            if state:
+                with _gmail_sessions_lock:
+                    sess = _gmail_sessions.get(state)
+                    if sess:
+                        sess.code = code
+                        sess.error = error
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body style='font-family:system-ui;margin:40px;'>"
+                b"<h2>Google sign-in complete</h2>"
+                b"<p>You can close this window and return to GravexStudio.</p>"
+                b"</body></html>"
+            )
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    return GmailCallbackHandler
+
+
+def _ensure_gmail_server() -> None:
+    global _gmail_server_started, _gmail_server_error
+    if _gmail_server_started:
+        return
+    parsed = urlparse(_gmail_redirect_uri())
+    host = parsed.hostname or "127.0.0.1"
+    port = int(parsed.port or 80)
+    if parsed.scheme not in {"http", ""}:
+        _gmail_server_error = "GMAIL_OAUTH_REDIRECT_URI must use http:// for local callback."
+        return
+    try:
+        httpd = ThreadingHTTPServer((host, port), _make_gmail_handler())
+    except Exception as exc:
+        _gmail_server_error = str(exc)
+        return
+    _gmail_server_started = True
+
+    def _serve():
+        try:
+            httpd.serve_forever()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_serve, daemon=True, name="gmail-oauth-callback")
+    t.start()
+
+
+class DatabaseCredentialTestRequest(BaseModel):
+    id: str = ""
+    nickname: str = ""
+    engine: str = "postgresql"
+    host: str = ""
+    port: str = ""
+    database: str = ""
+    user: str = ""
+    password: str = ""
+    options: str = ""
+    server_ca: str = ""
+    client_cert: str = ""
+    client_key: str = ""
+
+
+def _parse_options(raw: str) -> dict[str, str]:
+    text = str(raw or "").strip().lstrip("?")
+    if not text:
+        return {}
+    out: dict[str, str] = {}
+    for k, v in parse_qsl(text, keep_blank_values=True):
+        key = str(k or "").strip()
+        if not key:
+            continue
+        out[key] = str(v or "").strip()
+    return out
+
+
+def _default_port(engine: str) -> int:
+    norm = str(engine or "").strip().lower()
+    if norm in {"postgres", "postgresql"}:
+        return 5432
+    if norm in {"mysql"}:
+        return 3306
+    if norm in {"mssql", "sqlserver", "sql_server"}:
+        return 1433
+    if norm in {"mongodb", "mongo"}:
+        return 27017
+    if norm in {"redis"}:
+        return 6379
+    return 0
+
+
+def _coerce_port(port_raw: str, engine: str) -> int:
+    text = str(port_raw or "").strip()
+    if text:
+        try:
+            n = int(text)
+        except Exception:
+            raise ValueError("Port must be a number.")
+        if n < 1 or n > 65535:
+            raise ValueError("Port must be between 1 and 65535.")
+        return n
+    default = _default_port(engine)
+    if default > 0:
+        return default
+    raise ValueError("Port is required for this database engine.")
+
+
+def _tcp_probe(host: str, port: int, timeout_s: float = 5.0) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True, "TCP reachability check passed."
+    except Exception as exc:
+        return False, str(exc) or "TCP reachability check failed."
+
+
+def _build_db_test_result(
+    *,
+    ok: bool,
+    engine: str,
+    message: str,
+    code: str,
+    driver: str = "",
+    latency_ms: float = 0.0,
+) -> dict:
+    return {
+        "ok": bool(ok),
+        "engine": str(engine or "").strip().lower() or "unknown",
+        "driver": driver,
+        "code": code,
+        "message": message,
+        "latency_ms": round(float(latency_ms), 1),
+    }
+
+
+def _test_database_credential(payload: DatabaseCredentialTestRequest) -> dict:
+    started = time.perf_counter()
+    engine = str(payload.engine or "").strip().lower() or "postgresql"
+    host = str(payload.host or "").strip()
+    database = str(payload.database or "").strip()
+    user = str(payload.user or "").strip()
+    password = str(payload.password or "")
+    options = _parse_options(payload.options)
+    timeout_s = 5.0
+    if options.get("connect_timeout"):
+        try:
+            timeout_s = max(1.0, min(20.0, float(options["connect_timeout"])))
+        except Exception:
+            timeout_s = 5.0
+    if not host:
+        raise ValueError("Host is required.")
+    port = _coerce_port(payload.port, engine)
+
+    def _done(ok: bool, message: str, code: str, driver: str = "") -> dict:
+        return _build_db_test_result(
+            ok=ok,
+            engine=engine,
+            message=message,
+            code=code,
+            driver=driver,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+        )
+
+    if engine in {"postgres", "postgresql"}:
+        if not database or not user or not password:
+            raise ValueError("PostgreSQL requires database, user, and password.")
+        try:
+            import psycopg  # type: ignore
+
+            kwargs = {
+                "host": host,
+                "port": port,
+                "dbname": database,
+                "user": user,
+                "password": password,
+                "connect_timeout": int(timeout_s),
+            }
+            if payload.server_ca:
+                kwargs["sslrootcert"] = payload.server_ca
+            if payload.client_cert:
+                kwargs["sslcert"] = payload.client_cert
+            if payload.client_key:
+                kwargs["sslkey"] = payload.client_key
+            with psycopg.connect(**kwargs) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+            return _done(True, "PostgreSQL connection succeeded.", "ok", "psycopg")
+        except ImportError:
+            try:
+                import psycopg2  # type: ignore
+
+                kwargs = {
+                    "host": host,
+                    "port": port,
+                    "dbname": database,
+                    "user": user,
+                    "password": password,
+                    "connect_timeout": int(timeout_s),
+                }
+                if payload.server_ca:
+                    kwargs["sslrootcert"] = payload.server_ca
+                if payload.client_cert:
+                    kwargs["sslcert"] = payload.client_cert
+                if payload.client_key:
+                    kwargs["sslkey"] = payload.client_key
+                conn = psycopg2.connect(**kwargs)
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                return _done(True, "PostgreSQL connection succeeded.", "ok", "psycopg2")
+            except ImportError:
+                ok, tcp_msg = _tcp_probe(host, port, timeout_s=timeout_s)
+                if ok:
+                    return _done(
+                        False,
+                        "PostgreSQL driver missing (install psycopg or psycopg2). TCP connectivity is reachable.",
+                        "driver_missing",
+                        "tcp",
+                    )
+                return _done(
+                    False,
+                    f"PostgreSQL driver missing and host unreachable: {tcp_msg}",
+                    "driver_missing_unreachable",
+                    "tcp",
+                )
+            except Exception as exc:
+                return _done(False, str(exc) or "PostgreSQL test failed.", "auth_or_network_error", "psycopg2")
+        except Exception as exc:
+            return _done(False, str(exc) or "PostgreSQL test failed.", "auth_or_network_error", "psycopg")
+
+    if engine in {"mysql"}:
+        if not database or not user or not password:
+            raise ValueError("MySQL requires database, user, and password.")
+        try:
+            import pymysql  # type: ignore
+
+            kwargs = {
+                "host": host,
+                "port": port,
+                "user": user,
+                "password": password,
+                "database": database,
+                "connect_timeout": int(timeout_s),
+                "read_timeout": int(timeout_s),
+                "write_timeout": int(timeout_s),
+            }
+            conn = pymysql.connect(**kwargs)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            return _done(True, "MySQL connection succeeded.", "ok", "pymysql")
+        except ImportError:
+            ok, tcp_msg = _tcp_probe(host, port, timeout_s=timeout_s)
+            if ok:
+                return _done(
+                    False,
+                    "MySQL driver missing (install pymysql). TCP connectivity is reachable.",
+                    "driver_missing",
+                    "tcp",
+                )
+            return _done(
+                False,
+                f"MySQL driver missing and host unreachable: {tcp_msg}",
+                "driver_missing_unreachable",
+                "tcp",
+            )
+        except Exception as exc:
+            return _done(False, str(exc) or "MySQL test failed.", "auth_or_network_error", "pymysql")
+
+    if engine in {"mssql", "sqlserver", "sql_server"}:
+        if not database or not user or not password:
+            raise ValueError("MS SQL requires database, user, and password.")
+        try:
+            import pymssql  # type: ignore
+
+            conn = pymssql.connect(
+                server=host,
+                port=port,
+                user=user,
+                password=password,
+                database=database,
+                login_timeout=int(timeout_s),
+                timeout=int(timeout_s),
+            )
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            return _done(True, "MS SQL connection succeeded.", "ok", "pymssql")
+        except ImportError:
+            ok, tcp_msg = _tcp_probe(host, port, timeout_s=timeout_s)
+            if ok:
+                return _done(
+                    False,
+                    "MS SQL driver missing (install pymssql). TCP connectivity is reachable.",
+                    "driver_missing",
+                    "tcp",
+                )
+            return _done(
+                False,
+                f"MS SQL driver missing and host unreachable: {tcp_msg}",
+                "driver_missing_unreachable",
+                "tcp",
+            )
+        except Exception as exc:
+            return _done(False, str(exc) or "MS SQL test failed.", "auth_or_network_error", "pymssql")
+
+    if engine in {"mongodb", "mongo"}:
+        try:
+            import pymongo  # type: ignore
+
+            auth = ""
+            if user:
+                auth = quote_plus(user)
+                if password:
+                    auth = f"{auth}:{quote_plus(password)}"
+                auth += "@"
+            db_path = f"/{database}" if database else ""
+            query = payload.options.strip().lstrip("?")
+            uri = f"mongodb://{auth}{host}:{port}{db_path}"
+            if query:
+                uri += f"?{query}"
+            client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=int(timeout_s * 1000))
+            try:
+                client.admin.command("ping")
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            return _done(True, "MongoDB connection succeeded.", "ok", "pymongo")
+        except ImportError:
+            ok, tcp_msg = _tcp_probe(host, port, timeout_s=timeout_s)
+            if ok:
+                return _done(
+                    False,
+                    "MongoDB driver missing (install pymongo). TCP connectivity is reachable.",
+                    "driver_missing",
+                    "tcp",
+                )
+            return _done(
+                False,
+                f"MongoDB driver missing and host unreachable: {tcp_msg}",
+                "driver_missing_unreachable",
+                "tcp",
+            )
+        except Exception as exc:
+            return _done(False, str(exc) or "MongoDB test failed.", "auth_or_network_error", "pymongo")
+
+    if engine == "redis":
+        try:
+            import redis  # type: ignore
+
+            db_index = 0
+            if database.strip():
+                try:
+                    db_index = int(database.strip())
+                except Exception:
+                    db_index = 0
+            client = redis.Redis(
+                host=host,
+                port=port,
+                db=db_index,
+                username=user or None,
+                password=password or None,
+                socket_connect_timeout=timeout_s,
+                socket_timeout=timeout_s,
+            )
+            client.ping()
+            return _done(True, "Redis connection succeeded.", "ok", "redis-py")
+        except ImportError:
+            ok, tcp_msg = _tcp_probe(host, port, timeout_s=timeout_s)
+            if ok:
+                return _done(
+                    False,
+                    "Redis driver missing (install redis). TCP connectivity is reachable.",
+                    "driver_missing",
+                    "tcp",
+                )
+            return _done(
+                False,
+                f"Redis driver missing and host unreachable: {tcp_msg}",
+                "driver_missing_unreachable",
+                "tcp",
+            )
+        except Exception as exc:
+            return _done(False, str(exc) or "Redis test failed.", "auth_or_network_error", "redis-py")
+
+    ok, tcp_msg = _tcp_probe(host, port, timeout_s=timeout_s)
+    if ok:
+        return _done(
+            True,
+            "TCP reachability check passed. Engine-specific auth test is not implemented for this engine yet.",
+            "tcp_only",
+            "tcp",
+        )
+    return _done(False, f"TCP reachability failed: {tcp_msg}", "tcp_unreachable", "tcp")
+
+
 def register(app, ctx) -> None:
     router = APIRouter()
+
+    def _auth_obj(raw: str) -> dict:
+        text = (raw or "").strip() or "{}"
+        try:
+            obj = json.loads(text)
+        except Exception:
+            return {}
+        if not isinstance(obj, dict):
+            return {}
+        return obj
+
+    def _gmail_public_payload(gmail_obj: dict) -> dict:
+        return {
+            "connected": bool(gmail_obj.get("connected")),
+            "account_email": str(gmail_obj.get("account_email") or "").strip(),
+            "scope": str(gmail_obj.get("scope") or "").strip(),
+            "expires_at": gmail_obj.get("expires_at"),
+            "connected_at": str(gmail_obj.get("connected_at") or "").strip(),
+            "error": str(gmail_obj.get("error") or "").strip(),
+        }
+
+    def _apply_gmail_auth_json(bot_auth_json: str, *, tokens: dict, account_email: str) -> str:
+        base = _auth_obj(bot_auth_json)
+        connected_apps = base.get("connected_apps")
+        if not isinstance(connected_apps, dict):
+            connected_apps = {}
+        old_gmail = connected_apps.get("gmail")
+        old_gmail_obj = old_gmail if isinstance(old_gmail, dict) else {}
+        refresh_token = str(tokens.get("refresh_token") or old_gmail_obj.get("refresh_token") or "").strip()
+        access_token = str(tokens.get("access_token") or "").strip()
+        expires_at = None
+        try:
+            expires_in = float(tokens.get("expires_in") or 0.0)
+            if expires_in > 0:
+                expires_at = time.time() + expires_in
+        except Exception:
+            expires_at = old_gmail_obj.get("expires_at")
+        scope = str(tokens.get("scope") or old_gmail_obj.get("scope") or "").strip()
+        now_iso = ctx.dt.datetime.now(ctx.dt.timezone.utc).isoformat()
+        gmail_obj = {
+            "connected": bool(refresh_token or access_token),
+            "account_email": str(account_email or old_gmail_obj.get("account_email") or "").strip(),
+            "scope": scope,
+            "token_type": str(tokens.get("token_type") or old_gmail_obj.get("token_type") or "").strip(),
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "connected_at": str(old_gmail_obj.get("connected_at") or now_iso).strip(),
+            "error": "",
+        }
+        connected_apps["gmail"] = gmail_obj
+        base["connected_apps"] = connected_apps
+        base["gmail_integration"] = gmail_obj
+        if gmail_obj.get("account_email"):
+            base["gmail_account_email"] = gmail_obj.get("account_email")
+        else:
+            base.pop("gmail_account_email", None)
+        if gmail_obj.get("scope"):
+            base["gmail_scope"] = gmail_obj.get("scope")
+        else:
+            base.pop("gmail_scope", None)
+        if gmail_obj.get("token_type"):
+            base["gmail_token_type"] = gmail_obj.get("token_type")
+        else:
+            base.pop("gmail_token_type", None)
+        if gmail_obj.get("access_token"):
+            base["gmail_access_token"] = gmail_obj.get("access_token")
+        else:
+            base.pop("gmail_access_token", None)
+        if gmail_obj.get("refresh_token"):
+            base["gmail_refresh_token"] = gmail_obj.get("refresh_token")
+        else:
+            base.pop("gmail_refresh_token", None)
+        if isinstance(gmail_obj.get("expires_at"), (int, float)):
+            base["gmail_expires_at"] = gmail_obj.get("expires_at")
+        else:
+            base.pop("gmail_expires_at", None)
+        if gmail_obj.get("connected_at"):
+            base["gmail_connected_at"] = gmail_obj.get("connected_at")
+        else:
+            base.pop("gmail_connected_at", None)
+        base["gmail_connected"] = bool(gmail_obj.get("connected"))
+        base.pop("gmail_error", None)
+        base.pop("gmail_client_id", None)
+        base.pop("gmail_client_secret", None)
+        base.pop("gmail_sender_email", None)
+        base.pop("gmail_reply_to_email", None)
+        return json.dumps(base, ensure_ascii=False, indent=2)
 
     @router.get("/api/bots")
     def api_list_bots(session: Session = Depends(ctx.get_session)) -> dict:
@@ -180,5 +839,92 @@ def register(app, ctx) -> None:
             raise ctx.HTTPException(status_code=404, detail="Tool not found")
         ctx.delete_integration_tool(session, tool_id)
         return {"ok": True}
+
+    @router.post("/api/bots/{bot_id}/connected-apps/gmail/oauth/start")
+    def api_gmail_oauth_start(bot_id: UUID, session: Session = Depends(ctx.get_session)) -> dict:
+        _ = ctx.get_bot(session, bot_id)
+        if not _gmail_client_id() or not _gmail_client_secret():
+            raise ctx.HTTPException(
+                status_code=400,
+                detail="Gmail OAuth is not configured. Set GMAIL_OAUTH_CLIENT_ID and GMAIL_OAUTH_CLIENT_SECRET.",
+            )
+        _ensure_gmail_server()
+        if _gmail_server_error:
+            raise ctx.HTTPException(status_code=500, detail=f"Gmail OAuth callback server failed: {_gmail_server_error}")
+        state = secrets.token_urlsafe(24)
+        verifier, challenge = _gmail_pkce_pair()
+        with _gmail_sessions_lock:
+            _gmail_sessions[state] = GmailOAuthSession(
+                state=state,
+                bot_id=str(bot_id),
+                code_verifier=verifier,
+                created_at=time.time(),
+            )
+        return {"state": state, "auth_url": _gmail_auth_url(state, challenge)}
+
+    @router.get("/api/bots/{bot_id}/connected-apps/gmail/oauth/status")
+    def api_gmail_oauth_status(bot_id: UUID, state: str, session: Session = Depends(ctx.get_session)) -> dict:
+        bot = ctx.get_bot(session, bot_id)
+        with _gmail_sessions_lock:
+            sess = _gmail_sessions.get(state)
+        if not sess:
+            return {"status": "expired"}
+        if sess.bot_id != str(bot_id):
+            return {"status": "expired"}
+        if sess.error:
+            with _gmail_sessions_lock:
+                _gmail_sessions.pop(state, None)
+            return {"status": "error", "error": sess.error}
+        if not sess.code:
+            if (time.time() - sess.created_at) > 600:
+                with _gmail_sessions_lock:
+                    _gmail_sessions.pop(state, None)
+                return {"status": "expired"}
+            return {"status": "pending"}
+        with _gmail_sessions_lock:
+            consumed = _gmail_sessions.pop(state, None)
+        if not consumed:
+            return {"status": "expired"}
+        try:
+            tokens = _gmail_exchange_code(consumed.code or "", consumed.code_verifier)
+            userinfo = _gmail_userinfo(str(tokens.get("access_token") or ""))
+            account_email = str(userinfo.get("email") or "").strip()
+            next_auth_json = _apply_gmail_auth_json(
+                getattr(bot, "data_agent_auth_json", "") or "{}",
+                tokens=tokens,
+                account_email=account_email,
+            )
+            bot = ctx.update_bot(session, bot_id=bot_id, patch={"data_agent_auth_json": next_auth_json})
+            auth_obj = _auth_obj(getattr(bot, "data_agent_auth_json", "") or "{}")
+            connected_apps = auth_obj.get("connected_apps")
+            gmail_obj = connected_apps.get("gmail") if isinstance(connected_apps, dict) else {}
+            public_payload = _gmail_public_payload(gmail_obj if isinstance(gmail_obj, dict) else {})
+            return {"status": "ready", **public_payload}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc) or "Gmail sign-in failed."}
+
+    @router.post("/api/bots/{bot_id}/connected-apps/database/test")
+    def api_test_database_credential(
+        bot_id: UUID,
+        payload: DatabaseCredentialTestRequest,
+        session: Session = Depends(ctx.get_session),
+    ) -> dict:
+        _ = ctx.get_bot(session, bot_id)
+        try:
+            return _test_database_credential(payload)
+        except ValueError as exc:
+            return _build_db_test_result(
+                ok=False,
+                engine=str(payload.engine or "").strip(),
+                message=str(exc) or "Invalid credential payload.",
+                code="invalid_payload",
+            )
+        except Exception as exc:
+            return _build_db_test_result(
+                ok=False,
+                engine=str(payload.engine or "").strip(),
+                message=str(exc) or "Database connection test failed.",
+                code="test_failed",
+            )
 
     app.include_router(router)

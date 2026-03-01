@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from ..schemas import ChatRequest
+from voicebot.web.helpers.connected_apps_prompt import build_connected_apps_prompt_context
 from voicebot.utils.prompt import append_host_action_approval_notice
 
 
@@ -40,6 +41,9 @@ def register(app, ctx) -> None:
                 require_approval=bool(getattr(bot, "require_host_action_approval", False)),
                 host_actions_enabled=bool(getattr(bot, "enable_host_actions", False)),
             )
+            connected_apps_context = build_connected_apps_prompt_context(bot)
+            if connected_apps_context:
+                sys_prompt = f"{sys_prompt}\n\n{connected_apps_context}"
             messages = [ctx.Message(role="system", content=sys_prompt), ctx.Message(role="user", content=text)]
 
             delta_q_client: "ctx.queue.Queue[Optional[str]]" = ctx.queue.Queue()

@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .docker_runner_constants import logger
 
@@ -151,7 +151,7 @@ class _StreamRunResult:
 def _run_stream_jsonl(
     cmd: list[str],
     *,
-    timeout_s: float,
+    timeout_s: Optional[float],
     log_prefix: str,
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> _StreamRunResult:
@@ -261,14 +261,17 @@ def _run_stream_jsonl(
     t1.start()
     t2.start()
 
-    try:
-        rc = p.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
+    if isinstance(timeout_s, (int, float)) and float(timeout_s) > 0:
         try:
-            p.kill()
-        except Exception:
-            pass
-        rc = -9
+            rc = p.wait(timeout=float(timeout_s))
+        except subprocess.TimeoutExpired:
+            try:
+                p.kill()
+            except Exception:
+                pass
+            rc = -9
+    else:
+        rc = p.wait()
 
     # Ensure pipes are drained.
     try:

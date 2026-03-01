@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from uuid import UUID
 
 from .docker_runner_auth import (
@@ -83,7 +83,7 @@ def run_data_agent(
     openai_api_key: str | None = None,
     data_agent_model: str | None = None,
     data_agent_reasoning_effort: str | None = None,
-    timeout_s: float = 600.0,
+    timeout_s: Optional[float] = None,
     on_stream: Callable[[str], None] | None = None,
 ) -> DataAgentRunResult:
     """

@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from voicebot.llm.openai_llm import Message, OpenAILLM
 from voicebot.models import Bot
+from voicebot.web.helpers.connected_apps_prompt import build_connected_apps_prompt_context
 from voicebot.utils.prompt import append_host_action_approval_notice
 
 
@@ -183,10 +184,11 @@ async def public_send_greeting(
             require_approval=bool(getattr(bot, "require_host_action_approval", False)),
             host_actions_enabled=bool(getattr(bot, "enable_host_actions", False)),
         )
-        msgs = [
-            Message(role="system", content=sys_prompt),
-            Message(role="user", content=ctx._make_start_message_instruction(bot)),
-        ]
+        msgs = [Message(role="system", content=sys_prompt)]
+        connected_apps_context = build_connected_apps_prompt_context(bot)
+        if connected_apps_context:
+            msgs.append(Message(role="system", content=connected_apps_context))
+        msgs.append(Message(role="user", content=ctx._make_start_message_instruction(bot)))
         t0 = time.time()
         first = None
         parts: list[str] = []

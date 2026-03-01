@@ -1360,6 +1360,110 @@ button.gitIntRailTab:hover {
   font-size: 11px;
 }
 
+.gitIntDbShell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.gitIntDbList {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.gitIntDbAdd {
+  font-size: 11px;
+  padding: 7px 10px;
+  justify-content: center;
+}
+
+.gitIntDbItem {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(231, 233, 238, 0.9);
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.35;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+button.gitIntDbItem:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.gitIntDbItem.active {
+  border-color: rgba(138, 180, 248, 0.55);
+  background: rgba(92, 139, 255, 0.2);
+}
+
+.gitIntDbEditor {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.gitIntDbTest {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  display: grid;
+  gap: 2px;
+}
+
+.gitIntDbTest > span:first-child {
+  font-weight: 600;
+}
+
+.gitIntDbTest.ok {
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(16, 185, 129, 0.12);
+  color: #c8f9e8;
+}
+
+.gitIntDbTest.err {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(220, 38, 38, 0.14);
+  color: #ffd4d4;
+}
+
+.gitIntActionText {
+  border: none;
+  background: transparent;
+  color: rgba(231, 233, 238, 0.86);
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.gitIntActionText:hover {
+  color: rgba(231, 233, 238, 0.98);
+}
+
+.gitIntActionText:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.gitIntActionText.danger {
+  color: #ff9b9b;
+}
+
 .gitIntHead .chip.ok,
 .gitIntPanel .chip.ok {
   border-color: rgba(52, 211, 153, 0.45);
@@ -1381,6 +1485,10 @@ button.gitIntRailTab:hover {
 
   .gitIntRail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gitIntDbShell {
+    grid-template-columns: 1fr;
   }
 }
 
