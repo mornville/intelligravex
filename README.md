@@ -6,11 +6,30 @@
 </p>
 
 # Gravex
+Run multi-agent AI workflows locally, with isolated workspaces and real tool access. No black boxes. No vendor lock-in
 
-- **Local‑first automation agents** that run on your machine - not in a black box.
-- **Now with fast ChatGPT sign‑in** for instant GPT access, no API key copy‑paste required.
-- **Or just use openai keys** for accessing all the features like TTS, ASR
+## How Gravex is different
+- Runs agents on *your* machine, not someone else’s cloud
+- One agent = one isolated workspace (no collisions)
+- Real tools (Git, Jira, DBs), not just chat
+- Works with local LLMs *or* OpenAI
 
+## Who is Gravex for?
+- Engineers handling multiple Jira tickets daily
+- Founders who want AI agents without leaking code or data
+- Teams experimenting with multi-agent workflows locally
+- Power users tired of SaaS copilots with zero control
+
+  
+## How do i use it?
+- Made an agent by using the Studio and gave it access to gmail, github, jira, gitlab, databases.
+- Logged in with my Openai account so no need of key if i have to use smaller models, else i provide my key.
+- For my day to day tasks: It spins up multiple agents and I give each ticker Jira ticket links, that's it. If the description is sufficient,
+- It clones the repo in isolated workspaces (docker container), does  the work and just gives me URLs to test.
+- The Multi - Agent framework never collide with each other as its in seperate Docker Container. 
+- This is just one of the infinite use cases.
+- Others for fun: I just spin up agent swarm and let them collab and come up with the code/test/reviews after i give them a task
+  
 Gravex gives you a dashboard to create agents, run real tasks, and keep files, configs, and context on-device. Use local LLMs or OpenAI, add tools, and scale from one agent to teams.
 
 ## Integrations
