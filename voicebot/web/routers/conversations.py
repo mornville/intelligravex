@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Request
 from sqlmodel import Session, delete
 
-from voicebot.models import ConversationMessage, ConversationReadState
+from voicebot.models import ConversationMessage, ConversationReadState, ScheduledJob
 
 
 def register(app, ctx) -> None:
@@ -83,6 +83,7 @@ def register(app, ctx) -> None:
             raise ctx.HTTPException(status_code=404, detail="Conversation not found")
         session.exec(delete(ConversationMessage).where(ConversationMessage.conversation_id == conv.id))
         session.exec(delete(ConversationReadState).where(ConversationReadState.conversation_id == conv.id))
+        session.exec(delete(ScheduledJob).where(ScheduledJob.conversation_id == conv.id))
         session.delete(conv)
         session.commit()
         return {"ok": True}

@@ -17,6 +17,7 @@
   --link: #8ab4f8;
   --glow: rgba(59, 130, 246, 0.18);
   --glow2: rgba(45, 212, 191, 0.14);
+  --dashboard-ui-scale: 0.75;
 
   font-size: 14px;
   font-family: 'General Sans', 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
@@ -1666,15 +1667,22 @@ label {
 .settingsTextTabs {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
   flex-wrap: wrap;
   min-width: 0;
+}
+
+.conversationTopBar {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.26);
+  background: linear-gradient(180deg, rgba(30, 58, 138, 0.26), rgba(15, 23, 42, 0.12));
 }
 
 .settingsTextTab {
   border: none;
   background: transparent;
-  padding: 2px 0;
+  padding: 3px 6px;
   color: rgba(231, 233, 238, 0.72);
   font-size: 12px;
   line-height: 1.2;
@@ -2029,6 +2037,33 @@ label {
 }
 .table tr:hover td {
   background: rgba(138, 180, 248, 0.08);
+}
+.jobsTable {
+  font-size: 12px;
+}
+.jobsTable th,
+.jobsTable td {
+  padding: 8px 8px;
+  overflow-wrap: normal;
+  word-break: normal;
+  vertical-align: top;
+}
+.jobsActionsCell {
+  text-align: right;
+}
+.jobsActions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.btn.linkBtn.jobsAction {
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.btn.linkBtn.jobsAction.danger {
+  color: var(--danger);
 }
 
 .chat {
@@ -2528,6 +2563,13 @@ label {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+.metadataPre {
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
 
 .recDot {
   width: 10px;
@@ -2593,6 +2635,22 @@ label {
 .modalCard.settingsModal {
   width: min(1100px, 96vw);
 }
+.modalCard.jobModal {
+  width: min(980px, 96vw);
+  max-height: min(92vh, 1100px);
+}
+.modalCard.metadataModal {
+  width: min(1200px, 96vw);
+  max-height: min(92vh, 1100px);
+}
+.metadataModalPre {
+  margin-top: 10px;
+  max-height: calc(92vh - 120px);
+  overflow: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
 
 .modalCard .page {
   width: 100%;
@@ -2628,15 +2686,26 @@ label {
 }
 .app.chatShell {
   height: 100vh;
+  overflow: hidden;
 }
 .chatLayout {
   height: 100%;
   display: grid;
   grid-template-columns: var(--sidebar-width, 320px) minmax(0, 1fr);
   background: linear-gradient(180deg, rgba(8, 10, 15, 0.9), rgba(10, 12, 18, 0.85));
+  transform-origin: top left;
+  transform: scale(var(--dashboard-ui-scale));
+  width: calc(100% / var(--dashboard-ui-scale));
+  height: calc(100% / var(--dashboard-ui-scale));
 }
 .chatLayout.withWorkspace {
   grid-template-columns: var(--sidebar-width, 320px) minmax(0, 1fr) auto;
+}
+
+@media (max-width: 1200px) {
+  :root {
+    --dashboard-ui-scale: 1;
+  }
 }
 .singleTabBlock {
   min-height: 100vh;

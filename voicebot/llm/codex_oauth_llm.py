@@ -67,6 +67,9 @@ class CodexOAuthLLM:
                     instructions_parts.append(m.content)
             else:
                 non_system.append(m)
+        if not non_system:
+            # Codex backend requires non-empty input content.
+            non_system = [Message(role="user", content="Please respond to the instructions above.")]
         instructions = "\n\n".join(instructions_parts).strip()
         payload: dict[str, Any] = {
             "model": self._model,

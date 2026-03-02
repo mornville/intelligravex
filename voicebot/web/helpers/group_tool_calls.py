@@ -95,6 +95,17 @@ async def process_group_tool_calls(
             elif tool_name == "set_metadata":
                 new_meta = ctx.merge_conversation_metadata(session, conversation_id=conversation_id, patch=patch)
                 tool_result = {"ok": True, "updated": patch, "metadata": new_meta}
+            elif tool_name == "schedule_job":
+                tool_result = ctx._handle_schedule_job_tool(
+                    session,
+                    bot=bot,
+                    conversation_id=conversation_id,
+                    tool_args=patch,
+                )
+                tool_failed = not bool(tool_result.get("ok", False))
+                # Always generate the user-facing response via follow-up LLM from tool result.
+                needs_followup_llm = True
+                final = ""
             elif tool_name == "web_search":
                 tool_result = {
                     "ok": False,
@@ -614,6 +625,8 @@ async def process_group_tool_calls(
                         ("The previous tool call failed. " if tool_failed else "")
                         + "Using the latest tool result(s) above, write the next assistant reply. "
                         "If the tool result contains codex_result_text, rephrase it for the user and do not mention file paths. "
+                        "Only claim actions that are explicitly confirmed by the tool result(s). "
+                        "Do not repeat sentences. "
                         "Do not call any tools."
                     ),
                 )

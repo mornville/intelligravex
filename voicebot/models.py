@@ -193,6 +193,36 @@ class IntegrationTool(SQLModel, table=True):
     updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
 
 
+class ScheduledJob(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    bot_id: UUID = Field(foreign_key="bot.id", index=True)
+    assistant_id: UUID = Field(foreign_key="bot.id", index=True)
+    conversation_id: UUID = Field(foreign_key="conversation.id", index=True)
+
+    # User-intent payload captured from tool/API.
+    what_to_do: str = Field(default="")
+    input_message: str = Field(default="")
+    cadence: str = Field(default="daily")  # once | daily | weekly
+    # Required for recurring schedules. 24h UTC, e.g. "09:30".
+    time_utc: str = Field(default="")
+    # Optional for weekly cadence. mon|tue|wed|thu|fri|sat|sun.
+    weekday_utc: str = Field(default="")
+    # Optional for one-shot schedules.
+    run_at_utc: Optional[dt.datetime] = Field(default=None, index=True)
+
+    next_run_at: Optional[dt.datetime] = Field(default=None, index=True)
+    enabled: bool = Field(default=True, index=True)
+    is_running: bool = Field(default=False, index=True)
+    running_started_at: Optional[dt.datetime] = Field(default=None, index=True)
+
+    last_run_at: Optional[dt.datetime] = Field(default=None, index=True)
+    last_status: str = Field(default="")
+    last_error: str = Field(default="")
+
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc), index=True)
+
+
 class AppSetting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: str = Field(default="")

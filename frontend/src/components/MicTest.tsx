@@ -214,8 +214,8 @@ export default function MicTest({
   hostActionRequiresApproval?: (action: HostAction) => boolean
   hostActionsErr?: string | null
   onRunHostAction?: (action: HostAction) => void
-  settingsTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'host' | 'tools'
-  onOpenSettingsTab?: (tab: 'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'host' | 'tools') => void
+  settingsTab?: 'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'jobs' | 'host' | 'tools'
+  onOpenSettingsTab?: (tab: 'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'jobs' | 'host' | 'tools') => void
   isolatedEnabled?: boolean
 }) {
   const [connectionStage, setConnectionStage] = useState<Stage>('disconnected')
@@ -229,6 +229,7 @@ export default function MicTest({
   const [containerStatus, setContainerStatus] = useState<DataAgentStatus | null>(null)
   const [containerErr, setContainerErr] = useState<string | null>(null)
   const [containerLoading, setContainerLoading] = useState(false)
+  const [conversationMetadata, setConversationMetadata] = useState<any>({})
   const [showFilesPane, setShowFilesPane] = useState(true)
   const [files, setFiles] = useState<ConversationFiles | null>(null)
   const [filesErr, setFilesErr] = useState<string | null>(null)
@@ -239,6 +240,7 @@ export default function MicTest({
   const [showToolMessages, setShowToolMessages] = useState(false)
   const [showWsSettings, setShowWsSettings] = useState(false)
   const [showControlMenu, setShowControlMenu] = useState(false)
+  const [showMetadataModal, setShowMetadataModal] = useState(false)
   const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({})
   const [items, setItems] = useState<ChatItem[]>([])
   const [recording, setRecording] = useState(false)
@@ -507,6 +509,25 @@ export default function MicTest({
     }
   }
 
+  async function loadConversationMetadata(cid?: string) {
+    const id = cid || conversationId
+    if (!id) {
+      setConversationMetadata({})
+      return
+    }
+    try {
+      const d = await apiGet<{ conversation?: { metadata_json?: string } }>(`/api/conversations/${id}`)
+      const raw = d?.conversation?.metadata_json || '{}'
+      try {
+        setConversationMetadata(JSON.parse(raw))
+      } catch {
+        setConversationMetadata({})
+      }
+    } catch {
+      setConversationMetadata({})
+    }
+  }
+
   async function loadFiles(cid?: string, recursive?: boolean, includeHidden?: boolean) {
     const id = cid || conversationId
     if (!id) return
@@ -615,6 +636,7 @@ export default function MicTest({
         const cid = String(msg.conversation_id || '')
         if (cid && cid === conversationIdRef.current) {
           void hydrateConversation(cid)
+          void loadConversationMetadata(cid)
         }
         return
       }
@@ -639,6 +661,7 @@ export default function MicTest({
           const s = String(cid)
           setConversationId(s)
           void hydrateConversation(s)
+          void loadConversationMetadata(s)
           if (pendingInitReqIdRef.current) {
             reqToConversationRef.current[pendingInitReqIdRef.current] = s
             pendingInitReqIdRef.current = null
@@ -1023,6 +1046,7 @@ export default function MicTest({
 
   useEffect(() => {
     if (!conversationId) return
+    void loadConversationMetadata(conversationId)
     if (cacheAppliedConvRef.current !== conversationId && cache && cache[conversationId]?.items?.length) {
       setItems(cache[conversationId].items)
       setOldestCursor(getOldestCursor(cache[conversationId].items))
@@ -1311,6 +1335,7 @@ export default function MicTest({
     { id: 'tts', label: 'TTS' },
     { id: 'agent', label: 'Isolated Workspace' },
     { id: 'integrations', label: 'Connected apps' },
+    { id: 'jobs', label: 'Jobs' },
     { id: 'host', label: 'Host actions' },
     { id: 'tools', label: 'Tools' },
   ] as const
@@ -1454,6 +1479,7 @@ export default function MicTest({
   const isTurnBusy = Boolean(activeReqId) || activeStage !== 'idle'
   const canStopGeneration = Boolean(activeReqId)
   const queueCount = queuedChats.length
+  const metadataJsonText = useMemo(() => JSON.stringify(conversationMetadata || {}, null, 2), [conversationMetadata])
   const sendLabel = isTurnBusy ? `Queue${queueCount ? ` (${queueCount})` : ''}` : 'Send'
   const micButton = recording ? (
     <button className="iconBtn danger" onClick={() => void stopRecording()} title="Stop recording">
@@ -1524,13 +1550,27 @@ export default function MicTest({
     </div>
   )
 
+  const metadataModal = showMetadataModal ? (
+    <div className="modalOverlay" role="dialog" aria-modal="true" onClick={() => setShowMetadataModal(false)}>
+      <div className="modalCard metadataModal" onClick={(e) => e.stopPropagation()}>
+        <div className="cardTitleRow modalSticky">
+          <div className="cardTitle">Conversation metadata</div>
+          <button className="btn" onClick={() => setShowMetadataModal(false)}>
+            Close
+          </button>
+        </div>
+        <pre className="pre metadataModalPre">{metadataJsonText}</pre>
+      </div>
+    </div>
+  ) : null
+
   if (layout === 'whatsapp') {
     return (
       <div className="assistantChat">
         {err ? <div className="alert">{err}</div> : null}
         <div className={`assistantSplit ${hideWorkspace || !conversationId || !showFilesPane ? 'full' : ''}`}>
           <div className="assistantChatPane">
-            <div className="row gap" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="row gap conversationTopBar" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
               <div className="pill" title={`stage: ${activeStage}`}>
                 ws: {wsStatusLabel}
               </div>
@@ -1551,7 +1591,19 @@ export default function MicTest({
                       ) : null}
                     </button>
                   ))}
+                  <button
+                    className={`settingsTextTab ${showMetadataModal ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setShowMetadataModal(true)}
+                  >
+                    Conversation metadata
+                  </button>
                 </div>
+              ) : null}
+              {!showSettingsTabs ? (
+                <button className="settingsTextTab" type="button" onClick={() => setShowMetadataModal(true)}>
+                  Conversation metadata
+                </button>
               ) : null}
               <div className="spacer" />
               <div className="settingsWrapper">
@@ -1670,6 +1722,7 @@ export default function MicTest({
           </div>
           {hideWorkspace ? null : workspacePane}
         </div>
+        {metadataModal}
       </div>
     )
   }
@@ -1778,6 +1831,12 @@ export default function MicTest({
         </div>
       </details>
 
+      <div className="row gap" style={{ marginTop: 10 }}>
+        <button className="btn ghost" onClick={() => setShowMetadataModal(true)}>
+          Conversation metadata
+        </button>
+      </div>
+
       <div className={`chatSplit ${!conversationId || !showFilesPane ? 'full' : ''}`}>
         {workspacePane}
 
@@ -1798,6 +1857,7 @@ export default function MicTest({
           </div>
         </div>
       </div>
+      {metadataModal}
     </section>
   )
 }

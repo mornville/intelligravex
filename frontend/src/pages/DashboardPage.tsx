@@ -288,7 +288,7 @@ export default function DashboardPage() {
   const [showKeysModal, setShowKeysModal] = useState(false)
   const [showDeveloperModal, setShowDeveloperModal] = useState(false)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'host' | 'tools'>('llm')
+  const [settingsTab, setSettingsTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'jobs' | 'host' | 'tools'>('llm')
   const [resettingOnboarding, setResettingOnboarding] = useState(false)
   const [showCreateAssistant, setShowCreateAssistant] = useState(false)
   const [creatingAssistant, setCreatingAssistant] = useState(false)
@@ -1414,7 +1414,7 @@ export default function DashboardPage() {
     }
   }
 
-  function openSettingsTab(tab: 'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'host' | 'tools') {
+  function openSettingsTab(tab: 'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'jobs' | 'host' | 'tools') {
     setSettingsTab(tab)
     setShowSettingsModal(true)
   }

@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from voicebot.crypto import CryptoBox, build_hint
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, update as sa_update
 from voicebot.models import (
     ApiKey,
     Bot,
@@ -20,6 +20,7 @@ from voicebot.models import (
     ConversationReadState,
     IntegrationTool,
     GitToken,
+    ScheduledJob,
 )
 
 
@@ -160,6 +161,10 @@ def delete_bot(session: Session, bot_id: UUID) -> None:
     stmt = select(IntegrationTool).where(IntegrationTool.bot_id == bot_id)
     for t in session.exec(stmt):
         session.delete(t)
+    # Delete scheduled jobs
+    stmt = select(ScheduledJob).where(ScheduledJob.bot_id == bot_id)
+    for j in session.exec(stmt):
+        session.delete(j)
     session.delete(bot)
     session.commit()
 
@@ -637,4 +642,109 @@ def delete_integration_tool(session: Session, tool_id: UUID) -> None:
     if not tool:
         return
     session.delete(tool)
+    session.commit()
+
+
+def list_scheduled_jobs(
+    session: Session,
+    *,
+    bot_id: Optional[UUID] = None,
+    conversation_id: Optional[UUID] = None,
+    enabled: Optional[bool] = None,
+    limit: int = 500,
+) -> List[ScheduledJob]:
+    stmt = select(ScheduledJob)
+    if bot_id:
+        stmt = stmt.where(ScheduledJob.bot_id == bot_id)
+    if conversation_id:
+        stmt = stmt.where(ScheduledJob.conversation_id == conversation_id)
+    if enabled is not None:
+        stmt = stmt.where(ScheduledJob.enabled == bool(enabled))
+    stmt = stmt.order_by(ScheduledJob.next_run_at.asc(), ScheduledJob.created_at.asc())
+    stmt = stmt.limit(int(limit))
+    return list(session.exec(stmt))
+
+
+def list_due_scheduled_jobs(
+    session: Session,
+    *,
+    now: dt.datetime,
+    limit: int = 100,
+) -> List[ScheduledJob]:
+    stmt = (
+        select(ScheduledJob)
+        .where(ScheduledJob.enabled == True)  # noqa: E712
+        .where(ScheduledJob.is_running == False)  # noqa: E712
+        .where(ScheduledJob.next_run_at.is_not(None))
+        .where(ScheduledJob.next_run_at <= now)
+        .order_by(ScheduledJob.next_run_at.asc(), ScheduledJob.created_at.asc())
+        .limit(int(limit))
+    )
+    return list(session.exec(stmt))
+
+
+def get_scheduled_job(session: Session, job_id: UUID) -> ScheduledJob:
+    job = session.get(ScheduledJob, job_id)
+    if not job:
+        raise NotFoundError("Scheduled job not found")
+    return job
+
+
+def create_scheduled_job(session: Session, *, job: ScheduledJob) -> ScheduledJob:
+    now = dt.datetime.now(dt.timezone.utc)
+    job.created_at = now
+    job.updated_at = now
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def update_scheduled_job(session: Session, job_id: UUID, patch: dict) -> ScheduledJob:
+    job = get_scheduled_job(session, job_id)
+    for k, v in patch.items():
+        setattr(job, k, v)
+    job.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+def claim_due_scheduled_job(session: Session, *, job_id: UUID, now: dt.datetime) -> ScheduledJob | None:
+    """
+    Atomically claims a due job so only one scheduler process executes it.
+    Returns the claimed row, or None if another worker already claimed it.
+    """
+    now_utc = now if now.tzinfo else now.replace(tzinfo=dt.timezone.utc)
+    updated_at = dt.datetime.now(dt.timezone.utc)
+    stmt = (
+        sa_update(ScheduledJob)
+        .where(ScheduledJob.id == job_id)
+        .where(ScheduledJob.enabled == True)  # noqa: E712
+        .where(ScheduledJob.is_running == False)  # noqa: E712
+        .where(ScheduledJob.next_run_at.is_not(None))
+        .where(ScheduledJob.next_run_at <= now_utc)
+        .values(
+            is_running=True,
+            running_started_at=now_utc,
+            last_status="running",
+            last_error="",
+            updated_at=updated_at,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    result = session.exec(stmt)
+    if int(getattr(result, "rowcount", 0) or 0) <= 0:
+        session.rollback()
+        return None
+    session.commit()
+    return session.get(ScheduledJob, job_id)
+
+
+def delete_scheduled_job(session: Session, job_id: UUID) -> None:
+    job = session.get(ScheduledJob, job_id)
+    if not job:
+        return
+    session.delete(job)
     session.commit()

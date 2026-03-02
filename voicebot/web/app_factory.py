@@ -71,6 +71,7 @@ from voicebot.store import (
     bots_aggregate_metrics,
     count_conversations,
     count_unread_by_conversation,
+    claim_due_scheduled_job,
     create_bot,
     create_client_key,
     create_conversation,
@@ -89,20 +90,26 @@ from voicebot.store import (
     get_integration_tool,
     get_integration_tool_by_name,
     get_or_create_conversation_by_external_id,
+    get_scheduled_job,
     list_bots,
     list_client_keys,
     list_conversations,
     list_integration_tools,
     list_keys,
     list_messages,
+    list_due_scheduled_jobs,
+    list_scheduled_jobs,
     mark_conversation_read,
     merge_conversation_metadata,
     update_bot,
     update_conversation_metrics,
     update_integration_tool,
+    update_scheduled_job,
     upsert_key,
     upsert_git_token,
     verify_client_key,
+    create_scheduled_job,
+    delete_scheduled_job,
 )
 from voicebot.tools.data_agent import give_command_to_data_agent_tool_def
 from voicebot.tools.http_request import http_request_tool_def
@@ -138,6 +145,7 @@ from voicebot.web.helpers import llm as llm_helpers
 from voicebot.web.helpers import llm_keys as llm_keys_helpers
 from voicebot.web.helpers import public_access as public_access_helpers
 from voicebot.web.helpers import settings as settings_helpers
+from voicebot.web.helpers import scheduled_jobs as scheduled_jobs_helpers
 from voicebot.web.helpers import tools as tools_helpers
 from voicebot.web.helpers import ws_utils as ws_helpers
 from voicebot.web.helpers.auth import accepts_html as _accepts_html
@@ -214,6 +222,7 @@ def create_app() -> FastAPI:
     group_swarm_lock = threading.Lock()
     conversation_ws_clients: dict[str, dict[WebSocket, asyncio.AbstractEventLoop]] = {}
     conversation_ws_lock = threading.Lock()
+    scheduler_stop_event = threading.Event()
     try:
         _initial_data_agent_image = data_agent_image_status()
     except Exception:
@@ -678,6 +687,16 @@ def create_app() -> FastAPI:
     ctx._should_followup_llm_for_tool = integration_utils_helpers.should_followup_llm_for_tool
     ctx._parse_follow_up_flag = integration_utils_helpers.parse_follow_up_flag
 
+    ctx._scheduled_jobs_utc_now = scheduled_jobs_helpers.utc_now
+    ctx._serialize_scheduled_job = scheduled_jobs_helpers.serialize_scheduled_job
+    ctx._compute_scheduled_job_next_run = scheduled_jobs_helpers.compute_next_run_at
+    ctx._append_job_metadata_event = partial(scheduled_jobs_helpers.append_job_metadata_event, ctx)
+    ctx._create_job_from_payload = partial(scheduled_jobs_helpers.create_job_from_payload, ctx)
+    ctx._update_job_from_payload = partial(scheduled_jobs_helpers.update_job_from_payload, ctx)
+    ctx._handle_schedule_job_tool = partial(scheduled_jobs_helpers.handle_schedule_job_tool, ctx)
+    ctx._run_scheduled_job_sync = partial(scheduled_jobs_helpers.run_scheduled_job_sync, ctx)
+    ctx._scheduler_loop = partial(scheduled_jobs_helpers.scheduler_loop, ctx)
+
     ctx._group_ws_broadcast = _group_ws_broadcast
     ctx._conversation_ws_register = _conversation_ws_register
     ctx._conversation_ws_unregister = _conversation_ws_unregister
@@ -694,6 +713,21 @@ def create_app() -> FastAPI:
     ctx.public_chat_ws = public_chat_ws_module.public_chat_ws
 
     register_all(app, ctx)
+
+    scheduler_thread = threading.Thread(
+        target=ctx._scheduler_loop,
+        kwargs={"stop_event": scheduler_stop_event},
+        daemon=True,
+        name="scheduled-jobs-dispatcher",
+    )
+    scheduler_thread.start()
+    app.state.igx_scheduler_thread = scheduler_thread
+    app.state.igx_scheduler_stop_event = scheduler_stop_event
+
+    @app.on_event("shutdown")
+    def _shutdown_scheduler() -> None:
+        scheduler_stop_event.set()
+
     if ui_dir.exists():
         class SpaStaticFiles(StaticFiles):
             def __init__(self, *args, index_file: Path, **kwargs):

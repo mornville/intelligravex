@@ -6,7 +6,7 @@ import SelectField from '../components/SelectField'
 import LoadingSpinner from '../components/LoadingSpinner'
 import InlineHelpTip from '../components/InlineHelpTip'
 import BotGitIntegrationsPanel from '../components/BotGitIntegrationsPanel'
-import type { Bot, ConversationSummary, DataAgentSetupStatus, IntegrationTool, Options, SystemTool } from '../types'
+import type { Bot, ConversationSummary, DataAgentSetupStatus, IntegrationTool, Options, ScheduledJob, SystemTool } from '../types'
 import { formatLocalModelToolSupport } from '../utils/localModels'
 import { formatProviderLabel, orderProviderList } from '../utils/llmProviders'
 import { TrashIcon, XMarkIcon } from '@heroicons/react/24/solid'
@@ -98,12 +98,30 @@ Rules:
   const [agentSetupPolling, setAgentSetupPolling] = useState(false)
   const [agentEnablePending, setAgentEnablePending] = useState(false)
   const [applyAgentEnable, setApplyAgentEnable] = useState(false)
-  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'tools'>('llm')
+  const [activeTab, setActiveTab] = useState<'llm' | 'asr' | 'tts' | 'agent' | 'integrations' | 'jobs' | 'tools'>('llm')
   const [showSettings, setShowSettings] = useState(false)
+  const [jobs, setJobs] = useState<ScheduledJob[]>([])
+  const [jobsLoading, setJobsLoading] = useState(false)
+  const [jobsErr, setJobsErr] = useState<string | null>(null)
+  const [showJobModal, setShowJobModal] = useState(false)
+  const [jobSaving, setJobSaving] = useState(false)
+  const [jobForm, setJobForm] = useState({
+    id: '',
+    assistant_id: '',
+    conversation_uuid: '',
+    input_message: '',
+    what_to_do: '',
+    cadence: 'daily',
+    time_utc: '09:00',
+    weekday_utc: 'mon',
+    run_at_utc: '',
+    enabled: true,
+  })
   useEscapeClose(() => {
     if (showSettings) setShowSettings(false)
     if (showToolModal) setShowToolModal(false)
-  }, showSettings || showToolModal)
+    if (showJobModal) setShowJobModal(false)
+  }, showSettings || showToolModal || showJobModal)
 
   function llmModels(provider: string, fallback: string): string[] {
     if (provider === 'local') {
@@ -134,8 +152,115 @@ Rules:
     }
   }
 
+  async function reloadJobs() {
+    if (!botId) return
+    setJobsLoading(true)
+    setJobsErr(null)
+    try {
+      const res = await apiGet<{ items: ScheduledJob[] }>(`/api/bots/${botId}/scheduled-jobs`)
+      setJobs(res.items || [])
+    } catch (e: any) {
+      setJobsErr(String(e?.message || e))
+    } finally {
+      setJobsLoading(false)
+    }
+  }
+
+  function openNewJob() {
+    setJobForm({
+      id: '',
+      assistant_id: botId || '',
+      conversation_uuid: initialConversationId || '',
+      input_message: '',
+      what_to_do: '',
+      cadence: 'daily',
+      time_utc: '09:00',
+      weekday_utc: 'mon',
+      run_at_utc: '',
+      enabled: true,
+    })
+    setShowJobModal(true)
+  }
+
+  function openEditJob(job: ScheduledJob) {
+    const runAtInput = (job.run_at_utc || '').replace('Z', '')
+    setJobForm({
+      id: job.id,
+      assistant_id: job.assistant_id || botId || '',
+      conversation_uuid: job.conversation_uuid || initialConversationId || '',
+      input_message: job.input_message || '',
+      what_to_do: job.what_to_do || '',
+      cadence: (job.cadence || 'daily') as any,
+      time_utc: job.time_utc || '09:00',
+      weekday_utc: job.weekday_utc || 'mon',
+      run_at_utc: runAtInput,
+      enabled: Boolean(job.enabled),
+    })
+    setShowJobModal(true)
+  }
+
+  async function saveJob() {
+    if (!botId) return
+    setJobSaving(true)
+    setJobsErr(null)
+    try {
+      const body = {
+        assistant_id: (jobForm.assistant_id || botId || '').trim() || undefined,
+        conversation_uuid: (jobForm.conversation_uuid || '').trim() || undefined,
+        input_message: (jobForm.input_message || '').trim(),
+        what_to_do: (jobForm.what_to_do || '').trim(),
+        cadence: jobForm.cadence,
+        time_utc: (jobForm.time_utc || '').trim(),
+        weekday_utc: (jobForm.weekday_utc || '').trim(),
+        run_at_utc: (jobForm.run_at_utc || '').trim()
+          ? `${jobForm.run_at_utc.trim().replace(/Z$/i, '')}Z`
+          : '',
+        enabled: Boolean(jobForm.enabled),
+      }
+      if (!body.what_to_do) throw new Error('what_to_do is required')
+      if (!body.conversation_uuid) throw new Error('conversation_uuid is required')
+      if (jobForm.id) {
+        await apiPut(`/api/bots/${botId}/scheduled-jobs/${jobForm.id}`, body)
+      } else {
+        await apiPost(`/api/bots/${botId}/scheduled-jobs`, body)
+      }
+      setShowJobModal(false)
+      await reloadJobs()
+    } catch (e: any) {
+      setJobsErr(String(e?.message || e))
+    } finally {
+      setJobSaving(false)
+    }
+  }
+
+  async function deleteJob(job: ScheduledJob) {
+    if (!botId) return
+    const ok = window.confirm(`Delete scheduled job "${job.id}"?`)
+    if (!ok) return
+    try {
+      await apiDelete(`/api/bots/${botId}/scheduled-jobs/${job.id}`)
+      await reloadJobs()
+    } catch (e: any) {
+      setJobsErr(String(e?.message || e))
+    }
+  }
+
+  async function runJobNow(job: ScheduledJob) {
+    if (!botId) return
+    try {
+      await apiPost(`/api/bots/${botId}/scheduled-jobs/${job.id}/run-now`, {})
+      await reloadJobs()
+    } catch (e: any) {
+      setJobsErr(String(e?.message || e))
+    }
+  }
+
   useEffect(() => {
     void reload()
+  }, [botId])
+
+  useEffect(() => {
+    void reloadJobs()
   }, [botId])
 
   useEffect(() => {
@@ -557,6 +682,9 @@ Rules:
             <button className={activeTab === 'integrations' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('integrations')}>
               Connected apps
             </button>
+            <button className={activeTab === 'jobs' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('jobs')}>
+              Jobs
+            </button>
             <button className={activeTab === 'tools' ? 'btn primary' : 'btn'} onClick={() => setActiveTab('tools')}>
               Tools
             </button>
@@ -955,6 +1083,81 @@ Rules:
                 <BotGitIntegrationsPanel bot={bot} save={save} saving={saving} />
               ) : null}
 
+              {activeTab === 'jobs' ? (
+                <section className="card" style={{ marginTop: 0 }}>
+                  <div className="cardTitleRow">
+                    <div>
+                      <div className="cardTitle">Scheduled jobs</div>
+                      <div className="muted">Times must be UTC. Missed runs are skipped.</div>
+                    </div>
+                    <div className="row gap">
+                      <button className="btn" onClick={() => void reloadJobs()} disabled={jobsLoading}>
+                        {jobsLoading ? <LoadingSpinner label="Refreshing" /> : 'Refresh'}
+                      </button>
+                      <button className="btn primary" onClick={openNewJob}>
+                        New job
+                      </button>
+                    </div>
+                  </div>
+                  {jobsErr ? <div className="alert">{jobsErr}</div> : null}
+                  {jobsLoading ? (
+                    <div className="muted">
+                      <LoadingSpinner />
+                    </div>
+                  ) : jobs.length === 0 ? (
+                    <div className="muted">No scheduled jobs yet.</div>
+                  ) : (
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Enabled</th>
+                          <th>Cadence</th>
+                          <th>UTC</th>
+                          <th>What to do</th>
+                          <th>Conversation</th>
+                          <th>Next run</th>
+                          <th>Status</th>
+                          <th />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {jobs.map((j) => (
+                          <tr key={j.id}>
+                            <td>{j.enabled ? 'yes' : 'no'}</td>
+                            <td className="mono">{j.cadence}</td>
+                            <td className="mono">
+                              {j.cadence === 'once'
+                                ? j.run_at_utc || '-'
+                                : `${j.time_utc || '-'}${j.cadence === 'weekly' ? ` (${j.weekday_utc || '-'})` : ''}`}
+                            </td>
+                            <td>{j.what_to_do || '-'}</td>
+                            <td className="mono">{j.conversation_uuid || '-'}</td>
+                            <td className="mono">{j.next_run_at || '-'}</td>
+                            <td>
+                              <div className="muted mono">{j.last_status || '-'}</div>
+                              {j.last_error ? <div className="muted mono">{j.last_error}</div> : null}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div className="row" style={{ justifyContent: 'flex-end' }}>
+                                <button className="btn" onClick={() => openEditJob(j)}>
+                                  Edit
+                                </button>
+                                <button className="btn" onClick={() => void runJobNow(j)} disabled={Boolean(j.is_running)}>
+                                  Run now
+                                </button>
+                                <button className="btn iconBtn danger" onClick={() => void deleteJob(j)} aria-label="Delete job" title="Delete job">
+                                  <TrashIcon aria-hidden="true" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
+              ) : null}
+
               {activeTab === 'tools' && systemTools.length ? (
                 <details className="accordion" style={{ marginBottom: 12 }} open>
                   <summary>System tools</summary>
@@ -1070,6 +1273,120 @@ Rules:
             )}
           </div>
         </section>
+          </div>
+        </div>
+      ) : null}
+
+      {showJobModal ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true">
+          <div className="modalCard">
+            <div className="cardTitleRow modalSticky">
+              <div className="cardTitle">{jobForm.id ? 'Edit scheduled job' : 'New scheduled job'}</div>
+              <button className="iconBtn modalCloseBtn" onClick={() => setShowJobModal(false)} aria-label="Close">
+                <XMarkIcon />
+              </button>
+            </div>
+            <div className="formRow">
+              <label>What to do</label>
+              <textarea
+                value={jobForm.what_to_do}
+                onChange={(e) => setJobForm((p) => ({ ...p, what_to_do: e.target.value }))}
+                rows={4}
+                placeholder="Send me the top AI news with a short summary."
+              />
+            </div>
+            <div className="formRow">
+              <label>Input message (optional)</label>
+              <textarea
+                value={jobForm.input_message}
+                onChange={(e) => setJobForm((p) => ({ ...p, input_message: e.target.value }))}
+                rows={3}
+                placeholder="Original user request to preserve intent."
+              />
+            </div>
+            <div className="formRowGrid2">
+              <div className="formRow">
+                <label>Assistant ID</label>
+                <input
+                  value={jobForm.assistant_id}
+                  onChange={(e) => setJobForm((p) => ({ ...p, assistant_id: e.target.value }))}
+                  placeholder={botId || ''}
+                />
+              </div>
+              <div className="formRow">
+                <label>Conversation UUID</label>
+                <input
+                  value={jobForm.conversation_uuid}
+                  onChange={(e) => setJobForm((p) => ({ ...p, conversation_uuid: e.target.value }))}
+                  placeholder={initialConversationId || ''}
+                />
+              </div>
+            </div>
+            <div className="formRowGrid2">
+              <div className="formRow">
+                <label>Cadence</label>
+                <SelectField value={jobForm.cadence} onChange={(e) => setJobForm((p) => ({ ...p, cadence: e.target.value }))}>
+                  <option value="daily">daily</option>
+                  <option value="weekly">weekly</option>
+                  <option value="once">once</option>
+                </SelectField>
+              </div>
+              <div className="formRow">
+                <label>Enabled</label>
+                <label className="checkRow">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(jobForm.enabled)}
+                    onChange={(e) => setJobForm((p) => ({ ...p, enabled: e.target.checked }))}
+                  />
+                  <span className="muted">Run this job when due.</span>
+                </label>
+              </div>
+            </div>
+            {jobForm.cadence === 'once' ? (
+              <div className="formRow">
+                <label>run_at_utc (ISO, UTC)</label>
+                <input
+                  value={jobForm.run_at_utc}
+                  onChange={(e) => setJobForm((p) => ({ ...p, run_at_utc: e.target.value }))}
+                  placeholder="2026-03-02T14:30:00"
+                />
+                <div className="muted">UTC format without timezone suffix; app will append Z.</div>
+              </div>
+            ) : (
+              <div className="formRowGrid2">
+                <div className="formRow">
+                  <label>time_utc (HH:MM)</label>
+                  <input
+                    value={jobForm.time_utc}
+                    onChange={(e) => setJobForm((p) => ({ ...p, time_utc: e.target.value }))}
+                    placeholder="09:00"
+                  />
+                </div>
+                <div className="formRow">
+                  <label>weekday_utc</label>
+                  <SelectField
+                    value={jobForm.weekday_utc}
+                    onChange={(e) => setJobForm((p) => ({ ...p, weekday_utc: e.target.value }))}
+                    disabled={jobForm.cadence !== 'weekly'}
+                  >
+                    {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map((d) => (
+                      <option value={d} key={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </SelectField>
+                </div>
+              </div>
+            )}
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 10 }}>
+              <button className="btn" onClick={() => setShowJobModal(false)}>
+                Cancel
+              </button>
+              <button className="btn primary" onClick={() => void saveJob()} disabled={jobSaving}>
+                {jobSaving ? 'Saving…' : jobForm.id ? 'Update job' : 'Create job'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

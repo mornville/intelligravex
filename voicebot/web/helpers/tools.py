@@ -9,6 +9,7 @@ from voicebot.models import Bot, IntegrationTool
 from voicebot.store import list_integration_tools
 from voicebot.tools.data_agent import give_command_to_data_agent_tool_def
 from voicebot.tools.http_request import http_request_tool_def
+from voicebot.tools.schedule_job import schedule_job_tool_def
 from voicebot.tools.set_metadata import set_metadata_tool_def, set_variable_tool_def
 from voicebot.tools.web_search import web_search_tool_def
 from voicebot.utils.template import safe_json_loads
@@ -37,6 +38,10 @@ def web_search_tool() -> dict:
 
 def http_request_tool() -> dict:
     return http_request_tool_def()
+
+
+def schedule_job_tool() -> dict:
+    return schedule_job_tool_def()
 
 
 def host_action_tool() -> dict:
@@ -95,6 +100,7 @@ def disabled_tool_names(bot: Bot) -> set[str]:
 def system_tools_defs(*, bot: Bot) -> list[dict[str, Any]]:
     tools = [
         set_metadata_tool(),
+        schedule_job_tool(),
         http_request_tool(),
     ]
     if llm_provider_for_bot(bot) in ("openai", "chatgpt"):

@@ -336,6 +336,28 @@ export type IntegrationTool = {
   updated_at: string
 }
 
+export type ScheduledJob = {
+  id: UUID
+  bot_id: UUID
+  assistant_id: UUID
+  conversation_uuid: UUID
+  what_to_do: string
+  input_message: string
+  cadence: 'once' | 'daily' | 'weekly' | string
+  time_utc: string
+  weekday_utc: string
+  run_at_utc?: string
+  next_run_at?: string
+  enabled: boolean
+  is_running: boolean
+  running_started_at?: string
+  last_run_at?: string
+  last_status?: string
+  last_error?: string
+  created_at: string
+  updated_at: string
+}
+
 export type SystemTool = {
   name: string
   description: string

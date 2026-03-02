@@ -214,7 +214,7 @@ export default function ConversationDetailPage() {
 
             <details className="details" style={{ marginTop: 10 }}>
               <summary>Metadata</summary>
-              <pre className="pre">{JSON.stringify(safeJson(conv.metadata_json) || {}, null, 2)}</pre>
+              <pre className="pre metadataPre">{JSON.stringify(safeJson(conv.metadata_json) || {}, null, 2)}</pre>
             </details>
           </section>
 

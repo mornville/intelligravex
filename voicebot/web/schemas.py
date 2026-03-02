@@ -170,3 +170,27 @@ class IntegrationToolUpdateRequest(BaseModel):
     response_mapper_json: Optional[str] = None
     pagination_json: Optional[str] = None
     static_reply_template: Optional[str] = None
+
+
+class ScheduledJobCreateRequest(BaseModel):
+    assistant_id: Optional[str] = None
+    conversation_uuid: Optional[str] = None
+    input_message: str = ""
+    what_to_do: str = ""
+    cadence: str = "daily"  # once | daily | weekly
+    time_utc: str = ""  # HH:MM
+    weekday_utc: str = ""  # mon..sun
+    run_at_utc: str = ""  # ISO-8601 Z
+    enabled: bool = True
+
+
+class ScheduledJobUpdateRequest(BaseModel):
+    assistant_id: Optional[str] = None
+    conversation_uuid: Optional[str] = None
+    input_message: Optional[str] = None
+    what_to_do: Optional[str] = None
+    cadence: Optional[str] = None
+    time_utc: Optional[str] = None
+    weekday_utc: Optional[str] = None
+    run_at_utc: Optional[str] = None
+    enabled: Optional[bool] = None
