@@ -185,6 +185,26 @@ def build_connected_apps_prompt_context(bot: Bot, *, conversation_meta: dict[str
         gmail_line += f" account={gmail_email}."
     lines.append(gmail_line)
 
+    slack = _as_dict(connected_apps.get("slack")) or _as_dict(auth.get("slack_integration"))
+    slack_connected = _connected_flag(slack) or bool(
+        _safe_str(slack.get("access_token"))
+        or _safe_str(slack.get("refresh_token"))
+        or _safe_str(auth.get("slack_access_token"))
+        or _safe_str(auth.get("slack_refresh_token"))
+    )
+    slack_workspace = _safe_str(slack.get("workspace_name") or slack.get("team_name") or auth.get("slack_workspace"))
+    slack_scope = _safe_str(slack.get("scope") or auth.get("slack_scope"))
+    slack_caps: list[str] = []
+    if "chat:write" in slack_scope:
+        slack_caps.append("send")
+    if "channels:read" in slack_scope or "groups:read" in slack_scope or "im:read" in slack_scope or "mpim:read" in slack_scope:
+        slack_caps.append("read")
+    slack_caps_text = ", ".join(slack_caps) if slack_caps else "none"
+    slack_line = f"- Slack: {'connected' if slack_connected else 'not connected'}; capabilities={slack_caps_text}."
+    if slack_workspace:
+        slack_line += f" workspace={slack_workspace}."
+    lines.append(slack_line)
+
     db_creds = _as_list(connected_apps.get("database_credentials") or connected_apps.get("db_credentials"))
     if not db_creds:
         db_creds = _as_list(auth.get("db_credentials") or auth.get("database_credentials"))

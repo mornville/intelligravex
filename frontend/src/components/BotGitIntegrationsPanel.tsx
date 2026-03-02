@@ -5,23 +5,25 @@ import type { DatabaseCredential, GitAuthMode, GitIntegrationsState, GitProvider
 import {
   buildGitIntegrationsAuthJson,
   clearGmailConfig,
+  clearSlackConfig,
   gmailConnected,
   newDatabaseCredential,
   readGitIntegrationsState,
+  slackConnected,
 } from '../utils/gitIntegrations'
 
-type AppId = GitProvider | 'jira' | 'gmail' | 'database'
+type AppId = GitProvider | 'jira' | 'gmail' | 'slack' | 'database'
 
 const APPS: Array<{ id: AppId; label: string; icon_url: string }> = [
   { id: 'github', label: 'GitHub', icon_url: 'https://cdn.simpleicons.org/github' },
   { id: 'gitlab', label: 'GitLab', icon_url: 'https://cdn.simpleicons.org/gitlab' },
   { id: 'jira', label: 'Jira', icon_url: '/brands/jira.svg' },
   { id: 'gmail', label: 'Gmail', icon_url: 'https://www.gstatic.com/images/branding/product/1x/gmail_2020q4_48dp.png' },
+  { id: 'slack', label: 'Slack', icon_url: 'https://cdn.simpleicons.org/slack' },
   { id: 'database', label: 'Database credentials', icon_url: 'https://cdn.simpleicons.org/postgresql' },
 ]
 
 const UPCOMING_INTEGRATIONS: Array<{ label: string; icon_url: string }> = [
-  { label: 'Slack (coming soon)', icon_url: 'https://cdn.simpleicons.org/slack' },
   { label: 'WhatsApp (coming soon)', icon_url: 'https://cdn.simpleicons.org/whatsapp' },
 ]
 
@@ -67,6 +69,22 @@ type GmailOauthStatus = {
   scope?: string
 }
 
+type SlackOauthStart = {
+  state: string
+  auth_url: string
+}
+
+type SlackOauthStatus = {
+  status: 'pending' | 'ready' | 'expired' | 'error'
+  error?: string
+  workspace_name?: string
+  workspace_id?: string
+  bot_user_id?: string
+  scope?: string
+}
+
+type SlackTokenSetStatus = SlackOauthStatus
+
 export default function BotGitIntegrationsPanel({
   bot,
   save,
@@ -87,6 +105,10 @@ export default function BotGitIntegrationsPanel({
   const [gmailAuthState, setGmailAuthState] = useState<string>('')
   const [gmailAuthUrl, setGmailAuthUrl] = useState<string>('')
   const [gmailAuthError, setGmailAuthError] = useState<string>('')
+  const [slackAuthBusy, setSlackAuthBusy] = useState(false)
+  const [slackAuthState, setSlackAuthState] = useState<string>('')
+  const [slackAuthUrl, setSlackAuthUrl] = useState<string>('')
+  const [slackAuthError, setSlackAuthError] = useState<string>('')
 
   useEffect(() => {
     const next = readGitIntegrationsState(bot?.data_agent_auth_json || '{}')
@@ -99,6 +121,10 @@ export default function BotGitIntegrationsPanel({
     setGmailAuthState('')
     setGmailAuthUrl('')
     setGmailAuthError('')
+    setSlackAuthBusy(false)
+    setSlackAuthState('')
+    setSlackAuthUrl('')
+    setSlackAuthError('')
   }, [bot?.data_agent_auth_json])
 
   useEffect(() => {
@@ -116,6 +142,7 @@ export default function BotGitIntegrationsPanel({
   const selected = state.providers[selectedProvider]
   const jira = state.jira
   const gmail = state.gmail
+  const slack = state.slack
   const dbCredentials = state.db_credentials
   const activeDbCredential = dbCredentials.find((item) => item.id === activeDbId) || null
   const activeDbTestResult = activeDbCredential ? dbTestResults[activeDbCredential.id] : null
@@ -128,6 +155,7 @@ export default function BotGitIntegrationsPanel({
   const jiraStep2Done = Boolean(jira.email.trim() && jira.api_token.trim())
   const jiraStep3Done = Boolean(jira.default_project_key.trim() || jira.default_issue_type.trim() || jira.default_jql.trim())
   const gmailDone = gmailConnected(gmail)
+  const slackDone = slackConnected(slack)
   const databaseDone = dbCredentials.some((item) => dbCredentialReady(item))
 
   const appConnection: Record<AppId, boolean> = {
@@ -135,6 +163,7 @@ export default function BotGitIntegrationsPanel({
     gitlab: authDone(state.providers.gitlab.auth_mode, state.providers.gitlab.token, state.ssh_key_path),
     jira: Boolean(jira.domain.trim() && jira.email.trim() && jira.api_token.trim()),
     gmail: gmailDone,
+    slack: slackDone,
     database: databaseDone,
   }
 
@@ -148,6 +177,8 @@ export default function BotGitIntegrationsPanel({
       ? appConnection.jira
       : activeApp === 'gmail'
         ? appConnection.gmail
+        : activeApp === 'slack'
+          ? appConnection.slack
         : activeApp === 'database'
           ? appConnection.database
           : selectedProviderConnected
@@ -181,6 +212,16 @@ export default function BotGitIntegrationsPanel({
       ...prev,
       jira: {
         ...prev.jira,
+        ...patch,
+      },
+    }))
+  }
+
+  function updateSlack(patch: Partial<GitIntegrationsState['slack']>) {
+    setState((prev) => ({
+      ...prev,
+      slack: {
+        ...prev.slack,
         ...patch,
       },
     }))
@@ -273,6 +314,7 @@ export default function BotGitIntegrationsPanel({
       setState((prev) => ({
         ...prev,
         gmail: next.gmail,
+        slack: next.slack,
       }))
     } catch {
       // ignore refresh failures
@@ -310,6 +352,63 @@ export default function BotGitIntegrationsPanel({
     await saveAll(next)
   }
 
+  async function startSlackLogin() {
+    if (!bot?.id) return
+    setSlackAuthError('')
+    setSlackAuthBusy(true)
+    try {
+      const res = await apiPost<SlackOauthStart>(`/api/bots/${bot.id}/connected-apps/slack/oauth/start`, {
+        client_id: slack.oauth_client_id,
+        client_secret: slack.oauth_client_secret,
+        redirect_uri: slack.oauth_redirect_uri,
+        scope: slack.oauth_scope,
+      })
+      setSlackAuthState(res.state || '')
+      setSlackAuthUrl(res.auth_url || '')
+      if (res.auth_url) {
+        try {
+          window.open(res.auth_url, '_blank', 'noopener,noreferrer')
+        } catch {
+          // user can open manually
+        }
+      }
+    } catch (e: any) {
+      setSlackAuthError(String(e?.message || e || 'Failed to start Slack sign-in.'))
+    } finally {
+      setSlackAuthBusy(false)
+    }
+  }
+
+  async function disconnectSlack() {
+    const next: GitIntegrationsState = {
+      ...state,
+      slack: clearSlackConfig(state.slack),
+    }
+    setState(next)
+    await saveAll(next)
+  }
+
+  async function saveSlackTokenPair() {
+    if (!bot?.id) return
+    setSlackAuthError('')
+    setSlackAuthBusy(true)
+    try {
+      const res = await apiPost<SlackTokenSetStatus>(`/api/bots/${bot.id}/connected-apps/slack/token/set`, {
+        access_token: slack.access_token,
+        refresh_token: slack.refresh_token,
+        scope: slack.scope || slack.oauth_scope,
+      })
+      if (res.status === 'error') {
+        throw new Error(res.error || 'Failed to save Slack token pair.')
+      }
+      await refreshFromServer()
+    } catch (e: any) {
+      setSlackAuthError(String(e?.message || e || 'Failed to save Slack token pair.'))
+    } finally {
+      setSlackAuthBusy(false)
+    }
+  }
+
   useEffect(() => {
     if (!gmailAuthState || !bot?.id) return
     const stateToken = gmailAuthState
@@ -345,9 +444,44 @@ export default function BotGitIntegrationsPanel({
     }
   }, [bot?.id, gmailAuthState])
 
+  useEffect(() => {
+    if (!slackAuthState || !bot?.id) return
+    const stateToken = slackAuthState
+    let canceled = false
+    async function poll() {
+      try {
+        const res = await apiGet<SlackOauthStatus>(
+          `/api/bots/${bot.id}/connected-apps/slack/oauth/status?state=${encodeURIComponent(stateToken)}`
+        )
+        if (canceled) return
+        if (res.status === 'ready') {
+          setSlackAuthState('')
+          setSlackAuthError('')
+          await refreshFromServer()
+          return
+        }
+        if (res.status === 'error' || res.status === 'expired') {
+          setSlackAuthState('')
+          setSlackAuthError(res.error || (res.status === 'expired' ? 'Slack sign-in expired.' : 'Slack sign-in failed.'))
+        }
+      } catch (e: any) {
+        if (!canceled) {
+          setSlackAuthState('')
+          setSlackAuthError(String(e?.message || e || 'Slack sign-in failed.'))
+        }
+      }
+    }
+    void poll()
+    const t = window.setInterval(() => void poll(), 1300)
+    return () => {
+      canceled = true
+      window.clearInterval(t)
+    }
+  }, [bot?.id, slackAuthState])
+
   async function saveAndContinue() {
     await saveAll()
-    if (activeApp === 'database') return
+    if (activeApp === 'database' || activeApp === 'gmail' || activeApp === 'slack') return
     if (activeApp === 'jira') {
       setActiveJiraStep((prev) => (prev < 3 ? ((prev + 1) as 1 | 2 | 3) : prev))
       return
@@ -356,7 +490,7 @@ export default function BotGitIntegrationsPanel({
   }
 
   async function skipOptional() {
-    if (activeApp === 'database') return
+    if (activeApp === 'database' || activeApp === 'gmail' || activeApp === 'slack') return
     if (activeApp === 'jira') {
       const next: GitIntegrationsState = {
         ...state,
@@ -406,7 +540,7 @@ export default function BotGitIntegrationsPanel({
               key={p.id}
               className={`gitIntRailTab ${activeApp === p.id ? 'active' : ''}`}
               onClick={() => {
-                if (p.id === 'jira' || p.id === 'gmail' || p.id === 'database') {
+                if (p.id === 'jira' || p.id === 'gmail' || p.id === 'slack' || p.id === 'database') {
                   setActiveApp(p.id)
                 } else {
                   updateProvider(p.id)
@@ -437,6 +571,8 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : activeApp === 'gmail' ? (
               <button className="gitIntStepTab active" type="button">1. Google Sign-In</button>
+            ) : activeApp === 'slack' ? (
+              <button className="gitIntStepTab active" type="button">1. Slack Sign-In</button>
             ) : activeApp === 'database' ? (
               <button className="gitIntStepTab active" type="button">1. Manage Credentials</button>
             ) : (
@@ -450,7 +586,7 @@ export default function BotGitIntegrationsPanel({
           </div>
 
           <div className="gitIntPanel">
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'database' && activeStep === 1 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 1 ? (
               <>
                 <div className="step">
                   <span>Workspace SSH key</span>
@@ -470,7 +606,7 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : null}
 
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'database' && activeStep === 2 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 2 ? (
               <>
                 <div className="step">
                   <span>OAuth / PAT access ({selectedProvider})</span>
@@ -504,7 +640,7 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : null}
 
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'database' && activeStep === 3 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 3 ? (
               <>
                 <div className="step">
                   <span>Repo link</span>
@@ -524,7 +660,7 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : null}
 
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'database' && activeStep === 4 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 4 ? (
               <>
                 <div className="step">
                   <span>Local repo cache path</span>
@@ -681,6 +817,122 @@ export default function BotGitIntegrationsPanel({
                 ) : null}
                 <div className="muted">
                   Gmail OAuth setup docs: developers.google.com/workspace/gmail/api/auth/web-server
+                </div>
+              </>
+            ) : null}
+
+            {activeApp === 'slack' ? (
+              <>
+                <div className="step">
+                  <span>Slack Sign-In</span>
+                  <span className={statusChip(slackDone ? 'done' : 'pending')}>{slackDone ? 'connected' : 'pending'}</span>
+                </div>
+                <div className="quote">
+                  Sign in with Slack and grant bot scopes for messaging and channel discovery.
+                </div>
+                <div className="formRow">
+                  <label>Slack OAuth Client ID</label>
+                  <input
+                    value={slack.oauth_client_id}
+                    onChange={(e) => updateSlack({ oauth_client_id: e.target.value })}
+                    placeholder="1234567890.1234567890"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="formRow">
+                  <label>Slack OAuth Client Secret</label>
+                  <input
+                    type="password"
+                    value={slack.oauth_client_secret}
+                    onChange={(e) => updateSlack({ oauth_client_secret: e.target.value })}
+                    placeholder="client secret"
+                    autoComplete="off"
+                  />
+                  <div className="muted">Stored in assistant auth JSON for this assistant only.</div>
+                </div>
+                <div className="formRow">
+                  <label>Slack OAuth Redirect URI</label>
+                  <input
+                    value={slack.oauth_redirect_uri}
+                    onChange={(e) => updateSlack({ oauth_redirect_uri: e.target.value })}
+                    placeholder="http://localhost:1467/auth/callback"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="formRow">
+                  <label>Slack OAuth Scope</label>
+                  <input
+                    value={slack.oauth_scope}
+                    onChange={(e) => updateSlack({ oauth_scope: e.target.value })}
+                    placeholder="chat:write,channels:read,groups:read,im:read,mpim:read"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div className="muted">
+                    OAuth scopes:
+                    <br />
+                    {slack.oauth_scope || 'chat:write,channels:read,groups:read,im:read,mpim:read'}
+                  </div>
+                  <button
+                    className="btn"
+                    onClick={() => void startSlackLogin()}
+                    disabled={slackAuthBusy || Boolean(slackAuthState) || !slack.oauth_client_id.trim() || !slack.oauth_client_secret.trim()}
+                  >
+                    {slackAuthBusy ? 'Starting…' : slackAuthState ? 'Waiting for approval…' : slackDone ? 'Reconnect Slack' : 'Sign in with Slack'}
+                  </button>
+                </div>
+                <div className="muted">OR</div>
+                <div className="formRow">
+                  <label>Access token</label>
+                  <input
+                    type="password"
+                    value={slack.access_token}
+                    onChange={(e) => updateSlack({ access_token: e.target.value })}
+                    placeholder="xoxb-..."
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="formRow">
+                  <label>Refresh token (optional, for token rotation)</label>
+                  <input
+                    type="password"
+                    value={slack.refresh_token}
+                    onChange={(e) => updateSlack({ refresh_token: e.target.value })}
+                    placeholder="xoxe-..."
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="row" style={{ justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn"
+                    onClick={() => void saveSlackTokenPair()}
+                    disabled={slackAuthBusy || !slack.access_token.trim()}
+                  >
+                    {slackAuthBusy ? 'Saving…' : 'Save token pair'}
+                  </button>
+                </div>
+                {slackAuthUrl ? (
+                  <div className="muted">
+                    If popups are blocked, open login manually:{' '}
+                    <a href={slackAuthUrl} target="_blank" rel="noreferrer" className="link">
+                      Open Slack login
+                    </a>
+                  </div>
+                ) : null}
+                {slackAuthError ? <div className="alert">{slackAuthError}</div> : null}
+                {slackDone ? (
+                  <div className="formRow">
+                    <label>Connected workspace</label>
+                    <input value={slack.workspace_name || slack.workspace_id || 'connected'} readOnly />
+                    <div className="muted">Scopes: {slack.scope || 'chat:write, channels:read, groups:read, im:read, mpim:read'}</div>
+                    <button className="gitIntActionText danger" type="button" onClick={() => void disconnectSlack()}>
+                      disconnect
+                    </button>
+                  </div>
+                ) : null}
+                <div className="muted">
+                  Slack OAuth setup docs: api.slack.com/authentication/oauth-v2
                 </div>
               </>
             ) : null}
@@ -873,7 +1125,7 @@ export default function BotGitIntegrationsPanel({
                 <button
                   className="btn ghost"
                   onClick={() => void skipOptional()}
-                  disabled={Boolean(saving) || activeApp === 'gmail' || (activeApp === 'jira' && activeJiraStep !== 3)}
+                  disabled={Boolean(saving) || activeApp === 'gmail' || activeApp === 'slack' || (activeApp === 'jira' && activeJiraStep !== 3)}
                 >
                   Skip optional steps
                 </button>

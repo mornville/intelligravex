@@ -46,12 +46,30 @@ export type GmailConfig = {
   error: string
 }
 
+export type SlackConfig = {
+  connected: boolean
+  workspace_name: string
+  workspace_id: string
+  bot_user_id: string
+  oauth_client_id: string
+  oauth_client_secret: string
+  oauth_redirect_uri: string
+  oauth_scope: string
+  scope: string
+  access_token: string
+  refresh_token: string
+  expires_at: number | null
+  connected_at: string
+  error: string
+}
+
 export type GitIntegrationsState = {
   provider: GitProvider
   ssh_key_path: string
   providers: Record<GitProvider, GitProviderConfig>
   jira: JiraConfig
   gmail: GmailConfig
+  slack: SlackConfig
   db_credentials: DatabaseCredential[]
 }
 
@@ -84,6 +102,22 @@ const DEFAULT_STATE: GitIntegrationsState = {
     account_email: '',
     scope: '',
     token_type: '',
+    access_token: '',
+    refresh_token: '',
+    expires_at: null,
+    connected_at: '',
+    error: '',
+  },
+  slack: {
+    connected: false,
+    workspace_name: '',
+    workspace_id: '',
+    bot_user_id: '',
+    oauth_client_id: '',
+    oauth_client_secret: '',
+    oauth_redirect_uri: 'http://localhost:1467/auth/callback',
+    oauth_scope: 'chat:write,channels:read,groups:read,im:read,mpim:read',
+    scope: '',
     access_token: '',
     refresh_token: '',
     expires_at: null,
@@ -194,6 +228,49 @@ function gmailCfg(raw: any): GmailConfig {
   }
 }
 
+function slackCfg(raw: any): SlackConfig {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {
+      connected: false,
+      workspace_name: '',
+      workspace_id: '',
+      bot_user_id: '',
+      oauth_client_id: '',
+      oauth_client_secret: '',
+      oauth_redirect_uri: 'http://localhost:1467/auth/callback',
+      oauth_scope: 'chat:write,channels:read,groups:read,im:read,mpim:read',
+      scope: '',
+      access_token: '',
+      refresh_token: '',
+      expires_at: null,
+      connected_at: '',
+      error: '',
+    }
+  }
+  const accessToken = String(raw.access_token || raw.bot_token || '').trim()
+  const refreshToken = String(raw.refresh_token || '').trim()
+  const connectedRaw = raw.connected
+  const connected = typeof connectedRaw === 'boolean' ? connectedRaw : Boolean(accessToken || refreshToken)
+  const expiresRaw = raw.expires_at
+  const expires_at = typeof expiresRaw === 'number' && Number.isFinite(expiresRaw) ? Number(expiresRaw) : null
+  return {
+    connected,
+    workspace_name: String(raw.workspace_name || raw.team_name || raw.workspace || '').trim(),
+    workspace_id: String(raw.workspace_id || raw.team_id || '').trim(),
+    bot_user_id: String(raw.bot_user_id || raw.user_id || '').trim(),
+    oauth_client_id: String(raw.oauth_client_id || raw.client_id || '').trim(),
+    oauth_client_secret: String(raw.oauth_client_secret || raw.client_secret || '').trim(),
+    oauth_redirect_uri: String(raw.oauth_redirect_uri || raw.redirect_uri || '').trim() || 'http://localhost:1467/auth/callback',
+    oauth_scope: String(raw.oauth_scope || '').trim() || 'chat:write,channels:read,groups:read,im:read,mpim:read',
+    scope: String(raw.scope || raw.scopes || '').trim(),
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_at,
+    connected_at: String(raw.connected_at || '').trim(),
+    error: String(raw.error || '').trim(),
+  }
+}
+
 function mergeGmailFallbacks(gmail: GmailConfig, obj: Record<string, any>): GmailConfig {
   const next = { ...gmail }
   if (!next.account_email) next.account_email = String(obj.gmail_account_email || obj.gmail_email || '').trim()
@@ -211,12 +288,55 @@ function mergeGmailFallbacks(gmail: GmailConfig, obj: Record<string, any>): Gmai
   return next
 }
 
+function mergeSlackFallbacks(slack: SlackConfig, obj: Record<string, any>): SlackConfig {
+  const next = { ...slack }
+  if (!next.workspace_name) next.workspace_name = String(obj.slack_workspace || obj.slack_team_name || '').trim()
+  if (!next.workspace_id) next.workspace_id = String(obj.slack_workspace_id || obj.slack_team_id || '').trim()
+  if (!next.bot_user_id) next.bot_user_id = String(obj.slack_bot_user_id || '').trim()
+  if (!next.oauth_client_id) next.oauth_client_id = String(obj.slack_oauth_client_id || obj.slack_client_id || '').trim()
+  if (!next.oauth_client_secret) next.oauth_client_secret = String(obj.slack_oauth_client_secret || obj.slack_client_secret || '').trim()
+  if (!next.oauth_redirect_uri) next.oauth_redirect_uri = String(obj.slack_oauth_redirect_uri || obj.slack_redirect_uri || '').trim()
+  if (!next.oauth_scope) next.oauth_scope = String(obj.slack_oauth_scope || '').trim()
+  if (!next.oauth_redirect_uri) next.oauth_redirect_uri = 'http://localhost:1467/auth/callback'
+  if (!next.oauth_scope) next.oauth_scope = 'chat:write,channels:read,groups:read,im:read,mpim:read'
+  if (!next.scope) next.scope = String(obj.slack_scope || '').trim()
+  if (!next.access_token) next.access_token = String(obj.slack_access_token || '').trim()
+  if (!next.refresh_token) next.refresh_token = String(obj.slack_refresh_token || '').trim()
+  if (next.expires_at == null) {
+    const expRaw = obj.slack_expires_at
+    if (typeof expRaw === 'number' && Number.isFinite(expRaw)) next.expires_at = Number(expRaw)
+  }
+  if (!next.connected_at) next.connected_at = String(obj.slack_connected_at || '').trim()
+  if (!next.error) next.error = String(obj.slack_error || '').trim()
+  if (!next.connected) next.connected = Boolean(next.access_token || next.refresh_token || obj.slack_connected)
+  return next
+}
+
 function disconnectedGmailState(): GmailConfig {
   return {
     connected: false,
     account_email: '',
     scope: '',
     token_type: '',
+    access_token: '',
+    refresh_token: '',
+    expires_at: null,
+    connected_at: '',
+    error: '',
+  }
+}
+
+function disconnectedSlackState(): SlackConfig {
+  return {
+    connected: false,
+    workspace_name: '',
+    workspace_id: '',
+    bot_user_id: '',
+    oauth_client_id: '',
+    oauth_client_secret: '',
+    oauth_redirect_uri: 'http://localhost:1467/auth/callback',
+    oauth_scope: 'chat:write,channels:read,groups:read,im:read,mpim:read',
+    scope: '',
     access_token: '',
     refresh_token: '',
     expires_at: null,
@@ -233,6 +353,21 @@ export function clearGmailConfig(gmail: GmailConfig): GmailConfig {
   return {
     ...disconnectedGmailState(),
     scope: gmail.scope,
+  }
+}
+
+export function slackConnected(slack: SlackConfig): boolean {
+  return Boolean(slack.connected || slack.access_token.trim() || slack.refresh_token.trim())
+}
+
+export function clearSlackConfig(slack: SlackConfig): SlackConfig {
+  return {
+    ...disconnectedSlackState(),
+    oauth_client_id: slack.oauth_client_id,
+    oauth_client_secret: slack.oauth_client_secret,
+    oauth_redirect_uri: slack.oauth_redirect_uri,
+    oauth_scope: slack.oauth_scope,
+    scope: slack.scope,
   }
 }
 
@@ -324,11 +459,14 @@ export function readGitIntegrationsState(authJson: string | undefined): GitInteg
   if (connectedApps && typeof connectedApps === 'object' && !Array.isArray(connectedApps)) {
     state.jira = jiraCfg((connectedApps as Record<string, any>).jira)
     state.gmail = gmailCfg((connectedApps as Record<string, any>).gmail)
+    state.slack = slackCfg((connectedApps as Record<string, any>).slack)
   } else {
     state.jira = jiraCfg(obj.jira_integration)
     state.gmail = gmailCfg(obj.gmail_integration)
+    state.slack = slackCfg(obj.slack_integration)
   }
   state.gmail = mergeGmailFallbacks(state.gmail, obj)
+  state.slack = mergeSlackFallbacks(state.slack, obj)
   const connectedDbCreds =
     connectedApps && typeof connectedApps === 'object' && !Array.isArray(connectedApps)
       ? dbCredentials(
@@ -454,6 +592,24 @@ export function buildGitIntegrationsAuthJson(rawAuthJson: string | undefined, st
         error: state.gmail.error.trim(),
       }
     : disconnectedGmailState()
+  connectedApps.slack = slackConnected(state.slack)
+    ? {
+        connected: true,
+        workspace_name: state.slack.workspace_name.trim(),
+        workspace_id: state.slack.workspace_id.trim(),
+        bot_user_id: state.slack.bot_user_id.trim(),
+        oauth_client_id: state.slack.oauth_client_id.trim(),
+        oauth_client_secret: state.slack.oauth_client_secret.trim(),
+        oauth_redirect_uri: state.slack.oauth_redirect_uri.trim(),
+        oauth_scope: state.slack.oauth_scope.trim(),
+        scope: state.slack.scope.trim(),
+        access_token: state.slack.access_token.trim(),
+        refresh_token: state.slack.refresh_token.trim(),
+        expires_at: state.slack.expires_at,
+        connected_at: state.slack.connected_at.trim(),
+        error: state.slack.error.trim(),
+      }
+    : disconnectedSlackState()
   const dbCreds = (state.db_credentials || []).map((item, index) => {
     const next = dbCredential(item, index)
     return {
@@ -475,6 +631,7 @@ export function buildGitIntegrationsAuthJson(rawAuthJson: string | undefined, st
   base.connected_apps = connectedApps
   base.jira_integration = connectedApps.jira
   base.gmail_integration = connectedApps.gmail
+  base.slack_integration = connectedApps.slack
   base.db_credentials = dbCreds
 
   const jiraDomain = state.jira.domain.trim()
@@ -527,6 +684,51 @@ export function buildGitIntegrationsAuthJson(rawAuthJson: string | undefined, st
   delete base.gmail_client_secret
   delete base.gmail_sender_email
   delete base.gmail_reply_to_email
+
+  const slackWorkspace = state.slack.workspace_name.trim()
+  const slackWorkspaceId = state.slack.workspace_id.trim()
+  const slackBotUserId = state.slack.bot_user_id.trim()
+  const slackOauthClientId = state.slack.oauth_client_id.trim()
+  const slackOauthClientSecret = state.slack.oauth_client_secret.trim()
+  const slackOauthRedirectUri = state.slack.oauth_redirect_uri.trim()
+  const slackOauthScope = state.slack.oauth_scope.trim()
+  const slackScope = state.slack.scope.trim()
+  const slackAccessToken = state.slack.access_token.trim()
+  const slackRefreshToken = state.slack.refresh_token.trim()
+  const slackExpiresAt = state.slack.expires_at
+  const slackConnectedAt = state.slack.connected_at.trim()
+  const slackError = state.slack.error.trim()
+  const isSlackConnected = slackConnected(state.slack)
+  if (slackWorkspace) base.slack_workspace = slackWorkspace
+  else delete base.slack_workspace
+  if (slackWorkspaceId) base.slack_workspace_id = slackWorkspaceId
+  else delete base.slack_workspace_id
+  if (slackBotUserId) base.slack_bot_user_id = slackBotUserId
+  else delete base.slack_bot_user_id
+  if (slackOauthClientId) base.slack_oauth_client_id = slackOauthClientId
+  else delete base.slack_oauth_client_id
+  if (slackOauthClientSecret) base.slack_oauth_client_secret = slackOauthClientSecret
+  else delete base.slack_oauth_client_secret
+  if (slackOauthRedirectUri) base.slack_oauth_redirect_uri = slackOauthRedirectUri
+  else delete base.slack_oauth_redirect_uri
+  if (slackOauthScope) base.slack_oauth_scope = slackOauthScope
+  else delete base.slack_oauth_scope
+  if (slackScope) base.slack_scope = slackScope
+  else delete base.slack_scope
+  if (slackAccessToken) base.slack_access_token = slackAccessToken
+  else delete base.slack_access_token
+  if (slackRefreshToken) base.slack_refresh_token = slackRefreshToken
+  else delete base.slack_refresh_token
+  if (typeof slackExpiresAt === 'number' && Number.isFinite(slackExpiresAt)) base.slack_expires_at = slackExpiresAt
+  else delete base.slack_expires_at
+  if (slackConnectedAt) base.slack_connected_at = slackConnectedAt
+  else delete base.slack_connected_at
+  if (slackError) base.slack_error = slackError
+  else delete base.slack_error
+  if (isSlackConnected) base.slack_connected = true
+  else delete base.slack_connected
+  delete base.slack_client_id
+  delete base.slack_client_secret
 
   delete base.git_preferred_repo_url
   delete base.git_repo_url

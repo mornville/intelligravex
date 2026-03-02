@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, parse_qsl, quote_plus, urlencode, urlparse
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -26,6 +26,11 @@ GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 GMAIL_DEFAULT_REDIRECT_URI = "http://localhost:1466/auth/callback"
 GMAIL_DEFAULT_SCOPE = "openid email profile https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly"
+SLACK_AUTH_BASE_URL = "https://slack.com/oauth/v2/authorize"
+SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access"
+SLACK_AUTH_TEST_URL = "https://slack.com/api/auth.test"
+SLACK_DEFAULT_REDIRECT_URI = "http://localhost:1467/auth/callback"
+SLACK_DEFAULT_SCOPE = "chat:write,channels:read,groups:read,im:read,mpim:read"
 
 
 @dataclass
@@ -38,10 +43,30 @@ class GmailOAuthSession:
     error: Optional[str] = None
 
 
+@dataclass
+class SlackOAuthSession:
+    state: str
+    bot_id: str
+    created_at: float
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+    scope: str
+    code: Optional[str] = None
+    error: Optional[str] = None
+
+
 _gmail_sessions: dict[str, GmailOAuthSession] = {}
 _gmail_sessions_lock = threading.Lock()
 _gmail_server_started = False
 _gmail_server_error: Optional[str] = None
+_slack_sessions: dict[str, SlackOAuthSession] = {}
+_slack_sessions_lock = threading.Lock()
+_slack_server_started = False
+_slack_server_error: Optional[str] = None
+_slack_server_host: Optional[str] = None
+_slack_server_port: Optional[int] = None
+_slack_server_path: Optional[str] = None
 
 
 def _env_value(name: str) -> str:
@@ -210,6 +235,145 @@ def _ensure_gmail_server() -> None:
     t.start()
 
 
+def _slack_client_id() -> str:
+    return _env_value("SLACK_OAUTH_CLIENT_ID")
+
+
+def _slack_client_secret() -> str:
+    return _env_value("SLACK_OAUTH_CLIENT_SECRET")
+
+
+def _slack_redirect_uri() -> str:
+    return _env_value("SLACK_OAUTH_REDIRECT_URI") or SLACK_DEFAULT_REDIRECT_URI
+
+
+def _slack_scope() -> str:
+    return _env_value("SLACK_OAUTH_SCOPE") or SLACK_DEFAULT_SCOPE
+
+
+def _slack_auth_url(*, state: str, client_id: str, redirect_uri: str, scope: str) -> str:
+    params = {
+        "client_id": client_id,
+        "scope": scope,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    return f"{SLACK_AUTH_BASE_URL}?{urlencode(params)}"
+
+
+def _slack_exchange_code(*, code: str, client_id: str, client_secret: str, redirect_uri: str) -> dict:
+    data = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    resp = httpx.post(SLACK_TOKEN_URL, data=data, timeout=12.0)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Slack OAuth token exchange failed ({resp.status_code}).")
+    obj = resp.json()
+    if not isinstance(obj, dict) or not bool(obj.get("ok")):
+        msg = str((obj or {}).get("error") or "").strip() if isinstance(obj, dict) else ""
+        raise RuntimeError(msg or "Slack OAuth token exchange failed.")
+    if not str(obj.get("access_token") or "").strip():
+        raise RuntimeError("Slack OAuth token exchange failed (missing access token).")
+    return obj
+
+
+def _slack_auth_test(access_token: str) -> dict:
+    token = str(access_token or "").strip()
+    if not token:
+        raise RuntimeError("Slack access token is missing.")
+    resp = httpx.post(
+        SLACK_AUTH_TEST_URL,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10.0,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Slack auth test failed ({resp.status_code}).")
+    obj = resp.json()
+    if not isinstance(obj, dict) or not bool(obj.get("ok")):
+        msg = str((obj or {}).get("error") or "").strip() if isinstance(obj, dict) else ""
+        raise RuntimeError(msg or "Slack auth test failed.")
+    return obj
+
+
+def _make_slack_handler(expected_path: str):
+    class SlackCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                return
+            qs = parse_qs(parsed.query)
+            state = (qs.get("state") or [None])[0]
+            code = (qs.get("code") or [None])[0]
+            error = (qs.get("error") or [None])[0]
+            error_description = (qs.get("error_description") or [None])[0]
+            if error and error_description:
+                error = f"{error}: {error_description}"
+            if state:
+                with _slack_sessions_lock:
+                    sess = _slack_sessions.get(state)
+                    if sess:
+                        sess.code = code
+                        sess.error = error
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body style='font-family:system-ui;margin:40px;'>"
+                b"<h2>Slack sign-in complete</h2>"
+                b"<p>You can close this window and return to GravexStudio.</p>"
+                b"</body></html>"
+            )
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    return SlackCallbackHandler
+
+
+def _ensure_slack_server(redirect_uri: str) -> None:
+    global _slack_server_started, _slack_server_error, _slack_server_host, _slack_server_port, _slack_server_path
+    parsed = urlparse(redirect_uri)
+    host = parsed.hostname or "127.0.0.1"
+    port = int(parsed.port or 80)
+    path = parsed.path or "/auth/callback"
+    if parsed.scheme not in {"http", ""}:
+        _slack_server_error = "SLACK_OAUTH_REDIRECT_URI must use http:// for local callback."
+        return
+    if _slack_server_started:
+        if _slack_server_host == host and _slack_server_port == port and _slack_server_path == path:
+            _slack_server_error = None
+            return
+        _slack_server_error = (
+            "Slack OAuth callback server is already running with a different redirect URI. "
+            "Restart GravexStudio to change it."
+        )
+        return
+    try:
+        httpd = ThreadingHTTPServer((host, port), _make_slack_handler(path))
+    except Exception as exc:
+        _slack_server_error = str(exc)
+        return
+    _slack_server_started = True
+    _slack_server_error = None
+    _slack_server_host = host
+    _slack_server_port = port
+    _slack_server_path = path
+
+    def _serve():
+        try:
+            httpd.serve_forever()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_serve, daemon=True, name="slack-oauth-callback")
+    t.start()
+
+
 class DatabaseCredentialTestRequest(BaseModel):
     id: str = ""
     nickname: str = ""
@@ -223,6 +387,19 @@ class DatabaseCredentialTestRequest(BaseModel):
     server_ca: str = ""
     client_cert: str = ""
     client_key: str = ""
+
+
+class SlackOAuthStartRequest(BaseModel):
+    client_id: str = ""
+    client_secret: str = ""
+    redirect_uri: str = ""
+    scope: str = ""
+
+
+class SlackTokenSetRequest(BaseModel):
+    access_token: str = ""
+    refresh_token: str = ""
+    scope: str = ""
 
 
 def _parse_options(raw: str) -> dict[str, str]:
@@ -601,6 +778,18 @@ def register(app, ctx) -> None:
             "error": str(gmail_obj.get("error") or "").strip(),
         }
 
+    def _slack_public_payload(slack_obj: dict) -> dict:
+        return {
+            "connected": bool(slack_obj.get("connected")),
+            "workspace_name": str(slack_obj.get("workspace_name") or "").strip(),
+            "workspace_id": str(slack_obj.get("workspace_id") or "").strip(),
+            "bot_user_id": str(slack_obj.get("bot_user_id") or "").strip(),
+            "scope": str(slack_obj.get("scope") or "").strip(),
+            "expires_at": slack_obj.get("expires_at"),
+            "connected_at": str(slack_obj.get("connected_at") or "").strip(),
+            "error": str(slack_obj.get("error") or "").strip(),
+        }
+
     def _apply_gmail_auth_json(bot_auth_json: str, *, tokens: dict, account_email: str) -> str:
         base = _auth_obj(bot_auth_json)
         connected_apps = base.get("connected_apps")
@@ -667,6 +856,120 @@ def register(app, ctx) -> None:
         base.pop("gmail_client_secret", None)
         base.pop("gmail_sender_email", None)
         base.pop("gmail_reply_to_email", None)
+        return json.dumps(base, ensure_ascii=False, indent=2)
+
+    def _apply_slack_auth_json(
+        bot_auth_json: str,
+        *,
+        tokens: dict,
+        auth_test: dict,
+        oauth_client_id: str,
+        oauth_client_secret: str,
+        oauth_redirect_uri: str,
+        oauth_scope: str,
+    ) -> str:
+        base = _auth_obj(bot_auth_json)
+        connected_apps = base.get("connected_apps")
+        if not isinstance(connected_apps, dict):
+            connected_apps = {}
+        old_slack = connected_apps.get("slack")
+        old_slack_obj = old_slack if isinstance(old_slack, dict) else {}
+        access_token = str(tokens.get("access_token") or old_slack_obj.get("access_token") or "").strip()
+        refresh_token = str(tokens.get("refresh_token") or old_slack_obj.get("refresh_token") or "").strip()
+        scope = str(tokens.get("scope") or old_slack_obj.get("scope") or "").strip()
+        expires_at = None
+        try:
+            expires_in = float(tokens.get("expires_in") or 0.0)
+            if expires_in > 0:
+                expires_at = time.time() + expires_in
+        except Exception:
+            expires_at = old_slack_obj.get("expires_at")
+        team_obj = tokens.get("team") if isinstance(tokens.get("team"), dict) else {}
+        workspace_name = str(
+            auth_test.get("team")
+            or (team_obj.get("name") if isinstance(team_obj, dict) else "")
+            or old_slack_obj.get("workspace_name")
+            or ""
+        ).strip()
+        workspace_id = str(
+            auth_test.get("team_id")
+            or (team_obj.get("id") if isinstance(team_obj, dict) else "")
+            or old_slack_obj.get("workspace_id")
+            or ""
+        ).strip()
+        bot_user_id = str(auth_test.get("user_id") or old_slack_obj.get("bot_user_id") or "").strip()
+        now_iso = ctx.dt.datetime.now(ctx.dt.timezone.utc).isoformat()
+        slack_obj = {
+            "connected": bool(access_token),
+            "workspace_name": workspace_name,
+            "workspace_id": workspace_id,
+            "bot_user_id": bot_user_id,
+            "oauth_client_id": str(oauth_client_id or old_slack_obj.get("oauth_client_id") or "").strip(),
+            "oauth_client_secret": str(oauth_client_secret or old_slack_obj.get("oauth_client_secret") or "").strip(),
+            "oauth_redirect_uri": str(oauth_redirect_uri or old_slack_obj.get("oauth_redirect_uri") or "").strip(),
+            "oauth_scope": str(oauth_scope or old_slack_obj.get("oauth_scope") or "").strip(),
+            "scope": scope,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "connected_at": str(old_slack_obj.get("connected_at") or now_iso).strip(),
+            "error": "",
+        }
+        connected_apps["slack"] = slack_obj
+        base["connected_apps"] = connected_apps
+        base["slack_integration"] = slack_obj
+        if slack_obj.get("workspace_name"):
+            base["slack_workspace"] = slack_obj.get("workspace_name")
+        else:
+            base.pop("slack_workspace", None)
+        if slack_obj.get("workspace_id"):
+            base["slack_workspace_id"] = slack_obj.get("workspace_id")
+        else:
+            base.pop("slack_workspace_id", None)
+        if slack_obj.get("bot_user_id"):
+            base["slack_bot_user_id"] = slack_obj.get("bot_user_id")
+        else:
+            base.pop("slack_bot_user_id", None)
+        if slack_obj.get("oauth_client_id"):
+            base["slack_oauth_client_id"] = slack_obj.get("oauth_client_id")
+        else:
+            base.pop("slack_oauth_client_id", None)
+        if slack_obj.get("oauth_client_secret"):
+            base["slack_oauth_client_secret"] = slack_obj.get("oauth_client_secret")
+        else:
+            base.pop("slack_oauth_client_secret", None)
+        if slack_obj.get("oauth_redirect_uri"):
+            base["slack_oauth_redirect_uri"] = slack_obj.get("oauth_redirect_uri")
+        else:
+            base.pop("slack_oauth_redirect_uri", None)
+        if slack_obj.get("oauth_scope"):
+            base["slack_oauth_scope"] = slack_obj.get("oauth_scope")
+        else:
+            base.pop("slack_oauth_scope", None)
+        if slack_obj.get("scope"):
+            base["slack_scope"] = slack_obj.get("scope")
+        else:
+            base.pop("slack_scope", None)
+        if slack_obj.get("access_token"):
+            base["slack_access_token"] = slack_obj.get("access_token")
+        else:
+            base.pop("slack_access_token", None)
+        if slack_obj.get("refresh_token"):
+            base["slack_refresh_token"] = slack_obj.get("refresh_token")
+        else:
+            base.pop("slack_refresh_token", None)
+        if isinstance(slack_obj.get("expires_at"), (int, float)):
+            base["slack_expires_at"] = slack_obj.get("expires_at")
+        else:
+            base.pop("slack_expires_at", None)
+        if slack_obj.get("connected_at"):
+            base["slack_connected_at"] = slack_obj.get("connected_at")
+        else:
+            base.pop("slack_connected_at", None)
+        base["slack_connected"] = bool(slack_obj.get("connected"))
+        base.pop("slack_error", None)
+        base.pop("slack_client_id", None)
+        base.pop("slack_client_secret", None)
         return json.dumps(base, ensure_ascii=False, indent=2)
 
     @router.get("/api/bots")
@@ -902,6 +1205,182 @@ def register(app, ctx) -> None:
             return {"status": "ready", **public_payload}
         except Exception as exc:
             return {"status": "error", "error": str(exc) or "Gmail sign-in failed."}
+
+    @router.post("/api/bots/{bot_id}/connected-apps/slack/oauth/start")
+    def api_slack_oauth_start(
+        bot_id: UUID,
+        payload: Optional[SlackOAuthStartRequest] = Body(None),
+        session: Session = Depends(ctx.get_session),
+    ) -> dict:
+        bot = ctx.get_bot(session, bot_id)
+        auth_obj = _auth_obj(getattr(bot, "data_agent_auth_json", "") or "{}")
+        connected_apps_obj = auth_obj.get("connected_apps")
+        connected_apps = connected_apps_obj if isinstance(connected_apps_obj, dict) else {}
+        slack_cfg_obj = connected_apps.get("slack")
+        slack_cfg = slack_cfg_obj if isinstance(slack_cfg_obj, dict) else {}
+        client_id = str(
+            (payload.client_id if payload else "")
+            or slack_cfg.get("oauth_client_id")
+            or auth_obj.get("slack_oauth_client_id")
+            or _slack_client_id()
+            or ""
+        ).strip()
+        client_secret = str(
+            (payload.client_secret if payload else "")
+            or slack_cfg.get("oauth_client_secret")
+            or auth_obj.get("slack_oauth_client_secret")
+            or _slack_client_secret()
+            or ""
+        ).strip()
+        redirect_uri = str(
+            (payload.redirect_uri if payload else "")
+            or slack_cfg.get("oauth_redirect_uri")
+            or auth_obj.get("slack_oauth_redirect_uri")
+            or _slack_redirect_uri()
+            or SLACK_DEFAULT_REDIRECT_URI
+        ).strip()
+        scope = str(
+            (payload.scope if payload else "")
+            or slack_cfg.get("oauth_scope")
+            or auth_obj.get("slack_oauth_scope")
+            or _slack_scope()
+            or SLACK_DEFAULT_SCOPE
+        ).strip()
+        if not client_id or not client_secret:
+            raise ctx.HTTPException(
+                status_code=400,
+                detail="Slack OAuth requires Client ID and Client Secret. Add them in Connected apps > Slack.",
+            )
+        _ensure_slack_server(redirect_uri)
+        if _slack_server_error:
+            raise ctx.HTTPException(status_code=500, detail=f"Slack OAuth callback server failed: {_slack_server_error}")
+        state = secrets.token_urlsafe(24)
+        with _slack_sessions_lock:
+            _slack_sessions[state] = SlackOAuthSession(
+                state=state,
+                bot_id=str(bot_id),
+                created_at=time.time(),
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                scope=scope,
+            )
+        return {"state": state, "auth_url": _slack_auth_url(state=state, client_id=client_id, redirect_uri=redirect_uri, scope=scope)}
+
+    @router.get("/api/bots/{bot_id}/connected-apps/slack/oauth/status")
+    def api_slack_oauth_status(bot_id: UUID, state: str, session: Session = Depends(ctx.get_session)) -> dict:
+        bot = ctx.get_bot(session, bot_id)
+        with _slack_sessions_lock:
+            sess = _slack_sessions.get(state)
+        if not sess:
+            return {"status": "expired"}
+        if sess.bot_id != str(bot_id):
+            return {"status": "expired"}
+        if sess.error:
+            with _slack_sessions_lock:
+                _slack_sessions.pop(state, None)
+            return {"status": "error", "error": sess.error}
+        if not sess.code:
+            if (time.time() - sess.created_at) > 600:
+                with _slack_sessions_lock:
+                    _slack_sessions.pop(state, None)
+                return {"status": "expired"}
+            return {"status": "pending"}
+        with _slack_sessions_lock:
+            consumed = _slack_sessions.pop(state, None)
+        if not consumed:
+            return {"status": "expired"}
+        try:
+            tokens = _slack_exchange_code(
+                code=consumed.code or "",
+                client_id=consumed.client_id,
+                client_secret=consumed.client_secret,
+                redirect_uri=consumed.redirect_uri,
+            )
+            auth_test = _slack_auth_test(str(tokens.get("access_token") or ""))
+            next_auth_json = _apply_slack_auth_json(
+                getattr(bot, "data_agent_auth_json", "") or "{}",
+                tokens=tokens,
+                auth_test=auth_test,
+                oauth_client_id=consumed.client_id,
+                oauth_client_secret=consumed.client_secret,
+                oauth_redirect_uri=consumed.redirect_uri,
+                oauth_scope=consumed.scope,
+            )
+            bot = ctx.update_bot(session, bot_id=bot_id, patch={"data_agent_auth_json": next_auth_json})
+            auth_obj = _auth_obj(getattr(bot, "data_agent_auth_json", "") or "{}")
+            connected_apps = auth_obj.get("connected_apps")
+            slack_obj = connected_apps.get("slack") if isinstance(connected_apps, dict) else {}
+            public_payload = _slack_public_payload(slack_obj if isinstance(slack_obj, dict) else {})
+            return {"status": "ready", **public_payload}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc) or "Slack sign-in failed."}
+
+    @router.post("/api/bots/{bot_id}/connected-apps/slack/token/set")
+    def api_slack_token_set(
+        bot_id: UUID,
+        payload: SlackTokenSetRequest,
+        session: Session = Depends(ctx.get_session),
+    ) -> dict:
+        bot = ctx.get_bot(session, bot_id)
+        access_token = str(payload.access_token or "").strip()
+        refresh_token = str(payload.refresh_token or "").strip()
+        scope = str(payload.scope or "").strip()
+        if not access_token:
+            raise ctx.HTTPException(status_code=400, detail="access_token is required.")
+        try:
+            auth_test = _slack_auth_test(access_token)
+            auth_obj = _auth_obj(getattr(bot, "data_agent_auth_json", "") or "{}")
+            connected_apps_obj = auth_obj.get("connected_apps")
+            connected_apps = connected_apps_obj if isinstance(connected_apps_obj, dict) else {}
+            old_slack_obj = connected_apps.get("slack")
+            old_slack = old_slack_obj if isinstance(old_slack_obj, dict) else {}
+            oauth_client_id = str(
+                old_slack.get("oauth_client_id")
+                or auth_obj.get("slack_oauth_client_id")
+                or ""
+            ).strip()
+            oauth_client_secret = str(
+                old_slack.get("oauth_client_secret")
+                or auth_obj.get("slack_oauth_client_secret")
+                or ""
+            ).strip()
+            oauth_redirect_uri = str(
+                old_slack.get("oauth_redirect_uri")
+                or auth_obj.get("slack_oauth_redirect_uri")
+                or _slack_redirect_uri()
+                or SLACK_DEFAULT_REDIRECT_URI
+            ).strip()
+            oauth_scope = str(
+                old_slack.get("oauth_scope")
+                or auth_obj.get("slack_oauth_scope")
+                or _slack_scope()
+                or SLACK_DEFAULT_SCOPE
+            ).strip()
+            tokens_obj = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "scope": scope,
+            }
+            next_auth_json = _apply_slack_auth_json(
+                getattr(bot, "data_agent_auth_json", "") or "{}",
+                tokens=tokens_obj,
+                auth_test=auth_test,
+                oauth_client_id=oauth_client_id,
+                oauth_client_secret=oauth_client_secret,
+                oauth_redirect_uri=oauth_redirect_uri,
+                oauth_scope=oauth_scope,
+            )
+            bot = ctx.update_bot(session, bot_id=bot_id, patch={"data_agent_auth_json": next_auth_json})
+            auth_obj = _auth_obj(getattr(bot, "data_agent_auth_json", "") or "{}")
+            connected_apps = auth_obj.get("connected_apps")
+            slack_obj = connected_apps.get("slack") if isinstance(connected_apps, dict) else {}
+            public_payload = _slack_public_payload(slack_obj if isinstance(slack_obj, dict) else {})
+            return {"status": "ready", **public_payload}
+        except ctx.HTTPException:
+            raise
+        except Exception as exc:
+            return {"status": "error", "error": str(exc) or "Slack token validation failed."}
 
     @router.post("/api/bots/{bot_id}/connected-apps/database/test")
     def api_test_database_credential(
