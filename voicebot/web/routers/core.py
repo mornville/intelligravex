@@ -76,7 +76,7 @@ def register(app, ctx) -> None:
     @router.post("/api/open-dashboard")
     def api_open_dashboard(payload: Optional[OpenDashboardRequest] = Body(None)) -> dict:
         host = (ctx.os.environ.get("VOICEBOT_LAUNCH_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-        port = (ctx.os.environ.get("VOICEBOT_LAUNCH_PORT") or "8000").strip() or "8000"
+        port = (ctx.os.environ.get("VOICEBOT_LAUNCH_PORT") or "7621").strip() or "7621"
         requested = ""
         if payload and payload.path:
             requested = str(payload.path or "").strip()

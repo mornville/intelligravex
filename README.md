@@ -77,7 +77,7 @@ py -3.11 -m venv .venv
 ```
 
 Open:
-- `http://localhost:8000/dashboard`
+- `http://localhost:7621/dashboard`
 
 macOS auto-start (optional):
 - Install at login/restart:
@@ -86,7 +86,7 @@ macOS auto-start (optional):
 ./scripts/install_macos_autostart.sh
 ```
 
-- If you stop port `8000` by mistake, restart the service:
+- If you stop port `7621` by mistake, restart the service:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.intelligravex.voicebot.web

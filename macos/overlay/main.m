@@ -60,7 +60,7 @@ static void LogLine(NSString *line);
   LogLine(@"App did finish launching");
   [self setupMenu];
   self.host = @"127.0.0.1";
-  self.port = @"8000";
+  self.port = @"7621";
   self.outputBuffer = [NSMutableString string];
   [self requestScreenCaptureAccess];
   [self setupWindow];

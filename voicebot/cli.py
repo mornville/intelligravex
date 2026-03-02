@@ -98,7 +98,7 @@ def devices() -> None:
 @app.command()
 def web(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind host (use 127.0.0.1 for localhost-only)."),
-    port: int = typer.Option(8000, "--port"),
+    port: int = typer.Option(7621, "--port"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on file changes (dev only)."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
 ) -> None:

@@ -5,6 +5,7 @@ import {
   PaperClipIcon,
   SpeakerWaveIcon,
   SpeakerXMarkIcon,
+  StopCircleIcon,
   UserIcon,
   WrenchScrewdriverIcon,
 } from '@heroicons/react/24/solid'
@@ -243,6 +244,8 @@ export default function MicTest({
   const [recording, setRecording] = useState(false)
   const [lastTimings, setLastTimings] = useState<Timings>({})
   const [chatText, setChatText] = useState('')
+  const [queuedChats, setQueuedChats] = useState<string[]>([])
+  const [activeReqId, setActiveReqId] = useState<string | null>(null)
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
   const [isVisible, setIsVisible] = useState(
     typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
@@ -259,6 +262,9 @@ export default function MicTest({
   const uploadRef = useRef<HTMLInputElement | null>(null)
   const uploadFolderRef = useRef<HTMLInputElement | null>(null)
   const activeReqIdRef = useRef<string | null>(null)
+  const activeStageRef = useRef<Stage>('disconnected')
+  const queuedChatsRef = useRef<string[]>([])
+  const queueFlushTimerRef = useRef<number | null>(null)
   const recordingRef = useRef(false)
   const draftAssistantIdRef = useRef<string | null>(null)
   const pendingUserIdRef = useRef<string | null>(null)
@@ -383,6 +389,12 @@ export default function MicTest({
     cacheAppliedConvRef.current = null
     isNearBottomRef.current = true
     interimIdRef.current = null
+    queuedChatsRef.current = []
+    setQueuedChats([])
+    if (queueFlushTimerRef.current) {
+      window.clearTimeout(queueFlushTimerRef.current)
+      queueFlushTimerRef.current = null
+    }
   }, [conversationId])
 
   useEffect(() => {
@@ -391,6 +403,37 @@ export default function MicTest({
       setConversationStage(conversationId, 'idle')
     }
   }, [conversationId, stageByConversationId])
+
+  useEffect(() => {
+    activeStageRef.current = activeStage
+  }, [activeStage])
+
+  useEffect(() => {
+    return () => {
+      if (queueFlushTimerRef.current) window.clearTimeout(queueFlushTimerRef.current)
+    }
+  }, [])
+
+  function setActiveReq(reqId: string | null) {
+    activeReqIdRef.current = reqId
+    setActiveReqId(reqId)
+  }
+
+  function enqueueChat(text: string) {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const next = [...queuedChatsRef.current, trimmed]
+    queuedChatsRef.current = next
+    setQueuedChats(next)
+  }
+
+  function dequeueChat(): string | null {
+    if (!queuedChatsRef.current.length) return null
+    const [head, ...rest] = queuedChatsRef.current
+    queuedChatsRef.current = rest
+    setQueuedChats(rest)
+    return head
+  }
 
   function setConversationStage(cid: string, next: Stage) {
     setStageByConversationId((prev) => {
@@ -408,7 +451,7 @@ export default function MicTest({
 
   function finalizeTurn(reqId?: string) {
     if (reqId && activeReqIdRef.current !== reqId) return
-    activeReqIdRef.current = null
+    setActiveReq(null)
     draftAssistantIdRef.current = null
     clearInterim()
     toolProgressIdRef.current = {}
@@ -833,6 +876,7 @@ export default function MicTest({
           setConversationStage(conversationIdRef.current, 'idle')
         }
         finalizeTurn(reqId)
+        scheduleQueuedFlush()
         onSync?.()
         return
       }
@@ -1077,6 +1121,7 @@ export default function MicTest({
     }
     if (conversationId) setConversationStage(conversationId, 'idle')
     finalizeTurn(reqId)
+    scheduleQueuedFlush()
   }
 
   async function initConversation() {
@@ -1090,26 +1135,26 @@ export default function MicTest({
     setConversationId(null)
     setItems([])
     draftAssistantIdRef.current = null
+    queuedChatsRef.current = []
+    setQueuedChats([])
     const reqId = makeId()
-    activeReqIdRef.current = reqId
+    setActiveReq(reqId)
     pendingInitReqIdRef.current = reqId
     const effectiveSpeak = botProvider === 'local' || botProvider === 'chatgpt' ? false : speak
     ws.send(JSON.stringify({ type: 'init', req_id: reqId, speak: effectiveSpeak, test_flag: testFlag, debug }))
   }
 
-  async function sendChat() {
-    if (!(await ensureWsOpen())) return
+  async function sendChatNow(text: string): Promise<boolean> {
+    if (!(await ensureWsOpen())) return false
     const ws = wsRef.current
-    if (!ws) return
-    if (!conversationId) {
+    if (!ws) return false
+    const activeConversationId = conversationIdRef.current
+    if (!activeConversationId) {
       setErr('Start a conversation first.')
-      return
+      return false
     }
-    const text = chatText.trim()
-    if (!text) return
-    if (activeStage !== 'idle') return
+    if (activeReqIdRef.current || activeStageRef.current !== 'idle' || recordingRef.current) return false
     setErr(null)
-    setChatText('')
     const draftId = makeId()
     draftAssistantIdRef.current = draftId
     const now = new Date().toISOString()
@@ -1119,13 +1164,13 @@ export default function MicTest({
       { id: draftId, role: 'assistant', text: '', created_at: now, local: true },
     ])
     const reqId = makeId()
-    activeReqIdRef.current = reqId
-    reqToConversationRef.current[reqId] = conversationId
+    setActiveReq(reqId)
+    reqToConversationRef.current[reqId] = activeConversationId
     ws.send(
       JSON.stringify({
         type: 'chat',
         req_id: reqId,
-        conversation_id: conversationId,
+        conversation_id: activeConversationId,
         speak: botProvider === 'local' || botProvider === 'chatgpt' ? false : speak,
         test_flag: testFlag,
         debug,
@@ -1133,6 +1178,45 @@ export default function MicTest({
       }),
     )
     onSync?.()
+    return true
+  }
+
+  function scheduleQueuedFlush() {
+    if (queueFlushTimerRef.current) window.clearTimeout(queueFlushTimerRef.current)
+    queueFlushTimerRef.current = window.setTimeout(() => {
+      queueFlushTimerRef.current = null
+      void flushQueuedChats()
+    }, 0)
+  }
+
+  async function flushQueuedChats() {
+    if (!queuedChatsRef.current.length) return
+    if (!conversationIdRef.current) return
+    if (activeReqIdRef.current || activeStageRef.current !== 'idle' || recordingRef.current) return
+    const next = dequeueChat()
+    if (!next) return
+    const sent = await sendChatNow(next)
+    if (!sent) {
+      const restored = [next, ...queuedChatsRef.current]
+      queuedChatsRef.current = restored
+      setQueuedChats(restored)
+    }
+  }
+
+  async function sendChat() {
+    const text = chatText.trim()
+    if (!text) return
+    if (!conversationIdRef.current) {
+      setErr('Start a conversation first.')
+      return
+    }
+    if (activeReqIdRef.current || activeStageRef.current !== 'idle' || recordingRef.current) {
+      enqueueChat(text)
+      setChatText('')
+      return
+    }
+    const sent = await sendChatNow(text)
+    if (sent) setChatText('')
   }
 
   async function startRecording() {
@@ -1156,7 +1240,7 @@ export default function MicTest({
       ])
     }
     const reqId = makeId()
-    activeReqIdRef.current = reqId
+    setActiveReq(reqId)
     reqToConversationRef.current[reqId] = conversationId
     wsRef.current.send(
       JSON.stringify({
@@ -1367,6 +1451,10 @@ export default function MicTest({
     ) : null
 
   const voiceDisabled = botProvider === 'local' || botProvider === 'chatgpt'
+  const isTurnBusy = Boolean(activeReqId) || activeStage !== 'idle'
+  const canStopGeneration = Boolean(activeReqId)
+  const queueCount = queuedChats.length
+  const sendLabel = isTurnBusy ? `Queue${queueCount ? ` (${queueCount})` : ''}` : 'Send'
   const micButton = recording ? (
     <button className="iconBtn danger" onClick={() => void stopRecording()} title="Stop recording">
       Stop
@@ -1569,11 +1657,16 @@ export default function MicTest({
               <button
                 className="btn primary"
                 onClick={() => void sendChat()}
-                disabled={!conversationId || activeStage !== 'idle' || !chatText.trim()}
+                disabled={!conversationId || !chatText.trim()}
               >
-                Send
+                {sendLabel}
+              </button>
+              <button className="btn ghost" onClick={() => void stopActiveRequest()} disabled={!canStopGeneration}>
+                <StopCircleIcon aria-hidden="true" />
+                Stop
               </button>
             </div>
+            {queueCount ? <div className="muted">Queued: {queueCount}</div> : null}
           </div>
           {hideWorkspace ? null : workspacePane}
         </div>
@@ -1665,12 +1758,17 @@ export default function MicTest({
           <button
             className="btn primary"
             onClick={() => void sendChat()}
-            disabled={!conversationId || activeStage !== 'idle' || !chatText.trim()}
+            disabled={!conversationId || !chatText.trim()}
           >
-            Send
+            {sendLabel}
+          </button>
+          <button className="btn ghost" onClick={() => void stopActiveRequest()} disabled={!canStopGeneration}>
+            <StopCircleIcon aria-hidden="true" />
+            Stop
           </button>
         </div>
       ) : null}
+      {queueCount ? <div className="muted" style={{ marginTop: 8 }}>Queued: {queueCount}</div> : null}
 
       <details className="accordion" style={{ marginTop: 10 }}>
         <summary>Latency & metrics</summary>

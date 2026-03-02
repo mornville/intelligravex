@@ -252,6 +252,9 @@ def build_history(ctx, session: Session, bot: Bot, conversation_id: Optional[UUI
     conv = ctx.get_conversation(session, conversation_id)
     ctx._assert_bot_in_conversation(conv, bot.id)
     meta = ctx.safe_json_loads(conv.metadata_json or "{}") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    connected_apps_context = build_connected_apps_prompt_context(bot, conversation_meta=meta)
     ctx_obj = {"meta": meta}
     messages = [
         Message(
@@ -346,6 +349,7 @@ def build_history_budgeted(
     meta = ctx.safe_json_loads(conv.metadata_json or "{}") or {}
     if not isinstance(meta, dict):
         meta = {}
+    connected_apps_context = build_connected_apps_prompt_context(bot, conversation_meta=meta)
 
     memory = meta.get("memory") if isinstance(meta.get("memory"), dict) else {}
     if not isinstance(memory, dict):

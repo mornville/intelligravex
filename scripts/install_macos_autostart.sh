@@ -30,7 +30,7 @@ cat >"${PLIST_PATH}" <<PLIST
     <array>
       <string>/bin/bash</string>
       <string>-lc</string>
-      <string>cd "${ROOT_DIR}" && ./start.sh web -v</string>
+      <string>cd "${ROOT_DIR}" &amp;&amp; ./start.sh web --port 7621 -v</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -69,4 +69,3 @@ echo "  ${OUT_LOG}"
 echo "  ${ERR_LOG}"
 echo "Check status:"
 echo "  launchctl print gui/${UID_NUM}/${LABEL}"
-

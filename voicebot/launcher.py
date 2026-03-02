@@ -303,7 +303,7 @@ def _select_port(host: str, port: int) -> int:
         if initial is not None:
             port = int(initial)
     if port < 1024 or port > 65535:
-        port = 8000
+        port = 7621
     if _port_available(host, port):
         return port
     while True:
@@ -328,7 +328,7 @@ def _select_port(host: str, port: int) -> int:
             return choice
 
 
-def launch(host: str = "127.0.0.1", port: int = 8000, *, open_browser: bool = True) -> None:
+def launch(host: str = "127.0.0.1", port: int = 7621, *, open_browser: bool = True) -> None:
     """
     Launch the Studio server and optionally open the browser.
 

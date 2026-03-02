@@ -8,12 +8,12 @@ const DEFAULT_BACKEND = (() => {
     const origin = window.location.origin || ''
     const isHttp = origin.startsWith('http://') || origin.startsWith('https://')
     if (port === '5173' || port === '4173') {
-      return `${proto}//${host}:8000`
+      return `${proto}//${host}:7621`
     }
     if (isHttp) return origin
-    return 'http://127.0.0.1:8000'
+    return 'http://127.0.0.1:7621'
   } catch {
-    return 'http://127.0.0.1:8000'
+    return 'http://127.0.0.1:7621'
   }
 })()
 

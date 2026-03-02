@@ -243,7 +243,7 @@ def create_app() -> FastAPI:
     }
     data_agent_setup_thread: Optional[threading.Thread] = None
 
-    download_base_url = (getattr(settings, "download_base_url", "") or "127.0.0.1:8000").strip()
+    download_base_url = (getattr(settings, "download_base_url", "") or "127.0.0.1:7621").strip()
 
     def _download_url_for_token(token: str) -> str:
         return settings_helpers.download_url_for_token(download_base_url, token)
@@ -254,7 +254,7 @@ def create_app() -> FastAPI:
             return override.rstrip("/")
         base = download_base_url.strip()
         if not base:
-            base = "127.0.0.1:8000"
+            base = "127.0.0.1:7621"
         host = base
         if base.startswith("http://") or base.startswith("https://"):
             try:

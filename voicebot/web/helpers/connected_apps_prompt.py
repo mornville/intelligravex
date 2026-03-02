@@ -22,6 +22,14 @@ def _as_list(value: Any) -> list[Any]:
     return []
 
 
+def _to_int(value: Any) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        return 0
+    return n if n > 0 else 0
+
+
 def _auth_obj(raw: str) -> dict[str, Any]:
     try:
         obj = json.loads((raw or "").strip() or "{}")
@@ -46,10 +54,11 @@ def _bool_text(value: bool) -> str:
     return "yes" if value else "no"
 
 
-def build_connected_apps_prompt_context(bot: Bot) -> str:
+def build_connected_apps_prompt_context(bot: Bot, *, conversation_meta: dict[str, Any] | None = None) -> str:
     auth = _auth_obj(getattr(bot, "data_agent_auth_json", "") or "{}")
     connected_apps = _as_dict(auth.get("connected_apps"))
     git_integrations = _as_dict(auth.get("git_integrations"))
+    runtime_meta = _as_dict(_as_dict(conversation_meta).get("data_agent"))
 
     lines: list[str] = []
     lines.append("Connected apps and Isolated Workspace context (sanitized):")
@@ -60,6 +69,40 @@ def build_connected_apps_prompt_context(bot: Bot) -> str:
         lines.append(
             "- For repo/integration/file tasks requiring external credentials, prefer `give_command_to_data_agent`."
         )
+        container_name = _safe_str(runtime_meta.get("container_name"))
+        container_id = _safe_str(runtime_meta.get("container_id"))
+        workspace_dir = _safe_str(runtime_meta.get("workspace_dir"))
+        ide_port = _to_int(runtime_meta.get("ide_port"))
+        port_pairs: list[tuple[int, int]] = []
+        for item in _as_list(runtime_meta.get("ports")):
+            if not isinstance(item, dict):
+                continue
+            host = _to_int(item.get("host"))
+            container = _to_int(item.get("container"))
+            if not host or not container:
+                continue
+            port_pairs.append((host, container))
+        dedup_pairs = sorted(set(port_pairs), key=lambda p: p[0])
+        runtime_bits: list[str] = []
+        if container_name:
+            runtime_bits.append(f"container_name={container_name}")
+        if container_id:
+            runtime_bits.append(f"container_id={container_id}")
+        if workspace_dir:
+            runtime_bits.append(f"workspace_dir={workspace_dir}")
+        if runtime_bits:
+            lines.append(f"- Active Isolated Workspace runtime: {'; '.join(runtime_bits)}.")
+        if dedup_pairs:
+            mapping = ", ".join(f"{h}->{c}" for h, c in dedup_pairs)
+            lines.append(f"- Allowed published ports (host->container): {mapping}.")
+        else:
+            lines.append("- Allowed published ports (host->container): not assigned yet.")
+        if ide_port:
+            lines.append(f"- IDE host port: {ide_port} (reserved for OpenVSCode server).")
+        lines.append(
+            "- For host access, run services on one of the allowed container ports above and bind to 0.0.0.0."
+        )
+        lines.append("- Ports not listed above are not published to the host.")
     else:
         lines.append("- If user asks for repo/integration/file automation, ask them to enable Isolated Workspace.")
 
@@ -170,4 +213,3 @@ def build_connected_apps_prompt_context(bot: Bot) -> str:
     lines.append("- Never reveal or print secrets/tokens/passwords from connected app config.")
     lines.append("- If a requested action needs a tool that is unavailable, explain what to enable next.")
     return "\n".join(lines).strip()
-
