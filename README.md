@@ -13,7 +13,8 @@ Run multi-agent AI workflows locally, with isolated workspaces and real tool acc
 - One agent = one isolated workspace (no collisions)
 - Real tools (Git, Jira, DBs), not just chat
 - Works with local LLMs *or* OpenAI
-
+- Has Visual studio integrated in it, so you literally dont have to switch screens. Do everything in one place!
+  
 ## Who is Gravex for?
 - Engineers handling multiple Jira tickets daily
 - Founders who want AI agents without leaking code or data
@@ -26,7 +27,8 @@ Run multi-agent AI workflows locally, with isolated workspaces and real tool acc
 - Logged in with my Openai account so no need of key if i have to use smaller models, else i provide my key.
 - For my day to day tasks: It spins up multiple agents and I give each ticker Jira ticket links, that's it. If the description is sufficient,
 - It clones the repo in isolated workspaces (docker container), does  the work and just gives me URLs to test.
-- The Multi - Agent framework never collide with each other as its in seperate Docker Container. 
+- The Multi - Agent framework never collide with each other as its in seperate Docker Container.
+- I have visual Studio Code integrated, so i can just take a look at the code, write code manually there too, all in the same screen.
 - This is just one of the infinite use cases.
 - Others for fun: I just spin up agent swarm and let them collab and come up with the code/test/reviews after i give them a task
   
