@@ -13,6 +13,8 @@ from voicebot.models import Bot
 from voicebot.web.helpers.connected_apps_prompt import build_connected_apps_prompt_context
 from voicebot.utils.prompt import system_prompt_with_runtime
 
+SUMMARY_INTERIM_MESSAGE = "summarizing context (you can change the turn window in LLM setting)"
+
 
 def _safe_int(value: Any, *, default: int) -> int:
     try:
@@ -409,6 +411,7 @@ def build_history_budgeted(
         new_old_msgs = tmp if found else old_msgs
 
     should_summarize = False
+    summarized_this_build = False
     if old_msgs and (not memory_summary):
         should_summarize = True
     elif len(new_old_msgs) >= SUMMARY_BATCH_MIN_MESSAGES:
@@ -416,7 +419,10 @@ def build_history_budgeted(
 
     if should_summarize and llm_api_key:
         if status_cb:
-            status_cb("summarizing")
+            try:
+                status_cb("summarizing", SUMMARY_INTERIM_MESSAGE)
+            except TypeError:
+                status_cb("summarizing")
         chunk = "\n".join(_format_for_summary(m) for m in new_old_msgs)
         chunk = chunk[:24000]
 
@@ -462,6 +468,7 @@ def build_history_budgeted(
             summary_generated = False
 
         if summary_generated:
+            summarized_this_build = True
             patch = {
                 "memory.summary": new_summary,
                 "memory.pinned_facts": new_pinned,
@@ -519,10 +526,15 @@ def build_history_budgeted(
     mem_after = meta.get("memory") if isinstance(meta.get("memory"), dict) else {}
     if isinstance(mem_after, dict):
         checkpoint_id = str(mem_after.get("last_summary_checkpoint_message_id") or "").strip()
-    if checkpoint_id:
+    # A checkpoint can tighten the lower bound, but must never widen the raw-history window.
+    # Also skip this optimization when we just created a checkpoint in this same build, so
+    # the current user turn stays available to the assistant request being prepared now.
+    if checkpoint_id and not summarized_this_build:
         for i, m in enumerate(db_msgs):
             if str(getattr(m, "id", "") or "") == checkpoint_id:
-                history_start_idx = i
+                candidate_idx = i + 1  # Skip the checkpoint marker row itself.
+                if candidate_idx > history_start_idx:
+                    history_start_idx = candidate_idx
                 break
 
     messages: list[Message] = [Message(role="system", content=system_prompt)]

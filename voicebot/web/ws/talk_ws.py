@@ -342,10 +342,15 @@ async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[repor
                             )
                             loop = asyncio.get_running_loop()
 
-                            def _status_cb(stage: str) -> None:
+                            def _status_cb(stage: str, interim_text: Optional[str] = None) -> None:
                                 asyncio.run_coroutine_threadsafe(
                                     _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
                                 )
+                                if interim_text:
+                                    asyncio.run_coroutine_threadsafe(
+                                        _ws_send_json(ws, {"type": "interim", "req_id": req_id, "text": interim_text}),
+                                        loop,
+                                    )
 
                             history = await _build_history_budgeted_async(
                                 bot_id=bot.id,
@@ -539,10 +544,15 @@ async def talk_ws(bot_id: UUID, ws: WebSocket) -> None:  # pyright: ignore[repor
                         )
                         loop = asyncio.get_running_loop()
 
-                        def _status_cb(stage: str) -> None:
+                        def _status_cb(stage: str, interim_text: Optional[str] = None) -> None:
                             asyncio.run_coroutine_threadsafe(
                                 _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
                             )
+                            if interim_text:
+                                asyncio.run_coroutine_threadsafe(
+                                    _ws_send_json(ws, {"type": "interim", "req_id": req_id, "text": interim_text}),
+                                    loop,
+                                )
 
                         provider, llm_api_key, llm = _require_llm_client(session, bot=bot)
                         history = await _build_history_budgeted_async(

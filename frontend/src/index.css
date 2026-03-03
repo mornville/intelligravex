@@ -2633,7 +2633,8 @@ label {
 }
 
 .modalCard.settingsModal {
-  width: min(1100px, 96vw);
+  width: min(1800px, 98vw);
+  max-height: min(96vh, 1400px);
 }
 .modalCard.jobModal {
   width: min(980px, 96vw);

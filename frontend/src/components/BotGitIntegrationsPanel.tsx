@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiGet, apiPost } from '../api/client'
+import { apiDelete, apiGet, apiPost } from '../api/client'
+import { useChatgptOauth } from '../hooks/useChatgptOauth'
 import type { Bot } from '../types'
 import type { DatabaseCredential, GitAuthMode, GitIntegrationsState, GitProvider } from '../utils/gitIntegrations'
 import {
@@ -12,13 +13,14 @@ import {
   slackConnected,
 } from '../utils/gitIntegrations'
 
-type AppId = GitProvider | 'jira' | 'gmail' | 'slack' | 'database'
+type AppId = GitProvider | 'jira' | 'gmail' | 'chatgpt' | 'slack' | 'database'
 
 const APPS: Array<{ id: AppId; label: string; icon_url: string }> = [
   { id: 'github', label: 'GitHub', icon_url: 'https://cdn.simpleicons.org/github' },
   { id: 'gitlab', label: 'GitLab', icon_url: 'https://cdn.simpleicons.org/gitlab' },
   { id: 'jira', label: 'Jira', icon_url: '/brands/jira.svg' },
   { id: 'gmail', label: 'Gmail', icon_url: 'https://www.gstatic.com/images/branding/product/1x/gmail_2020q4_48dp.png' },
+  { id: 'chatgpt', label: 'OpenAI / ChatGPT', icon_url: '/brands/openai.svg' },
   { id: 'slack', label: 'Slack', icon_url: 'https://cdn.simpleicons.org/slack' },
   { id: 'database', label: 'Database credentials', icon_url: 'https://cdn.simpleicons.org/postgresql' },
 ]
@@ -85,6 +87,12 @@ type SlackOauthStatus = {
 
 type SlackTokenSetStatus = SlackOauthStatus
 
+type ChatgptApiKey = {
+  id: string
+  name: string
+  created_at: string
+}
+
 export default function BotGitIntegrationsPanel({
   bot,
   save,
@@ -109,6 +117,10 @@ export default function BotGitIntegrationsPanel({
   const [slackAuthState, setSlackAuthState] = useState<string>('')
   const [slackAuthUrl, setSlackAuthUrl] = useState<string>('')
   const [slackAuthError, setSlackAuthError] = useState<string>('')
+  const [chatgptKeys, setChatgptKeys] = useState<ChatgptApiKey[]>([])
+  const [chatgptActionBusy, setChatgptActionBusy] = useState(false)
+  const [chatgptActionError, setChatgptActionError] = useState<string>('')
+  const chatgptOauth = useChatgptOauth()
 
   useEffect(() => {
     const next = readGitIntegrationsState(bot?.data_agent_auth_json || '{}')
@@ -125,6 +137,8 @@ export default function BotGitIntegrationsPanel({
     setSlackAuthState('')
     setSlackAuthUrl('')
     setSlackAuthError('')
+    setChatgptActionBusy(false)
+    setChatgptActionError('')
   }, [bot?.data_agent_auth_json])
 
   useEffect(() => {
@@ -155,14 +169,20 @@ export default function BotGitIntegrationsPanel({
   const jiraStep2Done = Boolean(jira.email.trim() && jira.api_token.trim())
   const jiraStep3Done = Boolean(jira.default_project_key.trim() || jira.default_issue_type.trim() || jira.default_jql.trim())
   const gmailDone = gmailConnected(gmail)
+  const chatgptDone = chatgptOauth.ready || chatgptKeys.length > 0
   const slackDone = slackConnected(slack)
   const databaseDone = dbCredentials.some((item) => dbCredentialReady(item))
+  const latestChatgptKey = useMemo(() => {
+    if (!chatgptKeys.length) return null
+    return chatgptKeys.reduce((latest, item) => (item.created_at > latest.created_at ? item : latest), chatgptKeys[0])
+  }, [chatgptKeys])
 
   const appConnection: Record<AppId, boolean> = {
     github: authDone(state.providers.github.auth_mode, state.providers.github.token, state.ssh_key_path),
     gitlab: authDone(state.providers.gitlab.auth_mode, state.providers.gitlab.token, state.ssh_key_path),
     jira: Boolean(jira.domain.trim() && jira.email.trim() && jira.api_token.trim()),
     gmail: gmailDone,
+    chatgpt: chatgptDone,
     slack: slackDone,
     database: databaseDone,
   }
@@ -177,11 +197,22 @@ export default function BotGitIntegrationsPanel({
       ? appConnection.jira
       : activeApp === 'gmail'
         ? appConnection.gmail
+        : activeApp === 'chatgpt'
+          ? appConnection.chatgpt
         : activeApp === 'slack'
           ? appConnection.slack
         : activeApp === 'database'
           ? appConnection.database
           : selectedProviderConnected
+
+  async function refreshChatgptKeys() {
+    try {
+      const res = await apiGet<{ items: ChatgptApiKey[] }>('/api/keys?provider=chatgpt')
+      setChatgptKeys(res.items || [])
+    } catch {
+      setChatgptKeys([])
+    }
+  }
 
   async function saveAll(next?: GitIntegrationsState) {
     const target = next || state
@@ -309,7 +340,7 @@ export default function BotGitIntegrationsPanel({
   async function refreshFromServer() {
     if (!bot?.id) return
     try {
-      const fresh = await apiGet<Bot>(`/api/bots/${bot.id}`)
+      const [fresh] = await Promise.all([apiGet<Bot>(`/api/bots/${bot.id}`), refreshChatgptKeys(), chatgptOauth.refresh()])
       const next = readGitIntegrationsState(fresh?.data_agent_auth_json || '{}')
       setState((prev) => ({
         ...prev,
@@ -318,6 +349,22 @@ export default function BotGitIntegrationsPanel({
       }))
     } catch {
       // ignore refresh failures
+    }
+  }
+
+  async function disconnectChatgpt() {
+    setChatgptActionError('')
+    setChatgptActionBusy(true)
+    try {
+      const listed = await apiGet<{ items: ChatgptApiKey[] }>('/api/keys?provider=chatgpt')
+      for (const item of listed.items || []) {
+        await apiDelete(`/api/keys/${item.id}`)
+      }
+      await Promise.all([refreshChatgptKeys(), chatgptOauth.refresh()])
+    } catch (e: any) {
+      setChatgptActionError(String(e?.message || e || 'Failed to disconnect ChatGPT.'))
+    } finally {
+      setChatgptActionBusy(false)
     }
   }
 
@@ -410,6 +457,11 @@ export default function BotGitIntegrationsPanel({
   }
 
   useEffect(() => {
+    void refreshChatgptKeys()
+    void chatgptOauth.refresh()
+  }, [bot?.id])
+
+  useEffect(() => {
     if (!gmailAuthState || !bot?.id) return
     const stateToken = gmailAuthState
     let canceled = false
@@ -481,7 +533,7 @@ export default function BotGitIntegrationsPanel({
 
   async function saveAndContinue() {
     await saveAll()
-    if (activeApp === 'database' || activeApp === 'gmail' || activeApp === 'slack') return
+    if (activeApp === 'database' || activeApp === 'gmail' || activeApp === 'chatgpt' || activeApp === 'slack') return
     if (activeApp === 'jira') {
       setActiveJiraStep((prev) => (prev < 3 ? ((prev + 1) as 1 | 2 | 3) : prev))
       return
@@ -490,7 +542,7 @@ export default function BotGitIntegrationsPanel({
   }
 
   async function skipOptional() {
-    if (activeApp === 'database' || activeApp === 'gmail' || activeApp === 'slack') return
+    if (activeApp === 'database' || activeApp === 'gmail' || activeApp === 'chatgpt' || activeApp === 'slack') return
     if (activeApp === 'jira') {
       const next: GitIntegrationsState = {
         ...state,
@@ -540,7 +592,7 @@ export default function BotGitIntegrationsPanel({
               key={p.id}
               className={`gitIntRailTab ${activeApp === p.id ? 'active' : ''}`}
               onClick={() => {
-                if (p.id === 'jira' || p.id === 'gmail' || p.id === 'slack' || p.id === 'database') {
+                if (p.id === 'jira' || p.id === 'gmail' || p.id === 'chatgpt' || p.id === 'slack' || p.id === 'database') {
                   setActiveApp(p.id)
                 } else {
                   updateProvider(p.id)
@@ -571,6 +623,8 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : activeApp === 'gmail' ? (
               <button className="gitIntStepTab active" type="button">1. Google Sign-In</button>
+            ) : activeApp === 'chatgpt' ? (
+              <button className="gitIntStepTab active" type="button">1. ChatGPT Sign-In</button>
             ) : activeApp === 'slack' ? (
               <button className="gitIntStepTab active" type="button">1. Slack Sign-In</button>
             ) : activeApp === 'database' ? (
@@ -586,7 +640,7 @@ export default function BotGitIntegrationsPanel({
           </div>
 
           <div className="gitIntPanel">
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 1 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'chatgpt' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 1 ? (
               <>
                 <div className="step">
                   <span>Workspace SSH key</span>
@@ -606,7 +660,7 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : null}
 
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 2 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'chatgpt' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 2 ? (
               <>
                 <div className="step">
                   <span>OAuth / PAT access ({selectedProvider})</span>
@@ -640,7 +694,7 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : null}
 
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 3 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'chatgpt' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 3 ? (
               <>
                 <div className="step">
                   <span>Repo link</span>
@@ -660,7 +714,7 @@ export default function BotGitIntegrationsPanel({
               </>
             ) : null}
 
-            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 4 ? (
+            {activeApp !== 'jira' && activeApp !== 'gmail' && activeApp !== 'chatgpt' && activeApp !== 'slack' && activeApp !== 'database' && activeStep === 4 ? (
               <>
                 <div className="step">
                   <span>Local repo cache path</span>
@@ -818,6 +872,67 @@ export default function BotGitIntegrationsPanel({
                 <div className="muted">
                   Gmail OAuth setup docs: developers.google.com/workspace/gmail/api/auth/web-server
                 </div>
+              </>
+            ) : null}
+
+            {activeApp === 'chatgpt' ? (
+              <>
+                <div className="step">
+                  <span>OpenAI / ChatGPT Sign-In</span>
+                  <span className={statusChip(chatgptDone ? 'done' : 'pending')}>{chatgptDone ? 'connected' : 'pending'}</span>
+                </div>
+                <div className="quote">
+                  Global OAuth for ChatGPT bots. To switch accounts: disconnect current token, then sign in again.
+                </div>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div className="muted">
+                    Stored tokens: {chatgptKeys.length}
+                    <br />
+                    Active token: {latestChatgptKey?.name || 'none'}
+                  </div>
+                  <button
+                    className="btn"
+                    onClick={() => void chatgptOauth.start()}
+                    disabled={chatgptOauth.busy || Boolean(chatgptOauth.authState) || chatgptActionBusy}
+                  >
+                    {chatgptOauth.busy
+                      ? 'Starting…'
+                      : chatgptOauth.authState
+                        ? 'Waiting for approval…'
+                        : chatgptDone
+                          ? 'Reconnect ChatGPT'
+                          : 'Sign in with ChatGPT'}
+                  </button>
+                </div>
+                {chatgptOauth.authUrl ? (
+                  <div className="muted">
+                    If popups are blocked, open login manually:{' '}
+                    <a href={chatgptOauth.authUrl} target="_blank" rel="noreferrer" className="link">
+                      Open ChatGPT login
+                    </a>
+                  </div>
+                ) : null}
+                {chatgptOauth.error ? <div className="alert">{chatgptOauth.error}</div> : null}
+                {chatgptActionError ? <div className="alert">{chatgptActionError}</div> : null}
+                {chatgptDone ? (
+                  <div className="formRow">
+                    <label>Connected account token</label>
+                    <input value={latestChatgptKey?.name || 'chatgpt-oauth'} readOnly />
+                    <div className="muted">Disconnect removes all ChatGPT tokens, then you can sign in with another account.</div>
+                    <button
+                      className="gitIntActionText danger"
+                      type="button"
+                      onClick={() => {
+                        const ok = window.confirm('Disconnect ChatGPT and remove all saved ChatGPT OAuth tokens?')
+                        if (!ok) return
+                        void disconnectChatgpt()
+                      }}
+                      disabled={chatgptActionBusy || !chatgptKeys.length}
+                    >
+                      {chatgptActionBusy ? 'disconnecting…' : 'disconnect'}
+                    </button>
+                  </div>
+                ) : null}
               </>
             ) : null}
 

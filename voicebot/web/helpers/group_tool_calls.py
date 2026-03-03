@@ -103,7 +103,7 @@ async def process_group_tool_calls(
                     tool_args=patch,
                 )
                 tool_failed = not bool(tool_result.get("ok", False))
-                # Always generate the user-facing response via follow-up LLM from tool result.
+                # Keep follow-up enabled so the assistant can naturally confirm/reschedule.
                 needs_followup_llm = True
                 final = ""
             elif tool_name == "web_search":
@@ -626,6 +626,7 @@ async def process_group_tool_calls(
                         + "Using the latest tool result(s) above, write the next assistant reply. "
                         "If the tool result contains codex_result_text, rephrase it for the user and do not mention file paths. "
                         "Only claim actions that are explicitly confirmed by the tool result(s). "
+                        "Do not claim that you lack tool access; the tool call already happened. "
                         "Do not repeat sentences. "
                         "Do not call any tools."
                     ),

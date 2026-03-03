@@ -51,6 +51,11 @@ def _scope() -> str:
     return (os.environ.get("CHATGPT_OAUTH_SCOPE") or "").strip() or DEFAULT_SCOPE
 
 
+def _oauth_prompt() -> str:
+    # Optional override only; some OAuth client configs reject extra prompt values.
+    return (os.environ.get("CHATGPT_OAUTH_PROMPT") or "").strip()
+
+
 def _pkce_pair() -> tuple[str, str]:
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
     challenge = hashlib.sha256(verifier.encode("utf-8")).digest()
@@ -69,7 +74,30 @@ def _auth_url(state: str, code_challenge: str) -> str:
         "state": state,
         "id_token_add_organizations": "true",
     }
+    prompt = _oauth_prompt()
+    if prompt:
+        params["prompt"] = prompt
     return f"{AUTH_BASE_URL}?{urlencode(params)}"
+
+
+def _extract_account_email(tokens: dict) -> Optional[str]:
+    # id_token is a JWT; decode payload to show which account was authorized.
+    raw = str(tokens.get("id_token") or "").strip()
+    if not raw:
+        return None
+    try:
+        parts = raw.split(".")
+        if len(parts) < 2:
+            return None
+        payload = parts[1]
+        pad = "=" * ((4 - (len(payload) % 4)) % 4)
+        obj = json.loads(base64.urlsafe_b64decode(payload + pad).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    email = str(obj.get("email") or obj.get("preferred_username") or "").strip()
+    return email or None
 
 
 def _exchange_code(code: str, code_verifier: str) -> dict:
@@ -183,7 +211,11 @@ def register(app, ctx) -> None:
                 tokens["expires_at"] = time.time() + float(expires_in)
             secret = json.dumps(tokens, ensure_ascii=False)
             crypto = ctx.require_crypto()
-            ctx._upsert_key(session, crypto=crypto, provider="chatgpt", name="ChatGPT OAuth", secret=secret)
+            account_email = _extract_account_email(tokens)
+            key_name = "ChatGPT OAuth"
+            if account_email:
+                key_name = f"ChatGPT OAuth ({account_email})"
+            ctx._upsert_key(session, crypto=crypto, provider="chatgpt", name=key_name, secret=secret)
             ctx._set_app_setting(session, "default_llm_provider", "chatgpt")
             ctx._set_app_setting(session, "default_llm_model", "gpt-5.2")
             ctx._get_or_create_showcase_bot(session)

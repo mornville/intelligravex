@@ -133,10 +133,15 @@ async def public_chat_ws(bot_id: UUID, ws: WebSocket) -> None:
                     add_message_with_metrics(session, conversation_id=conv_id, role="user", content=user_text)
                     loop = asyncio.get_running_loop()
 
-                    def _status_cb(stage: str) -> None:
+                    def _status_cb(stage: str, interim_text: Optional[str] = None) -> None:
                         asyncio.run_coroutine_threadsafe(
                             _ws_send_json(ws, {"type": "status", "req_id": req_id, "stage": stage}), loop
                         )
+                        if interim_text:
+                            asyncio.run_coroutine_threadsafe(
+                                _ws_send_json(ws, {"type": "interim", "req_id": req_id, "text": interim_text}),
+                                loop,
+                            )
 
                     history = await _build_history_budgeted_async(
                         bot_id=bot.id,

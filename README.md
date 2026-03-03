@@ -12,6 +12,7 @@ Run multi-agent AI workflows locally, with isolated workspaces and real tool acc
 - Runs agents on *your* machine, not someone else’s cloud
 - One agent = one isolated workspace (no collisions)
 - Real tools (Git, Jira, DBs), not just chat
+- Built-in scheduled jobs (daily/weekly/once) that run in the same conversation context
 - Works with local LLMs *or* OpenAI
 - Has Visual studio integrated in it, so you literally dont have to switch screens. Do everything in one place!
   
@@ -31,6 +32,7 @@ Run multi-agent AI workflows locally, with isolated workspaces and real tool acc
 - I have visual Studio Code integrated, so i can just take a look at the code, write code manually there too, all in the same screen.
 - This is just one of the infinite use cases.
 - Others for fun: I just spin up agent swarm and let them collab and come up with the code/test/reviews after i give them a task
+- For repeat work: I can just say schedule this everyday at X time and it auto-runs with the same assistant + tools.
   
 Gravex gives you a dashboard to create agents, run real tasks, and keep files, configs, and context on-device. Use local LLMs or OpenAI, add tools, and scale from one agent to teams.
 
@@ -44,6 +46,8 @@ Gravex gives you a dashboard to create agents, run real tasks, and keep files, c
     <td align="center"><img src="frontend/public/brands/jira.svg" width="80" alt="Jira" /><br/>Jira</td>
     <td align="center"><img src="https://cdn.simpleicons.org/gmail/ea4335" width="80" alt="Gmail" /><br/>Gmail</td>
     <td align="center"><img src="https://cdn.simpleicons.org/postgresql/4169e1" width="80" alt="Database" /><br/>Database</td>
+    <td align="center"><img src="https://cdn.simpleicons.org/slack/4A154B" width="80" alt="Slack" /><br/>Slack</td>
+    <td align="center"><img src="https://cdn.simpleicons.org/visualstudiocode/007ACC" width="80" alt="VS Code" /><br/>VS Code</td>
   </tr>
 </table>
 
@@ -104,7 +108,28 @@ First‑time setup in the UI:
 - Isolated Workspace is optional and requires Docker.
 - For Local models, you can pick a bundled model or use **Custom URL** to provide a direct download link.
  - The Isolated Workspace image is built locally on first use (or run `./scripts/build_data_agent_image.sh`).
-- Set up **Connected apps** if needed (GitHub, GitLab, Jira, Gmail OAuth, DB credentials).
+- Set up **Connected apps** if needed (GitHub, GitLab, Jira, Gmail OAuth, Slack OAuth, DB credentials).
+- VS Code is integrated inside the dashboard via the **IDE (VS CODE)** panel for each workspace.
+
+## Scheduled Jobs (Automations)
+
+Use natural language to schedule recurring or one-time assistant tasks in the same conversation context.
+
+Examples:
+- `In 10 minutes remind me to get shampoo.`
+- `Every day at 5 PM IST, send me 5 AI headlines on email.`
+- `Every weekday at 09:00 UTC summarize my pending tasks.`
+
+Job management examples:
+- `What jobs are there?`
+- `Disable all jobs for this conversation.`
+- `Update job <job_id> to run daily at 08:30 UTC.`
+- `Delete job <job_id>.`
+
+Notes:
+- Times are normalized and stored in **UTC**.
+- Jobs run with the same assistant + conversation context/toolchain.
+- You can also view and edit jobs from the **Jobs** tab in assistant settings.
 
 ## Why Local‑First
 
@@ -122,9 +147,11 @@ First‑time setup in the UI:
 - HTTP request tool (ad‑hoc) for zero‑setup API calls.
 - Integration tools + response mapper for schema‑driven APIs.
 - Codex post‑processing for cleaner structured outputs.
+- Scheduled jobs with conversation-aware automation + CRUD controls.
 - Isolated Workspaces per agent (optional, Docker).
+- Integrated VS Code panel inside the workspace for quick review/edits.
 - Local or OpenAI models for chat and automation.
-- Connected apps hub for GitHub/GitLab, Jira, Gmail OAuth, and database profiles.
+- Connected apps hub for GitHub/GitLab, Jira, Gmail OAuth, Slack OAuth, and database profiles.
 
 ## Screenshots
 

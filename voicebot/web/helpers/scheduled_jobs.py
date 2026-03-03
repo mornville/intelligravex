@@ -650,17 +650,39 @@ def handle_schedule_job_tool(
                 "message": msg,
             }
 
-        job_id = _parse_uuid(tool_args.get("job_id"), "job_id")
-        job = ctx.get_scheduled_job(session, job_id)
-        if job.bot_id != bot.id:
-            return {"ok": False, "error": {"message": "Scheduled job does not belong to this bot."}}
+        target_job: ScheduledJob
+        raw_job_id = str(tool_args.get("job_id") or "").strip()
+        if raw_job_id:
+            job_id = _parse_uuid(raw_job_id, "job_id")
+            target_job = ctx.get_scheduled_job(session, job_id)
+            if target_job.bot_id != bot.id:
+                return {"ok": False, "error": {"message": "Scheduled job does not belong to this bot."}}
+        else:
+            rows = ctx.list_scheduled_jobs(
+                session,
+                bot_id=bot.id,
+                conversation_id=conv_scope_id,
+                limit=1000,
+            )
+            if len(rows) == 1:
+                target_job = rows[0]
+                job_id = target_job.id
+            elif len(rows) == 0:
+                return {"ok": False, "error": {"message": "No scheduled jobs found to modify."}}
+            else:
+                return {
+                    "ok": False,
+                    "error": {
+                        "message": "Multiple scheduled jobs found. Provide job_id or use list first.",
+                    },
+                }
 
         if action == "delete":
             append_job_metadata_event(
                 ctx,
                 session,
-                conversation_id=job.conversation_id,
-                job=job,
+                conversation_id=target_job.conversation_id,
+                job=target_job,
                 status="deleted",
                 event_type="job_deleted",
                 message="Scheduled job deleted.",
@@ -683,10 +705,10 @@ def handle_schedule_job_tool(
 
         if action == "resume":
             next_run_at = compute_next_run_at(
-                cadence=job.cadence,
-                time_utc=job.time_utc,
-                weekday_utc=job.weekday_utc,
-                run_at_utc=job.run_at_utc,
+                cadence=target_job.cadence,
+                time_utc=target_job.time_utc,
+                weekday_utc=target_job.weekday_utc,
+                run_at_utc=target_job.run_at_utc,
             )
             job = ctx.update_scheduled_job(
                 session,
@@ -718,6 +740,72 @@ def handle_schedule_job_tool(
         return {"ok": True, "job": serialize_scheduled_job(job), "metadata": meta, "message": "Scheduled job updated."}
     except Exception as exc:
         return {"ok": False, "error": {"message": str(exc) or "schedule_job failed."}}
+
+
+def format_schedule_job_user_reply(
+    *,
+    tool_args: dict[str, Any],
+    tool_result: dict[str, Any],
+) -> str:
+    action = str((tool_args or {}).get("action") or "").strip().lower()
+    alias = {
+        "disable": "pause",
+        "enable": "resume",
+        "disable_all": "pause",
+        "enable_all": "resume",
+        "delete_all": "delete",
+    }
+    normalized_action = alias.get(action, action)
+
+    ok = bool((tool_result or {}).get("ok"))
+    if not ok:
+        err_obj = (tool_result or {}).get("error")
+        err_msg = ""
+        if isinstance(err_obj, dict):
+            err_msg = str(err_obj.get("message") or "").strip()
+        if not err_msg:
+            err_msg = str((tool_result or {}).get("message") or "").strip()
+        if not err_msg:
+            err_msg = "schedule_job failed."
+        return f"Could not update scheduled jobs: {err_msg}"
+
+    msg = str((tool_result or {}).get("message") or "").strip()
+    if normalized_action in {"create", "update", "delete", "pause", "resume"}:
+        if msg:
+            return msg
+
+    if normalized_action == "list":
+        jobs = (tool_result or {}).get("jobs")
+        if not isinstance(jobs, list) or not jobs:
+            return "There are no scheduled jobs right now."
+        lines: list[str] = [f"There {'is' if len(jobs) == 1 else 'are'} {len(jobs)} scheduled job{'s' if len(jobs) != 1 else ''}:"]
+        for j in jobs[:10]:
+            if not isinstance(j, dict):
+                continue
+            job_id = str(j.get("id") or j.get("job_id") or "").strip() or "unknown-id"
+            cadence = str(j.get("cadence") or "").strip() or "-"
+            next_run = str(j.get("next_run_at") or "").strip() or str(j.get("run_at_utc") or "").strip() or "-"
+            enabled = bool(j.get("enabled"))
+            status = str(j.get("last_status") or "").strip() or "-"
+            lines.append(f"- {job_id}: {cadence}, next {next_run}, {'enabled' if enabled else 'disabled'}, status {status}")
+        if len(jobs) > 10:
+            lines.append(f"...and {len(jobs) - 10} more.")
+        return "\n".join(lines)
+
+    if "deleted" in (tool_result or {}):
+        return f"Scheduled job deleted: {tool_result.get('deleted')}"
+    if isinstance((tool_result or {}).get("deleted_ids"), list):
+        n = len((tool_result or {}).get("deleted_ids") or [])
+        return msg or f"Deleted {n} scheduled job(s)."
+    if isinstance((tool_result or {}).get("jobs"), list):
+        jobs = (tool_result or {}).get("jobs") or []
+        if len(jobs) == 1 and isinstance(jobs[0], dict):
+            job_id = str(jobs[0].get("id") or "").strip()
+            if job_id:
+                return msg or f"Updated scheduled job {job_id}."
+        return msg or f"Updated {len(jobs)} scheduled job(s)."
+
+    return msg or "Scheduled jobs updated."
 
 
 async def execute_scheduled_job_async(ctx, *, job_id: UUID) -> None:

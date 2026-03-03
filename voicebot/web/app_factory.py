@@ -690,6 +690,7 @@ def create_app() -> FastAPI:
     ctx._scheduled_jobs_utc_now = scheduled_jobs_helpers.utc_now
     ctx._serialize_scheduled_job = scheduled_jobs_helpers.serialize_scheduled_job
     ctx._compute_scheduled_job_next_run = scheduled_jobs_helpers.compute_next_run_at
+    ctx._format_schedule_job_user_reply = scheduled_jobs_helpers.format_schedule_job_user_reply
     ctx._append_job_metadata_event = partial(scheduled_jobs_helpers.append_job_metadata_event, ctx)
     ctx._create_job_from_payload = partial(scheduled_jobs_helpers.create_job_from_payload, ctx)
     ctx._update_job_from_payload = partial(scheduled_jobs_helpers.update_job_from_payload, ctx)
