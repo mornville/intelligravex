@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 
 from fastapi import APIRouter, Depends
@@ -19,6 +20,47 @@ from voicebot.models import (
 from voicebot.web.constants import SHOWCASE_BOT_NAME, SYSTEM_BOT_NAME
 
 
+def _is_selectable_llm_model_id(model_id: str) -> bool:
+    mid = (model_id or "").strip()
+    if not mid:
+        return False
+    if not mid.startswith(("gpt-", "o", "chatgpt-", "codex-")):
+        return False
+    if mid.startswith(("tts-", "whisper-", "text-embedding-", "omni-moderation", "text-moderation")):
+        return False
+    lowered = mid.lower()
+    if "embedding" in lowered or "moderation" in lowered:
+        return False
+    if "-tts" in lowered or "transcribe" in lowered:
+        return False
+    return True
+
+
+def _fetch_openai_models(api_key: str) -> list[str]:
+    from openai import OpenAI  # type: ignore
+
+    client = OpenAI(api_key=api_key)
+    resp = client.models.list()
+    data = getattr(resp, "data", None) or []
+    ids: list[str] = []
+    for m in data:
+        mid = getattr(m, "id", None)
+        if not isinstance(mid, str):
+            continue
+        mid = mid.strip()
+        if not _is_selectable_llm_model_id(mid):
+            continue
+        ids.append(mid)
+    return sorted(set(ids))
+
+
+def _token_sig(raw: str) -> str:
+    token = (raw or "").strip()
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
 def register(app, ctx) -> None:
     router = APIRouter()
 
@@ -28,36 +70,42 @@ def register(app, ctx) -> None:
         dynamic_models: list[str] = []
         try:
             now = time.time()
-            if (now - float(ctx.openai_models_cache.get("ts") or 0.0)) > 3600.0:
-                ctx.openai_models_cache["ts"] = now
-                ctx.openai_models_cache["models"] = []
-                api_key = (ctx.os.environ.get("OPENAI_API_KEY") or ctx.settings.openai_api_key or "").strip()
-                if api_key:
-                    try:
-                        from openai import OpenAI  # type: ignore
+            cache_ttl = 300.0
+            raw_ttl = (ctx.os.environ.get("OPENAI_MODELS_CACHE_TTL_SECONDS") or "").strip()
+            if raw_ttl:
+                try:
+                    cache_ttl = min(86400.0, max(0.0, float(raw_ttl)))
+                except Exception:
+                    cache_ttl = 300.0
 
-                        client = OpenAI(api_key=api_key)
-                        resp = client.models.list()
-                        data = getattr(resp, "data", None) or []
-                        ids: list[str] = []
-                        for m in data:
-                            mid = getattr(m, "id", None)
-                            if not isinstance(mid, str) or not mid.strip():
-                                continue
-                            mid = mid.strip()
-                            if not (mid.startswith("gpt-") or mid.startswith("o")):
-                                continue
-                            if mid.startswith(("tts-", "whisper-", "text-embedding-", "omni-moderation", "gpt-4o-mini-tts")):
-                                continue
-                            ids.append(mid)
-                        ctx.openai_models_cache["models"] = sorted(set(ids))
+            openai_key = (ctx._get_openai_api_key(session) or "").strip()
+            chatgpt_key = (ctx._get_chatgpt_api_key(session) or "").strip()
+            key_sig = f"openai:{_token_sig(openai_key)}|chatgpt:{_token_sig(chatgpt_key)}"
+            prev_sig = str(ctx.openai_models_cache.get("key_sig") or "")
+            sig_changed = key_sig != prev_sig
+            stale = (now - float(ctx.openai_models_cache.get("ts") or 0.0)) > cache_ttl
+            if stale or sig_changed:
+                ctx.openai_models_cache["ts"] = now
+                ctx.openai_models_cache["key_sig"] = key_sig
+                if sig_changed:
+                    # Clear stale models immediately when auth context changes.
+                    ctx.openai_models_cache["models"] = []
+                # Try OpenAI API key first, then ChatGPT OAuth token as a best-effort fallback.
+                candidates = [k for k in [openai_key, chatgpt_key] if k]
+                for candidate in candidates:
+                    try:
+                        ctx.openai_models_cache["models"] = _fetch_openai_models(candidate)
+                        break
                     except Exception:
-                        ctx.openai_models_cache["models"] = []
+                        continue
             dynamic_models = list(ctx.openai_models_cache.get("models") or [])
         except Exception:
             dynamic_models = []
 
-        openai_models = sorted(set(ctx.ui_options.get("openai_models", []) + list(pricing.keys()) + dynamic_models))
+        if dynamic_models:
+            openai_models = sorted(set(dynamic_models))
+        else:
+            openai_models = sorted(set(ctx.ui_options.get("openai_models", []) + list(pricing.keys())))
         ctx._refresh_openrouter_models_cache(session)
         openrouter_models = list(ctx.openrouter_models_cache.get("models") or [])
         openrouter_pricing = dict(ctx.openrouter_models_cache.get("pricing") or {})
