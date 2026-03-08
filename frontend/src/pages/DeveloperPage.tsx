@@ -15,6 +15,8 @@ type DataAgentContainer = {
   cpu?: string
   mem?: string
   mem_perc?: string
+  ports?: { host: number; container: number }[]
+  ide_port?: number
 }
 
 type LocalRuntimeStatus = {
@@ -49,6 +51,17 @@ function fmtLocalTime(ts?: number): string {
   } catch {
     return '-'
   }
+}
+
+function fmtContainerPorts(item: DataAgentContainer): string {
+  const ports = (item.ports || []).filter((p) => Number.isFinite(p.host) && Number.isFinite(p.container))
+  if (!ports.length) return '-'
+  const idePort = Number(item.ide_port || 0) || 0
+  return ports
+    .slice()
+    .sort((a, b) => a.host - b.host)
+    .map((p) => `${p.host}->${p.container}${idePort > 0 && p.host === idePort ? ' (IDE)' : ''}`)
+    .join(', ')
 }
 
 export default function DeveloperPage() {
@@ -250,6 +263,7 @@ export default function DeveloperPage() {
                 <th>Running</th>
                 <th>CPU</th>
                 <th>Memory</th>
+                <th>Ports</th>
                 <th>Conversation</th>
                 <th style={{ textAlign: 'right' }}>Action</th>
               </tr>
@@ -264,6 +278,7 @@ export default function DeveloperPage() {
                     <td className="mono">{item.running_for || item.created_at || '-'}</td>
                     <td className="mono">{item.cpu || '-'}</td>
                     <td className="mono">{item.mem ? `${item.mem}${item.mem_perc ? ` (${item.mem_perc})` : ''}` : '-'}</td>
+                    <td className="mono">{fmtContainerPorts(item)}</td>
                     <td>
                       {item.conversation_id ? (
                         <Link className="link" to={`/conversations/${item.conversation_id}`}>

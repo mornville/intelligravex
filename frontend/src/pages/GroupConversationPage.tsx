@@ -938,7 +938,7 @@ export default function GroupConversationPage() {
               ) : !workspaceIdePort ? (
                 <div className={workspacePortsExhausted ? 'alert' : 'muted'}>
                   {workspacePortsExhausted
-                    ? 'No available Isolated Workspace ports. Delete old Isolated Workspace containers from the Developer panel to free ports.'
+                    ? 'No available Isolated Workspace ports. Delete old Isolated Workspace containers from the Developer panel (which shows exact occupied ports) to free ports.'
                     : 'IDE port not assigned yet.'}
                 </div>
               ) : (

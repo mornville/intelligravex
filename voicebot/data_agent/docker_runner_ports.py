@@ -14,7 +14,7 @@ from .docker_runner_exec import _run
 
 
 _PORT_ALLOC_LOCK = threading.Lock()
-_DEFAULT_PORT_RANGE = (8000, 8100)
+_DEFAULT_PORT_RANGE = (7000, 7100)
 _DEFAULT_PORTS_PER_CONTAINER = 5
 
 

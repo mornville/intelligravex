@@ -83,6 +83,13 @@ py -3.11 -m venv .venv
 Open:
 - `http://localhost:7621/dashboard`
 
+Isolated Workspace ports:
+- Default published host-port range is `7000-7100`.
+- Configure range with `IGX_DATA_AGENT_PORT_RANGE` (or `VOICEBOT_DATA_AGENT_PORT_RANGE`), for example: `7000-7100`.
+- Configure per-container allocation with `IGX_DATA_AGENT_PORTS_PER_CONTAINER` (or `VOICEBOT_DATA_AGENT_PORTS_PER_CONTAINER`).
+- The Developer panel now shows exact per-container mappings (`host->container`) and marks the IDE port.
+- If you see `No available Isolated Workspace ports`, stop old containers from the Developer panel to release ports.
+
 macOS auto-start (optional):
 - Install at login/restart:
 

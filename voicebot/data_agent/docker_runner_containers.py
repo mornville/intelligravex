@@ -14,6 +14,7 @@ from .docker_runner_exec import _docker_available, _run
 from .docker_runner_names import _container_name_for_conversation, _conversation_id_from_container_name
 from .docker_runner_ports import (
     assign_container_id_to_ports,
+    get_container_ports,
     release_container_ports,
     reserve_container_ports,
     sync_container_ports_from_docker,
@@ -94,6 +95,20 @@ def list_data_agent_containers() -> dict:
         stat = stats_map.get(item.get("id") or "")
         if stat:
             item.update(stat)
+        ports = get_container_ports(
+            container_id=str(item.get("id") or ""),
+            container_name=str(item.get("name") or ""),
+        )
+        ide_port = 0
+        for mapping in ports:
+            try:
+                host_port = int((mapping or {}).get("host") or 0)
+            except Exception:
+                host_port = 0
+            if host_port > ide_port:
+                ide_port = host_port
+        item["ports"] = ports
+        item["ide_port"] = ide_port
     return {"docker_available": True, "items": items}
 
 
